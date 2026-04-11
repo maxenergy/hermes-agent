@@ -1,0 +1,36 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+    "name": "hermes-cpp",
+    "version-string": "0.0.1",
+    "description": "C++17 reimplementation of the Hermes Agent backend.",
+    "builtin-baseline": "ef7dbf94b9198bc58f45951adcf1f041fcbc5ea0",
+    "dependencies": [
+        "nlohmann-json",
+        "yaml-cpp",
+        "spdlog",
+        "fmt",
+        "cli11",
+        "cpr",
+        "openssl",
+        "sqlite3",
+        "sqlitecpp",
+        "re2",
+        "gtest",
+        {
+            "name": "boost-asio",
+            "version>=": "1.84.0"
+        },
+        {
+            "name": "boost-process",
+            "version>=": "1.84.0"
+        },
+        {
+            "name": "boost-beast",
+            "version>=": "1.84.0"
+        },
+        "ftxui",
+        "inja",
+        "jwt-cpp",
+        "md4c"
+    ]
+}

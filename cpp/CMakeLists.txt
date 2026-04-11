@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.20)
+
+# NOTE: Phase 0 intentionally does NOT auto-activate the vcpkg toolchain.
+# `hermes_core` has no external dependencies, so the default configure
+# must succeed on a clean Linux box with zero vcpkg install time.
+#
+# To opt into the vcpkg-provided dependencies (Phase 1+ modules), set
+# `-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake`
+# on the first configure.
+
+project(hermes_cpp
+    VERSION 0.0.1
+    LANGUAGES CXX
+    DESCRIPTION "C++17 reimplementation of the Hermes Agent backend")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+# Shared warning flags applied to all first-party targets via the
+# hermes_warnings INTERFACE library.
+add_library(hermes_warnings INTERFACE)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(hermes_warnings INTERFACE
+        -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+enable_testing()
+include(CTest)
+
+add_subdirectory(core)
+add_subdirectory(external)
