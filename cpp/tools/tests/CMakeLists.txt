@@ -49,6 +49,10 @@ add_executable(hermes_tools_tests
     test_transcription_tool.cpp
     test_voice_mode_tool.cpp
     test_rl_tools.cpp
+    test_code_execution.cpp
+    test_cronjob_tool.cpp
+    test_skill_manager_tool.cpp
+    test_mcp_client.cpp
 )
 
 target_link_libraries(hermes_tools_tests
