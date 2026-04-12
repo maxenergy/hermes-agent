@@ -23,6 +23,7 @@ add_library(hermes_cli_lib STATIC
     src/colors.cpp
     src/hermes_cli.cpp
     src/main_entry.cpp
+    src/claw_migrate.cpp
 )
 
 target_include_directories(hermes_cli_lib

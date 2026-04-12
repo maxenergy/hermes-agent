@@ -1,5 +1,6 @@
 #include "hermes/cli/main_entry.hpp"
 
+#include "hermes/cli/claw_migrate.hpp"
 #include "hermes/cli/hermes_cli.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
@@ -52,6 +53,7 @@ void print_global_help() {
               << "  profile     Show user profile\n"
               << "  version     Print version and exit\n"
               << "  pairing     Manage DM pairing codes\n"
+              << "  claw        OpenClaw migration tool\n"
               << "  update      Update Hermes\n"
               << "  uninstall   Remove Hermes\n"
               << "\n"
@@ -584,6 +586,43 @@ int cmd_uninstall() {
     return 0;
 }
 
+int cmd_claw(int argc, char* argv[]) {
+    if (argc <= 2 || std::string(argv[2]) != "migrate") {
+        std::cout << "Usage: hermes claw migrate [--dry-run] [--overwrite] "
+                     "[--preset full|user-data|no-secrets] "
+                     "[--workspace-target PATH]\n";
+        return 1;
+    }
+
+    hermes::cli::claw::MigrateOptions opts;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--dry-run") {
+            opts.dry_run = true;
+        } else if (a == "--overwrite") {
+            opts.overwrite = true;
+        } else if (a == "--preset" && i + 1 < argc) {
+            opts.preset = argv[++i];
+        } else if (a == "--workspace-target" && i + 1 < argc) {
+            opts.workspace_target = argv[++i];
+        } else {
+            std::cerr << "Unknown flag: " << a << "\n";
+            return 1;
+        }
+    }
+
+    auto r = hermes::cli::claw::migrate(opts);
+    std::cout << "Migration summary:\n"
+              << "  imported: " << r.imported.size() << "\n"
+              << "  skipped:  " << r.skipped.size() << "\n"
+              << "  errors:   " << r.errors.size() << "\n"
+              << "  items:    " << r.item_count << "\n";
+    for (const auto& s : r.imported) std::cout << "  + " << s << "\n";
+    for (const auto& s : r.skipped)  std::cout << "  - " << s << "\n";
+    for (const auto& s : r.errors)   std::cout << "  ! " << s << "\n";
+    return r.errors.empty() ? 0 : 1;
+}
+
 int cmd_pairing(int argc, char* argv[]) {
     // hermes pairing approve <platform> <code>
     if (argc < 5) {
@@ -696,6 +735,9 @@ int main_entry(int argc, char* argv[]) {
 
     if (sub == "pairing") {
         return cmd_pairing(argc, argv);
+    }
+    if (sub == "claw") {
+        return cmd_claw(argc, argv);
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";

@@ -28,6 +28,16 @@ public:
     // Format a Discord user mention from a numeric user ID.
     static std::string format_mention(const std::string& user_id);
 
+    // Create a thread under a channel. Returns true on 2xx.
+    bool create_thread(const std::string& channel_id,
+                       const std::string& name,
+                       int auto_archive_minutes = 1440);
+
+    // Add an emoji reaction to a message.
+    bool add_reaction(const std::string& channel_id,
+                      const std::string& message_id,
+                      const std::string& emoji);
+
     Config config() const { return cfg_; }
     bool connected() const { return connected_; }
 

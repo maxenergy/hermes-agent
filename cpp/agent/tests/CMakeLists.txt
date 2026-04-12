@@ -25,6 +25,7 @@ add_executable(hermes_agent_tests
     test_auxiliary_client.cpp
     test_ai_agent.cpp
     test_trajectory_saving.cpp
+    test_honcho_provider.cpp
 )
 
 target_link_libraries(hermes_agent_tests

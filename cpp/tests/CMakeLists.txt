@@ -43,6 +43,21 @@ gtest_discover_tests(hermes_integration_tests
     DISCOVERY_MODE PRE_TEST
 )
 
+# --- Default asset sanity tests ------------------------------------------
+
+add_executable(hermes_default_assets_tests test_default_assets.cpp)
+target_link_libraries(hermes_default_assets_tests
+    PRIVATE
+        GTest::gtest_main
+        hermes_warnings
+)
+target_compile_definitions(hermes_default_assets_tests PRIVATE
+    HERMES_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets"
+)
+gtest_discover_tests(hermes_default_assets_tests
+    DISCOVERY_MODE PRE_TEST
+)
+
 # --- Performance benchmarks -----------------------------------------------
 
 add_executable(hermes_benchmarks

@@ -318,7 +318,8 @@ WsResponse ws_send_recv(const std::string& url, const std::string& message,
     // 8. Send close frame (best-effort)
     {
         uint8_t close_frame[] = {0x88, 0x80, 0x00, 0x00, 0x00, 0x00};
-        (void)::write(sg.fd, close_frame, sizeof(close_frame));
+        ssize_t _wr = ::write(sg.fd, close_frame, sizeof(close_frame));
+        (void)_wr;
     }
 
     return resp;

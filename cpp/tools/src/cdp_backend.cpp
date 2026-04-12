@@ -126,7 +126,8 @@ void remove_dir(const std::string& path) {
     if (path.empty() || path == "/") return;
     // Use system rm for simplicity (this is a temp dir we created).
     std::string cmd = "rm -rf '" + path + "' 2>/dev/null";
-    (void)::system(cmd.c_str());
+    int _rc = ::system(cmd.c_str());
+    (void)_rc;
 }
 
 }  // namespace

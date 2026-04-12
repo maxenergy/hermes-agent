@@ -29,6 +29,10 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_sticker_cache.cpp
     test_restart.cpp
     test_gateway_lifecycle.cpp
+    test_email_imap.cpp
+    test_telegram_reactions.cpp
+    test_slack_threads.cpp
+    test_discord_threads.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

@@ -81,7 +81,8 @@ target_link_libraries(hermes_gateway
 # were PRIVATE, downstream consumers would compile against a different
 # nlohmann ABI version and fail to link.
 if(OpenSSL_FOUND)
-    target_link_libraries(hermes_gateway PUBLIC OpenSSL::Crypto)
+    target_link_libraries(hermes_gateway PUBLIC OpenSSL::Crypto OpenSSL::SSL)
+    target_compile_definitions(hermes_gateway PRIVATE HERMES_HAVE_OPENSSL=1)
 endif()
 
 add_library(hermes::gateway ALIAS hermes_gateway)

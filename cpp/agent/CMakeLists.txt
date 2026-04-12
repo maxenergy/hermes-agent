@@ -8,6 +8,7 @@ add_library(hermes_agent STATIC
     src/context_compressor.cpp
     src/memory_manager.cpp
     src/memory_provider.cpp
+    src/honcho_provider.cpp
     src/subdirectory_hints.cpp
     src/iteration_budget.cpp
     src/title_generator.cpp

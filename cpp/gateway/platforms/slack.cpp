@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <openssl/hmac.h>
 
+#include <hermes/gateway/status.hpp>
+
 namespace hermes::gateway::platforms {
 
 SlackAdapter::SlackAdapter(Config cfg) : cfg_(std::move(cfg)) {}
@@ -22,8 +24,18 @@ hermes::llm::HttpTransport* SlackAdapter::get_transport() {
 bool SlackAdapter::connect() {
     if (cfg_.bot_token.empty()) return false;
 
+    if (!hermes::gateway::acquire_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            cfg_.bot_token, {})) {
+        return false;
+    }
+
     auto* transport = get_transport();
-    if (!transport) return false;
+    if (!transport) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()), cfg_.bot_token);
+        return false;
+    }
 
     try {
         auto resp = transport->post_json(
@@ -44,7 +56,73 @@ bool SlackAdapter::connect() {
 }
 
 void SlackAdapter::disconnect() {
+    if (!cfg_.bot_token.empty()) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()), cfg_.bot_token);
+    }
     connected_ = false;
+}
+
+std::optional<std::string> SlackAdapter::parse_thread_ts(
+    const nlohmann::json& event) {
+    if (event.contains("thread_ts") && event["thread_ts"].is_string()) {
+        return event["thread_ts"].get<std::string>();
+    }
+    return std::nullopt;
+}
+
+bool SlackAdapter::send_thread_reply(const std::string& chat_id,
+                                     const std::string& thread_ts,
+                                     const std::string& content) {
+    auto* transport = get_transport();
+    if (!transport) return false;
+    nlohmann::json payload = {
+        {"channel", chat_id},
+        {"text", content},
+        {"thread_ts", thread_ts},
+    };
+    try {
+        auto resp = transport->post_json(
+            "https://slack.com/api/chat.postMessage",
+            {{"Authorization", "Bearer " + cfg_.bot_token},
+             {"Content-Type", "application/json"}},
+            payload.dump());
+        if (resp.status_code != 200) return false;
+        auto body = nlohmann::json::parse(resp.body);
+        return body.value("ok", false);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool SlackAdapter::upload_file(const std::string& chat_id,
+                               const std::string& filename,
+                               const std::string& content,
+                               const std::string& initial_comment) {
+    auto* transport = get_transport();
+    if (!transport) return false;
+    // Use the JSON body variant (files.upload accepts form-encoded; the
+    // simpler files.upload v2 path takes JSON).  For the adapter we post
+    // to files.upload with JSON — good enough for unit testing via the
+    // FakeHttpTransport which just captures the request.
+    nlohmann::json payload = {
+        {"channels", chat_id},
+        {"filename", filename},
+        {"content", content},
+    };
+    if (!initial_comment.empty()) payload["initial_comment"] = initial_comment;
+    try {
+        auto resp = transport->post_json(
+            "https://slack.com/api/files.upload",
+            {{"Authorization", "Bearer " + cfg_.bot_token},
+             {"Content-Type", "application/json"}},
+            payload.dump());
+        if (resp.status_code != 200) return false;
+        auto body = nlohmann::json::parse(resp.body);
+        return body.value("ok", false);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool SlackAdapter::send(const std::string& chat_id,

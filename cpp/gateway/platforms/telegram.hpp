@@ -1,8 +1,11 @@
 // Phase 12 — Telegram platform adapter.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include <hermes/gateway/gateway_runner.hpp>
 #include <hermes/llm/llm_client.hpp>
@@ -31,6 +34,18 @@ public:
 
     // Telegram MarkdownV2 escaping.
     static std::string format_markdown_v2(const std::string& text);
+
+    // Send an emoji reaction to a Telegram message via setMessageReaction.
+    bool set_reaction(const std::string& chat_id, long long message_id,
+                      const std::string& emoji);
+
+    // Extract the message_thread_id (Telegram forum topic) if present.
+    static std::optional<long long> parse_forum_topic(
+        const nlohmann::json& message);
+
+    // Extract the media_group_id (album batching) if present.
+    static std::optional<std::string> parse_media_group_id(
+        const nlohmann::json& message);
 
     Config config() const { return cfg_; }
     bool connected() const { return connected_; }

@@ -121,9 +121,11 @@ bool acquire_scoped_lock(const std::string& scope,
         try {
             in >> j;
             int existing_pid = j.value("pid", 0);
-            if (existing_pid > 0 && process_exists(existing_pid)) {
-                return false;  // Lock held by live process.
+            if (existing_pid > 0 && process_exists(existing_pid) &&
+                existing_pid != static_cast<int>(getpid())) {
+                return false;  // Lock held by a DIFFERENT live process.
             }
+            // If existing_pid == our pid, we just re-take the lock (idempotent).
         } catch (...) {
             // Corrupted lock file — remove and take lock.
         }
