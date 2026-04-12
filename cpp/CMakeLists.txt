@@ -35,6 +35,7 @@ enable_testing()
 include(CTest)
 
 add_subdirectory(core)
+add_subdirectory(approval)
 add_subdirectory(config)
 add_subdirectory(profile)
 add_subdirectory(auth)
