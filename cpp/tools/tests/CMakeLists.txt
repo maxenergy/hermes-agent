@@ -54,6 +54,7 @@ add_executable(hermes_tools_tests
     test_cronjob_tool.cpp
     test_skill_manager_tool.cpp
     test_mcp_client.cpp
+    test_mcp_transport.cpp
 )
 
 target_link_libraries(hermes_tools_tests

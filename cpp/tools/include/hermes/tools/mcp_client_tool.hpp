@@ -1,10 +1,12 @@
-// MCP client tool — configuration loading and stub tool registration for
-// Model Context Protocol servers.  Actual transport is Phase 12+.
+// MCP client tool — configuration loading and tool registration for
+// Model Context Protocol servers via stdio transport.
 #pragma once
 
+#include "hermes/tools/mcp_transport.hpp"
 #include "hermes/tools/registry.hpp"
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -45,20 +47,26 @@ public:
     // Get config for a specific server.
     std::optional<McpServerConfig> get_config(const std::string& name) const;
 
-    // Register stub tools from a server into the given ToolRegistry.
-    // Phase 8: registered tools return "MCP server not connected".
+    // Connect to an MCP server via stdio transport (launches child process).
+    // Returns true on success.
+    bool connect(const std::string& server_name);
+
+    // Disconnect a running MCP server.
+    void disconnect(const std::string& server_name);
+
+    // Check if a server is connected.
+    bool is_connected(const std::string& server_name) const;
+
+    // Register tools discovered from an MCP server into the given ToolRegistry.
+    // If the server has a `command` configured, connects via stdio transport,
+    // discovers tools via tools/list, and registers real handlers.
+    // Falls back to a stub tool if connection fails or no command is configured.
     void register_server_tools(const std::string& server_name,
                                ToolRegistry& registry);
 
-    // Connection lifecycle — Phase 12 will implement:
-    // void connect(const std::string& server_name);
-    // void disconnect(const std::string& server_name);
-    // std::string call_tool(const std::string& server,
-    //                       const std::string& tool,
-    //                       const nlohmann::json& args);
-
 private:
     std::map<std::string, McpServerConfig> configs_;
+    std::map<std::string, std::shared_ptr<McpStdioTransport>> transports_;
 };
 
 }  // namespace hermes::tools
