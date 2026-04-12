@@ -1,0 +1,246 @@
+#include "hermes/skills/skill_utils.hpp"
+
+#include "hermes/core/path.hpp"
+
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+namespace hermes::skills {
+
+namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// Directory scanning
+// ---------------------------------------------------------------------------
+
+std::vector<fs::path> get_all_skills_dirs() {
+    std::vector<fs::path> dirs;
+
+    const auto home = hermes::core::path::get_hermes_home();
+
+    // Built-in skills ship inside the install tree.
+    auto builtin = home / "skills";
+    std::error_code ec;
+    if (fs::is_directory(builtin, ec)) {
+        dirs.push_back(std::move(builtin));
+    }
+
+    // Optional skills (user-toggled).
+    auto optional_dir = hermes::core::path::get_optional_skills_dir();
+    if (fs::is_directory(optional_dir, ec)) {
+        dirs.push_back(std::move(optional_dir));
+    }
+
+    // User-installed skills.
+    auto user_dir = home / "installed-skills";
+    if (fs::is_directory(user_dir, ec)) {
+        dirs.push_back(std::move(user_dir));
+    }
+
+    return dirs;
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter parsing
+// ---------------------------------------------------------------------------
+
+static constexpr std::string_view kFence = "---";
+
+std::pair<nlohmann::json, std::string> parse_frontmatter(std::string_view markdown) {
+    // The frontmatter must start at position 0 with "---\n".
+    if (markdown.size() < 4 || markdown.substr(0, 3) != kFence ||
+        markdown[3] != '\n') {
+        return {nlohmann::json(nullptr), std::string(markdown)};
+    }
+
+    // Find the closing fence.
+    auto close = markdown.find("\n---", 3);
+    if (close == std::string_view::npos) {
+        return {nlohmann::json(nullptr), std::string(markdown)};
+    }
+
+    // Extract the YAML block (between the two fences).
+    std::string_view yaml_block = markdown.substr(4, close - 4);
+
+    // Lightweight key: value parser (no dependency on yaml-cpp).
+    // Handles simple scalars and arrays expressed as comma-separated lists.
+    nlohmann::json meta = nlohmann::json::object();
+    std::istringstream ss{std::string(yaml_block)};
+    std::string line;
+    while (std::getline(ss, line)) {
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+
+        std::string key = line.substr(0, colon);
+        // Trim key
+        while (!key.empty() && key.back() == ' ') key.pop_back();
+        while (!key.empty() && key.front() == ' ') key.erase(key.begin());
+
+        std::string val = line.substr(colon + 1);
+        // Trim value
+        while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+        while (!val.empty() && val.back() == ' ') val.pop_back();
+
+        if (key.empty()) continue;
+
+        // Detect comma-separated arrays: "cli, telegram"
+        if (val.find(',') != std::string::npos) {
+            nlohmann::json arr = nlohmann::json::array();
+            std::istringstream vs(val);
+            std::string item;
+            while (std::getline(vs, item, ',')) {
+                while (!item.empty() && item.front() == ' ') item.erase(item.begin());
+                while (!item.empty() && item.back() == ' ') item.pop_back();
+                if (!item.empty()) arr.push_back(item);
+            }
+            meta[key] = std::move(arr);
+        } else {
+            meta[key] = val;
+        }
+    }
+
+    // Body starts after the closing fence line.
+    auto body_start = close + 4;  // skip "\n---"
+    if (body_start < markdown.size() && markdown[body_start] == '\n') {
+        ++body_start;
+    }
+    std::string body(markdown.substr(body_start));
+
+    return {std::move(meta), std::move(body)};
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter extraction helpers
+// ---------------------------------------------------------------------------
+
+std::string extract_skill_description(const nlohmann::json& frontmatter) {
+    if (frontmatter.is_null()) return {};
+    if (frontmatter.contains("description") && frontmatter["description"].is_string()) {
+        return frontmatter["description"].get<std::string>();
+    }
+    return {};
+}
+
+std::vector<std::string> extract_skill_conditions(const nlohmann::json& frontmatter) {
+    std::vector<std::string> out;
+    if (frontmatter.is_null()) return out;
+    if (frontmatter.contains("conditions")) {
+        const auto& c = frontmatter["conditions"];
+        if (c.is_array()) {
+            for (const auto& item : c) {
+                if (item.is_string()) {
+                    out.push_back(item.get<std::string>());
+                }
+            }
+        } else if (c.is_string()) {
+            // Single condition as comma list.
+            std::istringstream ss(c.get<std::string>());
+            std::string tok;
+            while (std::getline(ss, tok, ',')) {
+                while (!tok.empty() && tok.front() == ' ') tok.erase(tok.begin());
+                while (!tok.empty() && tok.back() == ' ') tok.pop_back();
+                if (!tok.empty()) out.push_back(tok);
+            }
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Skill index iteration
+// ---------------------------------------------------------------------------
+
+std::vector<SkillMetadata> iter_skill_index() {
+    std::vector<SkillMetadata> result;
+
+    for (const auto& dir : get_all_skills_dirs()) {
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(dir, ec)) {
+            if (!entry.is_directory(ec)) continue;
+
+            auto skill_md = entry.path() / "SKILL.md";
+            if (!fs::is_regular_file(skill_md, ec)) continue;
+
+            // Read file
+            std::ifstream ifs(skill_md);
+            if (!ifs) continue;
+            std::string contents((std::istreambuf_iterator<char>(ifs)),
+                                  std::istreambuf_iterator<char>());
+
+            auto [meta, body] = parse_frontmatter(contents);
+
+            SkillMetadata sm;
+            sm.name = entry.path().filename().string();
+            sm.path = entry.path();
+            sm.description = extract_skill_description(meta);
+
+            if (!meta.is_null()) {
+                if (meta.contains("version") && meta["version"].is_string()) {
+                    sm.version = meta["version"].get<std::string>();
+                }
+                if (meta.contains("platforms")) {
+                    const auto& p = meta["platforms"];
+                    if (p.is_array()) {
+                        for (const auto& item : p) {
+                            if (item.is_string()) {
+                                sm.platforms.push_back(item.get<std::string>());
+                            }
+                        }
+                    } else if (p.is_string()) {
+                        sm.platforms.push_back(p.get<std::string>());
+                    }
+                }
+                if (meta.contains("categories")) {
+                    const auto& c = meta["categories"];
+                    if (c.is_array()) {
+                        for (const auto& item : c) {
+                            if (item.is_string()) {
+                                sm.categories.push_back(item.get<std::string>());
+                            }
+                        }
+                    }
+                }
+            }
+
+            result.push_back(std::move(sm));
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Platform gating
+// ---------------------------------------------------------------------------
+
+bool skill_matches_platform(const SkillMetadata& skill, std::string_view platform) {
+    if (skill.platforms.empty()) return true;
+    return std::any_of(skill.platforms.begin(), skill.platforms.end(),
+                       [&](const std::string& p) {
+                           return p == platform;
+                       });
+}
+
+// ---------------------------------------------------------------------------
+// Disabled skills from config
+// ---------------------------------------------------------------------------
+
+std::vector<std::string> get_disabled_skill_names(const nlohmann::json& config) {
+    std::vector<std::string> out;
+    if (!config.is_object()) return out;
+    if (!config.contains("disabled_skills")) return out;
+
+    const auto& ds = config["disabled_skills"];
+    if (ds.is_array()) {
+        for (const auto& item : ds) {
+            if (item.is_string()) {
+                out.push_back(item.get<std::string>());
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace hermes::skills
