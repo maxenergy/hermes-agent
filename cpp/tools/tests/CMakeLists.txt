@@ -39,6 +39,12 @@ add_executable(hermes_tools_tests
     test_image_gen_tool.cpp
     test_tts_tool.cpp
     test_delegate_tool.cpp
+    test_memory_tool.cpp
+    test_todo_tool.cpp
+    test_clarify_tool.cpp
+    test_skills_tool.cpp
+    test_session_search_tool.cpp
+    test_homeassistant_tool.cpp
 )
 
 target_link_libraries(hermes_tools_tests
@@ -46,6 +52,7 @@ target_link_libraries(hermes_tools_tests
         hermes::tools
         hermes::core
         hermes::llm
+        hermes::state
         GTest::gtest_main
         hermes_warnings
 )

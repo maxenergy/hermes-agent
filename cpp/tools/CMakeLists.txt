@@ -41,6 +41,12 @@ add_library(hermes_tools STATIC
     src/image_generation_tool.cpp
     src/tts_tool.cpp
     src/delegate_tool.cpp
+    src/memory_tool.cpp
+    src/todo_tool.cpp
+    src/clarify_tool.cpp
+    src/skills_tool.cpp
+    src/session_search_tool.cpp
+    src/homeassistant_tool.cpp
 )
 
 target_include_directories(hermes_tools
@@ -58,6 +64,7 @@ target_link_libraries(hermes_tools
         hermes::state
         nlohmann_json::nlohmann_json
     PRIVATE
+        hermes::state
         hermes_warnings
 )
 
