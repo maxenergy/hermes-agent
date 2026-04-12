@@ -23,6 +23,7 @@ add_executable(hermes_agent_tests
     test_subdirectory_hints.cpp
     test_title_generator.cpp
     test_auxiliary_client.cpp
+    test_ai_agent.cpp
 )
 
 target_link_libraries(hermes_agent_tests

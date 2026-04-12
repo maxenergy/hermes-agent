@@ -21,6 +21,16 @@ include(GoogleTest)
 
 add_executable(hermes_tools_tests
     test_registry.cpp
+    test_toolsets.cpp
+    test_toolset_distributions.cpp
+    test_tool_result.cpp
+    test_tool_result_storage.cpp
+    test_budget.cpp
+    test_binary_extensions.cpp
+    test_credential_files.cpp
+    test_managed_tool_gateway.cpp
+    test_env_passthrough.cpp
+    test_interrupt.cpp
 )
 
 target_link_libraries(hermes_tools_tests
