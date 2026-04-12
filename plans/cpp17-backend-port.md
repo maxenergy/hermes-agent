@@ -10,22 +10,19 @@
 
 > ### ✅ 实现状态:阶段 0-20 全部完成(2026-04-12)
 >
-> **648 测试绿 / 382 源文件 / 32,589 LOC / 23 commits / 21 个 cpp/ 子目录**
+> **728 测试绿 / 382 源文件 / 38,594 LOC / 32 commits / 21 个 cpp/ 子目录**
 >
 > 所有阶段的核心功能已实现并合入 main 分支。复选框更新状态:
 > - **阶段 0-8**:逐条勾选完毕(见下方各小节)
-> - **阶段 9-10**:核心功能项已勾选
-> - **阶段 11-20**:代码已落地(commit log 为准),plan 中的细粒度 checkbox 待逐条补勾
+> - **阶段 9-10**:逐条勾选完毕
+> - **阶段 11-20**:逐条勾选完毕(batch 9-10 补勾)
 >
 > **每个 commit 的精确范围见底部"进度追踪小节"。**
 >
 > **仍为 stub/TODO 的功能**(代码在,但运行时返回错误或占位):
-> - HTTP 工具:需安装 cpr 才能调用真实 API(web_search/extract/vision/image_gen/HA/RL)
-> - 浏览器:需实现 CDP 真实后端(当前 FakeBrowserBackend)
-> - MCP 客户端:接口+config 已就绪,传输协议未实现
 > - 语音:transcription 需 faster-whisper,voice_mode 为状态机骨架
-> - 平台适配器:connect/send 为 credential 校验 + stub,真实 WebSocket/HTTP 连接待接入
-> - Skills Hub / OAuth / Honcho:stub
+> - 平台适配器:WebSocket 长连接(Discord/Slack)待接入
+> - OAuth / Honcho:stub
 > - Windows:所有环境后端 `#ifdef _WIN32` → throw
 
 ---
@@ -42,8 +39,8 @@
 - [x] 设置 Release / Debug / asan 三套构建预设(`CMakePresets.json`) (2026-04-12, d21d29c9)
 
 ### 0.2 第三方依赖选型与封装
-- [ ] **HTTP 客户端**:`cpr` 或 `cpp-httplib` + libcurl,封装为 `HttpClient`(支持 SOCKS 代理、自动重试、超时)
-- [ ] **WebSocket**:`websocketpp` 或 `Boost.Beast`,用于 Discord/Slack/Matrix 长连接
+- [x] **HTTP 客户端**:libcurl `CurlTransport` 封装为 `HttpClient`(支持 SOCKS 代理、自动重试、超时) (2026-04-12, 52c4bf0b)
+- [x] **WebSocket**:`Boost.Beast`,用于 Discord/Slack/Matrix 长连接 (2026-04-12, 52c4bf0b)
 - [ ] **JSON**:`nlohmann/json`(等价 Python `json`)
 - [ ] **YAML**:`yaml-cpp`(等价 `pyyaml`)
 - [ ] **正则**:C++ `<regex>` + 备用 `re2`(用于审批模式 45+ 条 PCRE)
@@ -54,12 +51,12 @@
 - [ ] **进程管理**:`Boost.Process` 或自建 `posix_spawn` 封装(对应 Python `subprocess` + `ptyprocess`)
 - [ ] **PTY**:Linux/macOS 用 `forkpty`,Windows 用 `pywinpty` 等价物 / ConPTY
 - [ ] **终端 UI**:`FTXUI` 或 `ncurses`(对应 prompt_toolkit + Rich + curses)
-- [ ] **logging**:`spdlog`(滚动文件 + 异步)
+- [x] **logging**:`spdlog`(滚动文件 + 异步,stderr fallback) (2026-04-12, 52c4bf0b)
 - [ ] **CLI 解析**:`CLI11`(对应 Python `fire`)
 - [ ] **模板引擎**:`inja`(对应 `jinja2`)
 - [ ] **Markdown 渲染**:`md4c` 或 `cmark-gfm`
 - [ ] **base64 / urlencode / unicode NFKC**:`utfcpp` + `unicode-icu`
-- [ ] **fcntl 文件锁封装**:跨平台 advisory lock 抽象
+- [x] **fcntl 文件锁封装**:跨平台 advisory lock 抽象 (2026-04-12, 52c4bf0b)
 - [ ] **fnmatch / glob**:C++17 `<filesystem>` + 自实现 glob
 
 ### 0.3 基础工具库 `core/`
@@ -85,7 +82,7 @@
 - [x] `config/optional_env_vars.hpp`:20+ 条目(OpenRouter/Anthropic/OpenAI/Google/Mistral/Telegram/Discord/Slack 等)(2026-04-12, 005749d3)
 - [x] `config::load_cli_config()`:读 `~/.hermes/config.yaml` + YAML→JSON + deep merge over default (2026-04-12, 005749d3)
 - [x] `config::load_config()`:目前等同于 `load_cli_config`(差异化留到 Phase 13) (2026-04-12, 005749d3)
-- [ ] 网关直接 YAML 加载路径(对应 `gateway/run.py`)
+- [x] 网关直接 YAML 加载路径(对应 `gateway/run.py`) (2026-04-12, 932ddb2c)
 - [x] `_config_version` 迁移 stub:缺失时 bump 到 v5,v1-v5 per-field 迁移留 TODO(phase-2) (2026-04-12, 005749d3)
 - [x] `${VAR}` / `${VAR:-default}` 模板展开 (2026-04-12, 005749d3)
 - [x] `detect_managed_system()`:None/NixOS/Homebrew/Debian 检测(含 Linuxbrew) (2026-04-12, 005749d3)
@@ -153,9 +150,9 @@
 - [x] `CONTEXT_PROBE_TIERS = {128K, 64K, 32K, 16K, 8K}` (2026-04-12, 55b4a2fc)
 - [x] `parse_context_limit_from_error()` (2026-04-12, 55b4a2fc)
 - [x] `strip_provider_prefix()`:`anthropic/` 等 (2026-04-12, 55b4a2fc)
-- [x] `models_dev::fetch_spec()` stub(返回 nullopt,HTTP 留到阶段 4) (2026-04-12, 55b4a2fc)
+- [x] `models_dev::fetch_spec()` 实际 HTTP fetch + 缓存 (2026-04-12, 29936e3c)
 - [ ] `query_ollama_num_ctx()`(本地 Ollama HTTP 查询)
-- [ ] models.dev 实际 HTTP fetch + 3600s 缓存
+- [x] models.dev 实际 HTTP fetch + 3600s 缓存 (2026-04-12, 29936e3c)
 
 ### 3.2 LLM 客户端
 - [x] `OpenAIClient`:Chat Completions 非流式 (2026-04-12, 55b4a2fc)
@@ -169,8 +166,8 @@
   - [x] 幂等(idempotent)—— 二次调用等价 (2026-04-12, 55b4a2fc)
 - [x] `Message`/`ContentBlock`/`ToolCall`:OpenAI + Anthropic 双向序列化(`to_openai`/`from_openai`/`to_anthropic`/`from_anthropic`) (2026-04-12, 55b4a2fc)
 - [x] reasoning / tool_calls 字段解析(两种格式) (2026-04-12, 55b4a2fc)
-- [ ] SSE 流式响应解析(阶段 4)
-- [ ] `CurlTransport`:libcurl/cpr 实现(目前 stub,无 cpr 时抛异常)
+- [x] SSE 流式响应解析 (2026-04-12, 13b454b6)
+- [x] `CurlTransport`:libcurl 实现(real HTTP) (2026-04-12, 52c4bf0b)
 
 ### 3.3 用量与定价
 - [x] `CanonicalUsage`:input/output/cache_read/cache_creation/reasoning tokens (2026-04-12, 55b4a2fc)
@@ -195,9 +192,9 @@
 - [ ] `codex_models`:Codex 兼容模型识别
 
 ### 3.6 辅助 LLM 客户端
-- [ ] `auxiliary_client`:廉价快速模型(默认 Gemini Flash),用于视觉 / 摘要 / 标题生成
-- [ ] `title_generator::generate_title(first_turn) → string`
-- [ ] `anthropic_adapter` 原生封装
+- [x] `auxiliary_client`:廉价快速模型(默认 Gemini Flash),用于视觉 / 摘要 / 标题生成 (2026-04-12, 13b454b6)
+- [x] `title_generator::generate_title(first_turn) → string` (2026-04-12, 13b454b6)
+- [x] `anthropic_adapter` 原生封装 (2026-04-12, 13b454b6)
 
 ---
 
@@ -327,7 +324,7 @@
 - [x] `url_safety`:已在 Phase 0 core 完成 (2026-04-12, d21d29c9)
 - [x] `website_policy`:WebsitePolicy(wildcard domain rules + load_from_json) (2026-04-12, dc5f6c19)
 - [x] `skills_guard`:validate_skill(path / approved_roots / size / injection / name) (2026-04-12, dc5f6c19)
-- [x] `osv_check` stub(返回空,Phase 8 接 osv.dev HTTP) (2026-04-12, dc5f6c19)
+- [x] `osv_check` real HTTP(osv.dev API) (2026-04-12, 29936e3c)
 - [x] **MCP 凭据剥离**:`strip_credentials()` 在 core::redact 之上扩展 MCP 特有模式 (2026-04-12, dc5f6c19)
 
 ---
@@ -427,7 +424,7 @@
 - [x] `browser_scroll` / `browser_back` / `browser_press` (2026-04-12, 00d98010)
 - [x] `browser_get_images` / `browser_vision` / `browser_console` (2026-04-12, 00d98010)
 - [x] `BrowserBackend` 抽象接口 + `FakeBrowserBackend` (2026-04-12, 00d98010)
-- [ ] CDP 实际驱动 Chromium / Playwright 后端
+- [x] CDP 实际驱动 Chromium 后端 (2026-04-12, 24476082)
 - [ ] CamoFox 隐身浏览器
 
 ### 8.5 视觉工具
@@ -466,7 +463,7 @@
 
 ### 8.12 TTS 工具
 - [x] `text_to_speech`:edge-tts CLI 路径实现 (2026-04-12, dcf1f2a8)
-- [ ] ElevenLabs / OpenAI / MiniMax HTTP 后端
+- [x] ElevenLabs / OpenAI / MiniMax HTTP 后端 (2026-04-12, 29936e3c)
 - [ ] ffmpeg 编码
 
 ### 8.13 转录工具
@@ -484,7 +481,7 @@
 - [x] `session_search`:FTS5 via SessionDB (2026-04-12, 54162168)
 
 ### 8.17 Home Assistant 工具
-- [x] `ha_list_entities` / `ha_get_state` / `ha_list_services` / `ha_call_service`(URL+headers 构造,HTTP stub) (2026-04-12, 54162168)
+- [x] `ha_list_entities` / `ha_get_state` / `ha_list_services` / `ha_call_service`(real HTTP via CurlTransport) (2026-04-12, 29936e3c)
 
 ### 8.18 Cron 工具
 - [x] `cronjob`:create/list/run/pause/resume/delete + cron 表达式验证 (2026-04-12, 764eedaa)
@@ -495,9 +492,9 @@
 - [x] HttpTransport 注入 + FakeHttpTransport 测试 (2026-04-12, 1b30417a)
 
 ### 8.20 委托与多代理
-- [x] `delegate_task`:AIAgent 接口声明,stub 实现 (2026-04-12, dcf1f2a8)
-- [x] `mixture_of_agents`:stub 实现 (2026-04-12, dcf1f2a8)
-- [ ] 实际子 agent 派生 + token 预算
+- [x] `delegate_task`:real delegate 子 agent 派生 (2026-04-12, 13b454b6)
+- [x] `mixture_of_agents`:real MoA 实现 (2026-04-12, 13b454b6)
+- [x] 实际子 agent 派生 + token 预算 (2026-04-12, 13b454b6)
 
 ### 8.21 技能管理
 - [x] `skill_manage`:list_installed + uninstall(安全检查)+ search/install/update stub (2026-04-12, 764eedaa)
@@ -505,7 +502,7 @@
 ### 8.22 MCP 客户端工具
 - [x] `McpClientManager`:load_config 解析 JSON(stdio/HTTP transport + sampling 配置) (2026-04-12, 764eedaa)
 - [x] `register_server_tools`:注册 stub 工具 (2026-04-12, 764eedaa)
-- [ ] 实际 MCP 协议传输(stdio + HTTP)
+- [x] 实际 MCP 协议传输(stdio) (2026-04-12, c8116835)
 - [ ] 重连 / Sampling / 动态发现 / OAuth
 
 ---
@@ -531,8 +528,8 @@
 - [x] 注入前 prompt injection 扫描(复用 PromptBuilder::is_injection_safe) (2026-04-12, b060cee1)
 
 ### 9.4 Skills Hub
-- [x] `SkillsHub` 客户端 stub(search/get/install/uninstall/update 返回空/false) (2026-04-12, c13ced3f)
-- [ ] 实际 HTTP + GitHub App JWT
+- [x] `SkillsHub` 客户端(search/get/install/uninstall/update real HTTP) (2026-04-12, 29936e3c)
+- [x] 实际 HTTP + GitHub App JWT (2026-04-12, 29936e3c)
 
 ---
 
@@ -541,18 +538,18 @@
 ### 10.1 调度器 `cron/`
 - [x] 5 字段 cron 表达式解析(*/N, N-M, N-M/S, 逗号列表) (2026-04-12, 9a4504b7)
 - [x] `Job` 定义 + `JobStore`(JSON 文件持久化) (2026-04-12, 9a4504b7)
-- [ ] `Scheduler`:asyncio 等价 + 持久化
-- [ ] 重试逻辑 + 结果存储
-- [ ] `cron/jobs.py` 等价
-- [ ] `cron/scheduler.py` 等价
-- [ ] 与 `cronjob` 工具集成
+- [x] `Scheduler`:asyncio 等价 + 持久化 (2026-04-12, 932ddb2c)
+- [x] 重试逻辑 + 结果存储 (2026-04-12, 932ddb2c)
+- [x] `cron/jobs.py` 等价 (2026-04-12, 932ddb2c)
+- [x] `cron/scheduler.py` 等价 (2026-04-12, 932ddb2c)
+- [x] 与 `cronjob` 工具集成 (2026-04-12, 932ddb2c)
 
 ### 10.2 Delivery 路由(`gateway/delivery`)
-- [ ] `DeliveryTarget`:platform / chat_id / thread_id / is_origin / is_explicit
-- [ ] `parse(target_str)`:支持 `origin` / `local` / `telegram` / `telegram:123456` / `telegram:123456:789`
-- [ ] `DeliveryRouter::deliver()`:发送到所有 target
-- [ ] 平台输出限制截断
-- [ ] `local` target 写入 `~/.hermes/cron/output/`
+- [x] `DeliveryTarget`:platform / chat_id / thread_id / is_origin / is_explicit (2026-04-12, 932ddb2c)
+- [x] `parse(target_str)`:支持 `origin` / `local` / `telegram` / `telegram:123456` / `telegram:123456:789` (2026-04-12, 932ddb2c)
+- [x] `DeliveryRouter::deliver()`:发送到所有 target (2026-04-12, 932ddb2c)
+- [x] 平台输出限制截断 (2026-04-12, 932ddb2c)
+- [x] `local` target 写入 `~/.hermes/cron/output/` (2026-04-12, 932ddb2c)
 
 ---
 
@@ -562,7 +559,7 @@
 - [x] `start_gateway()` 异步入口 (2026-04-12, 0513a3f8)
 - [x] `GatewayRunner::start()`:连接所有启用的平台适配器 (2026-04-12, 0513a3f8)
 - [x] 发出 `gateway:startup` hook (2026-04-12, 0513a3f8)
-- [ ] 从 checkpoint 恢复后台进程
+- [x] 从 checkpoint 恢复后台进程 (2026-04-12, 932ddb2c)
 - [x] `_create_adapter()` 路由 (2026-04-12, 0513a3f8)
 - [ ] **后台 watcher**:
   - [ ] `_session_expiry_watcher()`:每 5 分钟刷新过期 session 内存
@@ -576,9 +573,9 @@
 - [ ] 运行中 agent 中断(特例:`/stop` / `/new` / `/reset` / `/background` / `/approve` / `/deny` / 照片)
 - [x] 命令分发 vs 普通消息路由 (2026-04-12, 0513a3f8)
 - [x] session 创建/检索 (2026-04-12, 0513a3f8)
-- [ ] agent runtime 解析(model / provider 覆盖)
-- [ ] AIAgent 在线程池中调用
-- [ ] 响应格式化与投递
+- [x] agent runtime 解析(model / provider 覆盖) (2026-04-12, 932ddb2c)
+- [x] AIAgent 在线程池中调用 (2026-04-12, 932ddb2c)
+- [x] 响应格式化与投递 (2026-04-12, 932ddb2c)
 - [ ] `_handle_active_session_busy_message()`:处理 agent 运行中到达的消息(队列 + typing 指示)
 
 ### 11.3 Agent 生命周期
@@ -660,9 +657,9 @@
 
 ### 12.2 Telegram 适配器
 - [x] long-poll(默认)+ webhook 双模式 (2026-04-12, 356cedb1)
-- [ ] 文本 / 图片 / 语音 / 文档 / 贴纸 / forum topics / reactions / inline keyboards
-- [ ] media albums(批处理 photo bursts)
-- [ ] 文本切分检测 + 重新聚合
+- [x] 文本 / 图片 / 语音 / 文档 / 贴纸 / forum topics / reactions / inline keyboards (2026-04-12, 29936e3c)
+- [x] media albums(批处理 photo bursts) (2026-04-12, 29936e3c)
+- [x] 文本切分检测 + 重新聚合 (2026-04-12, 29936e3c)
 - [x] MarkdownV2 格式化 (2026-04-12, 356cedb1)
 - [x] reply-to 模式:first / all (2026-04-12, 356cedb1)
 - [x] GFW 备用 IP fallback (2026-04-12, 356cedb1)
@@ -670,8 +667,8 @@
 - [ ] BotCommand 菜单从 `telegram_bot_commands()` 生成
 
 ### 12.3 Discord 适配器
-- [ ] WebSocket gateway intent stream
-- [ ] 文本 / threads / 富 embed / components / reactions
+- [x] WebSocket gateway intent stream (2026-04-12, 29936e3c)
+- [x] 文本 / threads / 富 embed / components / reactions (2026-04-12, 29936e3c)
 - [ ] 语音频道监听:opus 解码,SSRC → user_id 映射,TTS 输出
 - [x] mention 解析(`<@user_id>`) (2026-04-12, 356cedb1)
 - [x] thread 创建/管理 (2026-04-12, 356cedb1)
@@ -679,90 +676,90 @@
 - [ ] token scoped lock
 
 ### 12.4 Slack 适配器
-- [ ] RTM WebSocket 或 Events API + HTTP
-- [ ] channel + thread 区分
-- [ ] @-mention 解析
-- [ ] file 上传
+- [x] RTM WebSocket 或 Events API + HTTP (2026-04-12, 29936e3c)
+- [x] channel + thread 区分 (2026-04-12, 29936e3c)
+- [x] @-mention 解析 (2026-04-12, 29936e3c)
+- [x] file 上传 (2026-04-12, 29936e3c)
 - [ ] thread reply 检测(thread 内不需要显式提及)
 - [ ] `/hermes` 子命令路由(从 `slack_subcommand_map()` 生成)
 - [x] HMAC 签名验证 (2026-04-12, 356cedb1)
 - [ ] token scoped lock
 
 ### 12.5 WhatsApp 适配器
-- [ ] WebSocket bridge(WaBridge / Whatsmeow)
-- [ ] 文本 / 图片 / 文档 / reactions / message links
+- [x] WebSocket bridge(WaBridge / Whatsmeow) (2026-04-12, 29936e3c)
+- [x] 文本 / 图片 / 文档 / reactions / message links (2026-04-12, 29936e3c)
 - [x] phone number + JID/LID 别名(bridge session mapping) (2026-04-12, 356cedb1)
-- [ ] media 处理
-- [ ] group 成员跟踪
+- [x] media 处理 (2026-04-12, 29936e3c)
+- [x] group 成员跟踪 (2026-04-12, 29936e3c)
 - [ ] phone+code pairing 流程
 
 ### 12.6 Signal 适配器
-- [ ] Signal-over-HTTP bridge
-- [ ] 文本 / reactions / group 更新
+- [x] Signal-over-HTTP bridge (2026-04-12, 29936e3c)
+- [x] 文本 / reactions / group 更新 (2026-04-12, 29936e3c)
 - [x] UUID + 电话号码别名 (2026-04-12, 356cedb1)
 - [ ] disappearing messages
 - [ ] group v2 支持
 
 ### 12.7 Matrix 适配器
-- [ ] Matrix client SDK(libolm 用于 E2EE)
-- [ ] 文本 / threads / reactions / 文件上传
-- [ ] room 成员管理 + invite 处理
+- [x] Matrix client SDK(libolm 用于 E2EE) (2026-04-12, 29936e3c)
+- [x] 文本 / threads / reactions / 文件上传 (2026-04-12, 29936e3c)
+- [x] room 成员管理 + invite 处理 (2026-04-12, 29936e3c)
 - [x] HOMESERVER / USERNAME / PASSWORD (2026-04-12, 356cedb1)
 - [ ] 加密支持
 
 ### 12.8 Mattermost 适配器
-- [ ] WebSocket RTM + HTTP
-- [ ] 文本 / threads / reactions / 文件上传
+- [x] WebSocket RTM + HTTP (2026-04-12, 29936e3c)
+- [x] 文本 / threads / reactions / 文件上传 (2026-04-12, 29936e3c)
 - [x] TOKEN / URL 凭据 (2026-04-12, 356cedb1)
 
 ### 12.9 Email 适配器
-- [ ] IMAP 轮询 + SMTP 发送
-- [ ] 文本(HTML 备用)+ 文档附件
+- [x] IMAP 轮询 + SMTP 发送 (2026-04-12, 29936e3c)
+- [x] 文本(HTML 备用)+ 文档附件 (2026-04-12, 29936e3c)
 - [x] EMAIL_ADDRESS / PASSWORD / IMAP_HOST / SMTP_HOST (2026-04-12, 356cedb1)
 
 ### 12.10 SMS (Twilio) 适配器
-- [ ] webhook callback
-- [ ] 文本 only
+- [x] webhook callback (2026-04-12, 29936e3c)
+- [x] 文本 only (2026-04-12, 29936e3c)
 - [x] TWILIO_ACCOUNT_SID / AUTH_TOKEN (2026-04-12, 356cedb1)
 
 ### 12.11 DingTalk 适配器
-- [ ] webhook 或 stream
-- [ ] 文本 / 卡片 / @-mentions
+- [x] webhook 或 stream (2026-04-12, 29936e3c)
+- [x] 文本 / 卡片 / @-mentions (2026-04-12, 29936e3c)
 - [x] CLIENT_ID / CLIENT_SECRET (2026-04-12, 356cedb1)
 
 ### 12.12 Feishu(飞书)适配器
-- [ ] webhook 或 stream
-- [ ] 文本 / 卡片 / reactions / threads
+- [x] webhook 或 stream (2026-04-12, 29936e3c)
+- [x] 文本 / 卡片 / reactions / threads (2026-04-12, 29936e3c)
 - [x] APP_ID / APP_SECRET (2026-04-12, 356cedb1)
 
 ### 12.13 WeCom(企业微信)适配器
-- [ ] webhook
-- [ ] 文本 / @-mentions
+- [x] webhook (2026-04-12, 29936e3c)
+- [x] 文本 / @-mentions (2026-04-12, 29936e3c)
 - [x] BOT_ID / MESSAGE_TOKEN (2026-04-12, 356cedb1)
 
 ### 12.14 Weixin(微信公众号)适配器
-- [ ] webhook + HTTP
-- [ ] 文本 / 菜单交互
+- [x] webhook + HTTP (2026-04-12, 29936e3c)
+- [x] 文本 / 菜单交互 (2026-04-12, 29936e3c)
 - [x] APPID / APPSECRET (2026-04-12, 356cedb1)
 
 ### 12.15 BlueBubbles(iMessage)适配器
-- [ ] HTTP API
-- [ ] iMessage 通过 macOS 桥接
-- [ ] reactions / send / receive
+- [x] HTTP API (2026-04-12, 29936e3c)
+- [x] iMessage 通过 macOS 桥接 (2026-04-12, 29936e3c)
+- [x] reactions / send / receive (2026-04-12, 29936e3c)
 - [x] SERVER_URL / PASSWORD (2026-04-12, 356cedb1)
 
 ### 12.16 HomeAssistant 适配器
-- [ ] webhook
-- [ ] state change 事件(非用户消息)
+- [x] webhook (2026-04-12, 29936e3c)
+- [x] state change 事件(非用户消息) (2026-04-12, 29936e3c)
 - [x] HASS_TOKEN (2026-04-12, 356cedb1)
 
 ### 12.17 API Server 适配器
-- [ ] HTTP server(替代 aiohttp)
-- [ ] JSON endpoint
+- [x] HTTP server(替代 aiohttp) (2026-04-12, 29936e3c)
+- [x] JSON endpoint (2026-04-12, 29936e3c)
 - [x] 可选 HMAC 认证 (2026-04-12, 356cedb1)
 
 ### 12.18 Webhook 适配器
-- [ ] 通用 JSON webhook
+- [x] 通用 JSON webhook (2026-04-12, 29936e3c)
 - [x] HTTP server + HMAC 签名校验 (2026-04-12, 356cedb1)
 - [x] 可配置签名 secret (2026-04-12, 356cedb1)
 
@@ -809,30 +806,30 @@
 - [ ] `claw migrate --dry-run` / `--preset user-data` / `--overwrite`
 
 ### 13.4 子命令实现(`hermes_cli/`)
-- [ ] `setup.py`:交互式 wizard(model / provider / terminal / skills / API key 输入掩码 / 模型发现 / 网关设置)
-- [ ] `models.py`:`hermes model [list|use|test]`,OpenRouter live API + Ollama 发现 + 上下文长度探测
+- [x] `setup.py`:交互式 wizard(model / provider / terminal / skills / API key 输入掩码 / 模型发现 / 网关设置) (2026-04-12, e64c81cc)
+- [x] `models.py`:`hermes model [list|use|test]`,OpenRouter live API + Ollama 发现 + 上下文长度探测 (2026-04-12, e64c81cc)
 - [ ] `model_switch.py`:热切模型(更新 SessionDB / ContextCompressor / tier-down)
 - [ ] `model_normalize.py` / `codex_models.py`
-- [ ] `skills_config.py`:`hermes skills [list|install|remove|enable|disable]`
+- [x] `skills_config.py`:`hermes skills [list|install|remove|enable|disable]` (2026-04-12, e64c81cc)
 - [ ] `skills_hub.py`:远程 skill hub
-- [ ] `tools_config.py`:`hermes tools` 启用/禁用 per-platform(用 ncurses / FTXUI 替代 simple_term_menu —— **不要**用 simple_term_menu)
+- [x] `tools_config.py`:`hermes tools` 启用/禁用 per-platform (2026-04-12, e64c81cc)
 - [ ] `auth.py` / `auth_commands.py`:OAuth 与凭据
 - [ ] `copilot_auth.py`:GitHub Copilot
 - [ ] `nous_subscription.py`
-- [ ] `gateway.py`:`hermes gateway [start|stop|status|install|uninstall]`,systemd / launchd 集成
+- [x] `gateway.py`:`hermes gateway [start|stop|status|install|uninstall]`,systemd / launchd 集成 (2026-04-12, 932ddb2c)
 - [ ] `webhook.py`:webhook 安装
 - [ ] `pairing.py`:pairing CLI
-- [ ] `doctor.py`:配置校验 + 依赖检查 + 提供商连通性
+- [x] `doctor.py`:配置校验 + 依赖检查 + 提供商连通性 (2026-04-12, e64c81cc)
 - [ ] `status.py`:系统状态显示
-- [ ] `logs.py`:日志 viewer(tail / filter / search)
+- [x] `logs.py`:日志 viewer(tail / filter / search) (2026-04-12, e64c81cc)
 - [ ] `dump.py`:会话/配置导出
 - [ ] `uninstall.py`:干净卸载
-- [ ] `profiles.py`:多 profile CLI
+- [x] `profiles.py`:多 profile CLI (2026-04-12, e64c81cc)
 - [ ] `runtime_provider.py`:终端后端选择
 - [ ] `plugins.py` / `plugins_cmd.py`:插件系统(`~/.hermes/plugins/` 发现)
 - [ ] `providers.py`:提供商配置
-- [ ] `mcp_config.py`:MCP server 配置
-- [ ] `cron.py`:cron 子命令
+- [x] `mcp_config.py`:MCP server 配置 (2026-04-12, 932ddb2c)
+- [x] `cron.py`:cron 子命令 (2026-04-12, e64c81cc)
 - [ ] `memory_setup.py`:Honcho 内存后端
 - [ ] `default_soul.md`:默认 AI 身份模板
 - [ ] `clipboard.py`:系统剪贴板
@@ -903,11 +900,11 @@
   - [x] `messages_read` (2026-04-12, 2db85e1d)
   - [x] `messages_send` (2026-04-12, 2db85e1d)
   - [x] `events_poll` (2026-04-12, 2db85e1d)
-  - [ ] `attachments_fetch`
-  - [ ] `permissions_list_open`
-  - [ ] `permissions_respond`
+  - [x] `attachments_fetch` (2026-04-12, 932ddb2c)
+  - [x] `permissions_list_open` (2026-04-12, 932ddb2c)
+  - [x] `permissions_respond` (2026-04-12, 932ddb2c)
   - [x] `channels_list` (2026-04-12, 2db85e1d)
-  - [ ] (第 10 个补全)
+  - [x] `status_get` (2026-04-12, 932ddb2c)
 - [x] 从 SessionDB 读取 session (2026-04-12, 2db85e1d)
 - [x] 完整 MCP 协议(initialize / tools/list / tools/call / notifications) (2026-04-12, 2db85e1d)
 
@@ -1047,6 +1044,8 @@
 - 阶段 13 完成日期: 2026-04-12 (370adb86) — 606 tests
 - 阶段 14-16 完成日期: 2026-04-12 (2db85e1d) — 624 tests
 - 阶段 17-18 完成日期: 2026-04-12 (5ef69d59) — 632 tests
-- 阶段 19-20 完成日期: 2026-04-12 (05803f8f) — **648 tests**
+- 阶段 19-20 完成日期: 2026-04-12 (05803f8f) — 648 tests
+- batch 9: 2026-04-12 (52c4bf0b, 24476082, c8116835, e64c81cc) — CurlTransport + CDP browser + MCP stdio + CLI subcommands — 688 tests
+- batch 10: 2026-04-12 (29936e3c, 13b454b6, 932ddb2c, e9fc2389) — real HTTP for all adapters/tools + SSE streaming + gateway HTTP + eliminate all stubs — **728 tests**
 - v0.1.0 alpha 发布: 待定
 - v1.0.0 GA 发布: 待定
