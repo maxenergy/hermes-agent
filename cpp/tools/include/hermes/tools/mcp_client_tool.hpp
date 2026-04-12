@@ -60,7 +60,7 @@ public:
     // Register tools discovered from an MCP server into the given ToolRegistry.
     // If the server has a `command` configured, connects via stdio transport,
     // discovers tools via tools/list, and registers real handlers.
-    // Falls back to a stub tool if connection fails or no command is configured.
+    // Falls back to a proxy tool if connection fails or no command is configured.
     void register_server_tools(const std::string& server_name,
                                ToolRegistry& registry);
 

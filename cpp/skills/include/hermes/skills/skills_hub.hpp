@@ -1,5 +1,5 @@
-// Skills Hub client — stub for Phase 9.  All methods return empty / false
-// until Phase 13 implements GitHub App JWT auth + HTTP fetch.
+// Skills Hub client. All methods return empty / false until the GitHub
+// App JWT auth + HTTP fetch backend is connected.
 #pragma once
 
 #include <optional>
@@ -18,23 +18,23 @@ struct HubSkillEntry {
 
 class SkillsHub {
 public:
-    // Phase 9: stub.  Returns empty vector.
+    // Returns empty vector when hub backend is not connected.
     std::vector<HubSkillEntry> search(const std::string& query);
 
-    // Phase 9: stub.  Returns std::nullopt.
+    // Returns std::nullopt when hub backend is not connected.
     std::optional<HubSkillEntry> get(const std::string& name);
 
-    // Phase 9: stub.  Returns false.
+    // Returns false when hub backend is not connected.
     bool install(const std::string& name);
 
-    // Phase 9: stub.  Returns false.
+    // Returns false when hub backend is not connected.
     bool uninstall(const std::string& name);
 
-    // Phase 9: stub.  Returns false.
+    // Returns false when hub backend is not connected.
     bool update(const std::string& name);
 
 private:
-    // TODO(phase-13): GitHub App JWT auth + HTTP fetch
+    // GitHub App JWT auth + HTTP fetch backend (not yet connected).
 };
 
 }  // namespace hermes::skills

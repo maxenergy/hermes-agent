@@ -15,8 +15,9 @@
 #include <vector>
 
 #ifdef _WIN32
-// TODO(phase-2+): Windows file locking via LockFileEx. Phase 2 targets
-// Linux only per the acceptance criteria.
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <fcntl.h>
 #include <sys/file.h>
@@ -86,44 +87,59 @@ std::string join_entries(const std::vector<std::string>& entries) {
 class FileLock {
 public:
     explicit FileLock(const std::filesystem::path& path) {
-#ifndef _WIN32
         lock_path_ = path;
         lock_path_ += ".lock";
         std::error_code ec;
         std::filesystem::create_directories(lock_path_.parent_path(), ec);
         (void)ec;
 
-        // In-process mutex keyed on the .lock path. flock on its own
-        // handles cross-process contention, but the extra mutex gives
-        // us deterministic ordering between threads in the same
-        // process and avoids a narrow window where flock is upgraded
-        // before both threads have even called LOCK_EX.
+        // In-process mutex keyed on the .lock path for same-process
+        // thread safety.
         process_mutex_ = &process_mutex_for(lock_path_.string());
         process_mutex_->lock();
 
+#ifdef _WIN32
+        // Use LockFileEx for cross-process file locking on Windows.
+        handle_ = CreateFileW(lock_path_.wstring().c_str(),
+                              GENERIC_WRITE, 0, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            OVERLAPPED ov = {};
+            if (LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK, 0,
+                           MAXDWORD, MAXDWORD, &ov)) {
+                locked_ = true;
+            }
+        }
+#else
         fd_ = ::open(lock_path_.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
         if (fd_ < 0) return;
 
         if (::flock(fd_, LOCK_EX) == 0) {
             locked_ = true;
         }
-#else
-        (void)path;
 #endif
     }
 
     ~FileLock() {
-#ifndef _WIN32
+#ifdef _WIN32
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            if (locked_) {
+                OVERLAPPED ov = {};
+                UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &ov);
+            }
+            CloseHandle(handle_);
+        }
+#else
         if (fd_ >= 0) {
             if (locked_) {
                 ::flock(fd_, LOCK_UN);
             }
             ::close(fd_);
         }
+#endif
         if (process_mutex_) {
             process_mutex_->unlock();
         }
-#endif
     }
 
 private:
@@ -140,11 +156,13 @@ public:
     FileLock& operator=(const FileLock&) = delete;
 
 private:
-#ifndef _WIN32
     std::filesystem::path lock_path_;
-    int fd_ = -1;
     bool locked_ = false;
     std::mutex* process_mutex_ = nullptr;
+#ifdef _WIN32
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+    int fd_ = -1;
 #endif
 };
 

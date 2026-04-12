@@ -14,7 +14,7 @@ AgentFactory g_agent_factory;
 std::string handle_delegate_task(const nlohmann::json& args,
                                  const ToolContext& /*ctx*/) {
     if (!g_agent_factory) {
-        return tool_error("delegate not available — no agent factory configured");
+        return tool_error("delegate requires agent factory — call set_delegate_factory() at startup");
     }
 
     const auto goal = args.at("goal").get<std::string>();
@@ -57,7 +57,7 @@ std::string handle_delegate_task(const nlohmann::json& args,
 std::string handle_mixture_of_agents(const nlohmann::json& args,
                                      const ToolContext& /*ctx*/) {
     if (!g_agent_factory) {
-        return tool_error("mixture_of_agents not available — no agent factory configured");
+        return tool_error("mixture_of_agents requires agent factory — call set_delegate_factory() at startup");
     }
 
     const auto prompt = args.at("prompt").get<std::string>();

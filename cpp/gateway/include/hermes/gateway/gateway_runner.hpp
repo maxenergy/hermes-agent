@@ -49,6 +49,13 @@ public:
                           const std::string& chat_id,
                           const std::string& content);
 
+    // Return the list of registered adapters with their connection state.
+    struct AdapterInfo {
+        std::string name;
+        bool connected;
+    };
+    std::vector<AdapterInfo> list_adapters() const;
+
 private:
     GatewayConfig config_;
     SessionStore* sessions_;

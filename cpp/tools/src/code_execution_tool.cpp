@@ -33,34 +33,34 @@ std::string generate_uuid() {
     return uuid;
 }
 
-// Write the hermes_tools.py stub so sandboxed Python code can import it.
-void write_python_stub(const fs::path& dir) {
-    auto stub_path = dir / "hermes_tools.py";
-    if (fs::exists(stub_path)) return;
+// Write the hermes_tools.py shim so sandboxed Python code can import it.
+void write_python_shim(const fs::path& dir) {
+    auto shim_path = dir / "hermes_tools.py";
+    if (fs::exists(shim_path)) return;
 
-    std::ofstream ofs(stub_path);
-    ofs << R"PY("""hermes_tools — sandbox stub. All functions return a not-available message."""
+    std::ofstream ofs(shim_path);
+    ofs << R"PY("""hermes_tools — sandbox shim. Tools are restricted in the code execution sandbox."""
 
 def web_search(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def web_extract(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def read_file(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def write_file(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def search_files(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def patch(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 
 def terminal(*a, **kw):
-    return "tool not available in sandbox"
+    raise NotImplementedError("This tool is restricted in the code execution sandbox")
 )PY";
 }
 
@@ -132,9 +132,9 @@ void register_code_execution_tools(ToolRegistry& registry) {
             ofs << code;
         }
 
-        // For Python, write the hermes_tools stub in the same directory.
+        // For Python, write the hermes_tools shim in the same directory.
         if (language == "python") {
-            write_python_stub(script_path.parent_path());
+            write_python_shim(script_path.parent_path());
         }
 
         // Build the command.

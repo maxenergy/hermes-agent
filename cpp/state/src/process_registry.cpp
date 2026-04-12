@@ -14,7 +14,16 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace hermes::state {
 
@@ -243,8 +252,6 @@ std::string ProcessRegistry::register_process(ProcessSession session) {
         session.started_at = std::chrono::system_clock::now();
     }
     session.updated_at = std::chrono::system_clock::now();
-    // TODO(phase-7): when Boost.Process lands, this is where we kick off
-    // the reader thread and capture the Popen-equivalent handle.
     std::string id = session.id;
     impl_->running[id] = std::move(session);
     return id;
@@ -290,12 +297,26 @@ void ProcessRegistry::mark_exited(const std::string& id, int exit_code) {
 }
 
 void ProcessRegistry::kill(const std::string& id) {
-    std::lock_guard<std::mutex> lk(impl_->mtx);
+    std::unique_lock<std::mutex> lk(impl_->mtx);
     auto it = impl_->running.find(id);
     if (it == impl_->running.end()) return;
     ProcessSession s = std::move(it->second);
     impl_->running.erase(it);
-    // TODO(phase-7): signal the real child process here.
+#ifndef _WIN32
+    // Send SIGTERM, wait 2s, then SIGKILL if still alive.
+    if (s.pid) {
+        pid_t pid = *s.pid;
+        // Unlock while waiting so other operations can proceed.
+        lk.unlock();
+        ::kill(pid, SIGTERM);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        if (::waitpid(pid, nullptr, WNOHANG) == 0) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, nullptr, 0);
+        }
+        lk.lock();
+    }
+#endif
     s.state = ProcessState::Killed;
     s.ended_at = std::chrono::system_clock::now();
     s.updated_at = s.ended_at;

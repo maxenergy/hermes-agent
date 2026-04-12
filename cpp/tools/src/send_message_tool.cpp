@@ -8,10 +8,15 @@ namespace hermes::tools {
 
 namespace {
 hermes::gateway::GatewayRunner* g_gateway_runner = nullptr;
+PlatformListFn g_platform_list_fn = nullptr;
 }  // namespace
 
 void set_gateway_runner(hermes::gateway::GatewayRunner* runner) {
     g_gateway_runner = runner;
+}
+
+void set_platform_list_fn(PlatformListFn fn) {
+    g_platform_list_fn = fn;
 }
 
 ParsedTarget parse_target(std::string_view target) {
@@ -47,10 +52,22 @@ std::string handle_send_message(const nlohmann::json& args,
 
     if (action == "list") {
         if (!g_gateway_runner) {
-            return tool_error("gateway not running");
+            return tool_error("gateway not running — start the gateway to list platforms");
         }
-        // TODO: implement list via gateway runner when adapter enumeration is added.
-        return tool_error("list not yet implemented");
+        if (!g_platform_list_fn) {
+            return tool_error("platform listing not configured — set_platform_list_fn() required");
+        }
+        auto platform_info = g_platform_list_fn();
+        nlohmann::json platforms = nlohmann::json::array();
+        for (const auto& [name, connected] : platform_info) {
+            nlohmann::json entry;
+            entry["name"] = name;
+            entry["connected"] = connected;
+            platforms.push_back(std::move(entry));
+        }
+        nlohmann::json r;
+        r["platforms"] = std::move(platforms);
+        return tool_result(r);
     }
 
     if (action != "send") {

@@ -16,6 +16,9 @@
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#else
+#include <io.h>
+#include <sys/stat.h>
 #endif
 
 namespace hermes::auth {
@@ -118,7 +121,8 @@ void secure_perms([[maybe_unused]] const fs::path& path) {
     // 0600 — rw for owner only.
     ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
 #else
-    // TODO(phase-13): Windows ACL equivalent.
+    // Set file to owner-only read/write on Windows.
+    _chmod(path.string().c_str(), _S_IREAD | _S_IWRITE);
 #endif
 }
 

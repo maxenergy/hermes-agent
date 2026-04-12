@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cassert>
 #include <cstdlib>
 #include <string>
 
@@ -59,7 +60,8 @@ void register_homeassistant_tools(ToolRegistry& registry) {
         e.handler = [](const nlohmann::json& /*args*/,
                        const ToolContext& /*ctx*/) -> std::string {
             auto* transport = get_ha_transport();
-            if (!transport) return tool_error("HTTP transport not available");
+            // CurlTransport is always available when built with libcurl.
+            assert(transport && "HTTP transport should always be available");
 
             auto url = ha_url() + "/api/states";
             auto resp = transport->get(url, ha_headers());
@@ -123,7 +125,8 @@ void register_homeassistant_tools(ToolRegistry& registry) {
             }
 
             auto* transport = get_ha_transport();
-            if (!transport) return tool_error("HTTP transport not available");
+            // CurlTransport is always available when built with libcurl.
+            assert(transport && "HTTP transport should always be available");
 
             auto entity_id = args["entity_id"].get<std::string>();
             auto url = ha_url() + "/api/states/" + entity_id;
@@ -168,7 +171,8 @@ void register_homeassistant_tools(ToolRegistry& registry) {
         e.handler = [](const nlohmann::json& /*args*/,
                        const ToolContext& /*ctx*/) -> std::string {
             auto* transport = get_ha_transport();
-            if (!transport) return tool_error("HTTP transport not available");
+            // CurlTransport is always available when built with libcurl.
+            assert(transport && "HTTP transport should always be available");
 
             auto url = ha_url() + "/api/services";
             auto resp = transport->get(url, ha_headers());
@@ -232,7 +236,8 @@ void register_homeassistant_tools(ToolRegistry& registry) {
             }
 
             auto* transport = get_ha_transport();
-            if (!transport) return tool_error("HTTP transport not available");
+            // CurlTransport is always available when built with libcurl.
+            assert(transport && "HTTP transport should always be available");
 
             auto url = ha_url() + "/api/services/" +
                        args["domain"].get<std::string>() + "/" +

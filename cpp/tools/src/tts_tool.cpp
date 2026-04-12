@@ -1,6 +1,7 @@
 #include "hermes/tools/tts_tool.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include <cassert>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -62,9 +63,8 @@ std::string handle_tts(const nlohmann::json& args,
         }
 
         auto* transport = hermes::llm::get_default_transport();
-        if (!transport) {
-            return tool_error("HTTP transport not available");
-        }
+        // CurlTransport is always available when built with libcurl.
+        assert(transport && "HTTP transport should always be available");
 
         // Map voice name — default to "alloy" if the edge-tts voice was used.
         std::string openai_voice = voice;
@@ -116,9 +116,8 @@ std::string handle_tts(const nlohmann::json& args,
         }
 
         auto* transport = hermes::llm::get_default_transport();
-        if (!transport) {
-            return tool_error("HTTP transport not available");
-        }
+        // CurlTransport is always available when built with libcurl.
+        assert(transport && "HTTP transport should always be available");
 
         // Use the voice parameter as the voice_id.
         std::string voice_id = voice;

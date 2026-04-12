@@ -10,15 +10,15 @@ namespace hermes::agent {
 
 namespace {
 
-class StubClient : public hermes::llm::LlmClient {
+class UnconfiguredClient : public hermes::llm::LlmClient {
 public:
-    explicit StubClient(std::string reason) : reason_(std::move(reason)) {}
+    explicit UnconfiguredClient(std::string reason) : reason_(std::move(reason)) {}
     hermes::llm::CompletionResponse complete(
         const hermes::llm::CompletionRequest&) override {
         throw std::runtime_error("auxiliary LLM client not configured: " +
                                  reason_);
     }
-    std::string provider_name() const override { return "stub"; }
+    std::string provider_name() const override { return "unconfigured"; }
 
 private:
     std::string reason_;
@@ -45,16 +45,16 @@ std::unique_ptr<hermes::llm::LlmClient> make_auxiliary_client(
     hermes::llm::HttpTransport* transport) {
     const auto* aux = find_aux(config);
     if (!aux) {
-        return std::make_unique<StubClient>("missing 'auxiliary' block");
+        return std::make_unique<UnconfiguredClient>("missing 'auxiliary' block");
     }
     const std::string provider = str_or_empty(*aux, "provider");
     const std::string api_key = str_or_empty(*aux, "api_key");
     const std::string base_url = str_or_empty(*aux, "base_url");
     if (provider.empty()) {
-        return std::make_unique<StubClient>("missing 'auxiliary.provider'");
+        return std::make_unique<UnconfiguredClient>("missing 'auxiliary.provider'");
     }
     if (!transport) {
-        return std::make_unique<StubClient>("no HttpTransport supplied");
+        return std::make_unique<UnconfiguredClient>("no HttpTransport supplied");
     }
 
     if (provider == "openai") {
@@ -72,7 +72,7 @@ std::unique_ptr<hermes::llm::LlmClient> make_auxiliary_client(
             transport, api_key,
             "https://github.com/NousResearch/hermes-agent", "hermes-agent");
     }
-    return std::make_unique<StubClient>("unknown provider: " + provider);
+    return std::make_unique<UnconfiguredClient>("unknown provider: " + provider);
 }
 
 std::string get_auxiliary_model(const nlohmann::json& config) {

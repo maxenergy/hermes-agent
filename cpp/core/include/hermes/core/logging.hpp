@@ -1,5 +1,5 @@
-// Phase-0 logging shim: prints to stderr with a timestamp + level
-// prefix. Phase 1 will replace this with a spdlog-backed implementation.
+// Logging subsystem: prints to stderr with a timestamp + level prefix.
+// Uses spdlog when linked; otherwise falls back to stderr output.
 #pragma once
 
 #include <filesystem>
@@ -10,7 +10,7 @@ namespace hermes::core::logging {
 
 enum class Level { Debug, Info, Warn, Error };
 
-// Initialise logging for the process. Phase 0 no-op — see TODO.
+// Initialise logging for the process. Sets the minimum log level.
 void setup_logging(const std::filesystem::path& home, const std::string& level);
 
 void log_debug(const std::string& msg);

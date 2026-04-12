@@ -1,6 +1,7 @@
 #include "hermes/tools/image_generation_tool.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include <cassert>
 #include <cstdlib>
 #include <string>
 
@@ -14,9 +15,8 @@ std::string handle_image_generate(const nlohmann::json& args,
                                   const ToolContext& /*ctx*/) {
     auto* transport = g_imagegen_transport ? g_imagegen_transport
                                           : hermes::llm::get_default_transport();
-    if (!transport) {
-        return tool_error("HTTP transport not available");
-    }
+    // CurlTransport is always available when built with libcurl.
+    assert(transport && "HTTP transport should always be available");
 
     const auto prompt = args.at("prompt").get<std::string>();
     const auto model =

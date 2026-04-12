@@ -1,7 +1,7 @@
 // Phase 8.4: Browser backend abstraction for CDP-based browser tools.
 //
 // Provides an injectable BrowserBackend interface so that tool handlers
-// can be tested with a FakeBrowserBackend without a real browser.
+// can be tested with a test-double backend without a real browser.
 #pragma once
 
 #include <memory>

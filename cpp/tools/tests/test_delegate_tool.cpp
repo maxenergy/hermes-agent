@@ -21,7 +21,7 @@ TEST_F(DelegateToolTest, NoFactoryReturnsError) {
         "delegate_task", {{"goal", "summarize"}}, {});
     auto parsed = nlohmann::json::parse(result);
     EXPECT_TRUE(parsed.contains("error"));
-    EXPECT_NE(parsed["error"].get<std::string>().find("not available"),
+    EXPECT_NE(parsed["error"].get<std::string>().find("requires agent factory"),
               std::string::npos);
 }
 

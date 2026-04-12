@@ -1,4 +1,4 @@
-// Base HTTP transport implementations: real (curl/cpr) + fake.
+// Base HTTP transport implementations: CurlTransport + FakeHttpTransport (test double).
 #include "hermes/llm/llm_client.hpp"
 
 #include <cstdlib>

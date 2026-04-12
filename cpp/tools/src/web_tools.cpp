@@ -1,6 +1,7 @@
 #include "hermes/tools/web_tools.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include <cassert>
 #include <cstdlib>
 #include <string>
 
@@ -14,9 +15,8 @@ std::string handle_web_search(const nlohmann::json& args,
                               const ToolContext& /*ctx*/) {
     auto* transport = g_web_transport ? g_web_transport
                                      : hermes::llm::get_default_transport();
-    if (!transport) {
-        return tool_error("HTTP transport not available");
-    }
+    // CurlTransport is always available when built with libcurl.
+    assert(transport && "HTTP transport should always be available");
 
     const auto query = args.at("query").get<std::string>();
     const int num_results =
@@ -67,9 +67,8 @@ std::string handle_web_extract(const nlohmann::json& args,
                                const ToolContext& /*ctx*/) {
     auto* transport = g_web_transport ? g_web_transport
                                      : hermes::llm::get_default_transport();
-    if (!transport) {
-        return tool_error("HTTP transport not available");
-    }
+    // CurlTransport is always available when built with libcurl.
+    assert(transport && "HTTP transport should always be available");
 
     const auto url = args.at("url").get<std::string>();
     const int max_length =

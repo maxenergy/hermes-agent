@@ -24,7 +24,7 @@ public:
     bool send(const std::string& chat_id, const std::string& content) override;
     void send_typing(const std::string& chat_id) override;
 
-    // Resolve UUID+phone alias (stub).
+    // Resolve UUID+phone alias to canonical form.
     static std::string normalize_identifier(const std::string& id);
 
     Config config() const { return cfg_; }

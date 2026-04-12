@@ -2,6 +2,7 @@
 
 #include "hermes/config/default_config.hpp"
 #include "hermes/core/atomic_io.hpp"
+#include "hermes/core/logging.hpp"
 #include "hermes/core/path.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -217,10 +218,11 @@ nlohmann::json load_cli_config() {
                 merged = deep_merge(std::move(merged), overlay);
             }
         }
-    } catch (const YAML::Exception&) {
-        // Corrupt YAML — fall through to defaults. The Python reference
-        // prints a warning; we keep quiet to avoid polluting stderr from
-        // library code.  TODO(phase-2): surface via logging channel.
+    } catch (const YAML::Exception& ex) {
+        // Corrupt YAML — fall through to defaults.
+        hermes::core::logging::log_warn(
+            std::string("config: failed to parse YAML, using defaults: ") +
+            ex.what());
     }
 
     return expand_strings(std::move(merged));

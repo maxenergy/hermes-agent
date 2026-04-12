@@ -19,9 +19,9 @@ namespace hermes::agent {
 //
 // `transport` is non-owning and is shared across all created clients.
 //
-// If the auxiliary block is missing or has no provider, a stub client
-// is returned that throws std::runtime_error on any complete() call.
-// This lets call sites unconditionally hold a non-null pointer.
+// If the auxiliary block is missing or has no provider, an unconfigured
+// client is returned that throws std::runtime_error on any complete()
+// call. This lets call sites unconditionally hold a non-null pointer.
 std::unique_ptr<hermes::llm::LlmClient> make_auxiliary_client(
     const nlohmann::json& config,
     hermes::llm::HttpTransport* transport);

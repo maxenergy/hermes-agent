@@ -1,4 +1,4 @@
-// Phase 12 — Email platform adapter implementation.
+// Email platform adapter implementation.
 #include "email.hpp"
 
 #include <array>
@@ -10,8 +10,7 @@ EmailAdapter::EmailAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
 bool EmailAdapter::connect() {
     if (cfg_.address.empty() || cfg_.password.empty()) return false;
-    // IMAP IDLE connection for receiving is not yet implemented; send via
-    // sendmail/SMTP is available.
+    // Receiving via IMAP IDLE requires a long-lived connection; send-only for now.
     return true;
 }
 

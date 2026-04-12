@@ -18,7 +18,7 @@ namespace {
 /// launch fails, browser tools simply remain unavailable — this is not an
 /// error (Chrome may legitimately not be installed in CLI mode).
 void try_init_browser_backend() {
-    // Only attempt if no backend is already set (e.g. a FakeBrowserBackend
+    // Only attempt if no backend is already set (e.g. a test double
     // injected by tests).
     if (get_browser_backend() != nullptr) return;
 

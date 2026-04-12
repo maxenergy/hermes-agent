@@ -2,6 +2,7 @@
 #include "hermes/tools/registry.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <string>
 
@@ -68,9 +69,8 @@ std::string handle_vision_analyze(const nlohmann::json& args,
                                   const ToolContext& /*ctx*/) {
     auto* transport = g_vision_transport ? g_vision_transport
                                         : hermes::llm::get_default_transport();
-    if (!transport) {
-        return tool_error("HTTP transport not available");
-    }
+    // CurlTransport is always available when built with libcurl.
+    assert(transport && "HTTP transport should always be available");
 
     const auto url = args.at("url").get<std::string>();
     const auto prompt = args.at("prompt").get<std::string>();

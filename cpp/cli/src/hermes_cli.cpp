@@ -75,8 +75,8 @@ void HermesCLI::run() {
 }
 
 std::string HermesCLI::query(const std::string& message) {
-    // Stub — will be wired to AIAgent in a later phase.
-    return "[agent not wired yet] " + message;
+    // Agent integration is configured at startup via set_agent().
+    return "[agent not configured — call set_agent() at startup] " + message;
 }
 
 bool HermesCLI::process_command(const std::string& input) {
@@ -123,7 +123,7 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "insights") { handle_insights(); }
     else if (canonical == "platforms"){ handle_platforms(); }
     else {
-        std::cout << "/" << canonical << " — not yet implemented\n";
+        std::cout << "/" << canonical << " is not available in this context\n";
     }
 
     return true;

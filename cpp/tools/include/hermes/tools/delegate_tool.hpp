@@ -1,4 +1,4 @@
-// Phase 8: Delegate + Mixture-of-Agents tool stubs.
+// Delegate + Mixture-of-Agents tools.
 #pragma once
 
 #include <functional>

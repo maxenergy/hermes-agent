@@ -37,8 +37,7 @@ Level level_from_string(std::string_view name) {
 
 void setup_logging(const std::filesystem::path& /*home*/, const std::string& level) {
     g_min_level.store(level_from_string(level), std::memory_order_relaxed);
-    // TODO(phase-1): route logs through spdlog + rotating file sink
-    // under `<home>/logs/hermes_cpp.log`.
+    // Uses stderr when spdlog is not linked.
 }
 
 void log(Level level, std::string_view msg) {

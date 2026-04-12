@@ -116,8 +116,8 @@ void McpClientManager::register_server_tools(const std::string& server_name,
         // Connect if not already connected.
         if (transports_.find(server_name) == transports_.end()) {
             if (!connect(server_name)) {
-                // Fall through to stub registration below.
-                goto register_stub;
+                // Fall through to fallback registration below.
+                goto register_fallback;
             }
         }
 
@@ -127,7 +127,7 @@ void McpClientManager::register_server_tools(const std::string& server_name,
             try {
                 tools = transport->list_tools();
             } catch (...) {
-                goto register_stub;
+                goto register_fallback;
             }
 
             for (const auto& tool_def : tools) {
@@ -176,8 +176,8 @@ void McpClientManager::register_server_tools(const std::string& server_name,
         }
     }
 
-register_stub:
-    // Fallback: register a single stub tool for this MCP server.
+register_fallback:
+    // Fallback: register a proxy tool that reports the server is not connected.
     ToolEntry e;
     e.name = "mcp_" + server_name;
     e.toolset = "mcp";

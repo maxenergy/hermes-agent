@@ -1,10 +1,8 @@
-// ProcessRegistry — phase 2 data layer for background-process tracking.
+// ProcessRegistry — data layer for background-process tracking.
 //
-// Phase 2 delivers the in-memory bookkeeping, rolling output buffer,
-// watch-pattern rate limiter, and JSON checkpoint/restore. Actual process
-// spawning, signal delivery, and reader threads are deferred to Phase 7
-// (Boost.Process). Any integration point that would talk to the OS is
-// marked with a TODO(phase-7) comment.
+// Provides in-memory bookkeeping, rolling output buffer, watch-pattern
+// rate limiter, and JSON checkpoint/restore. Process killing uses
+// SIGTERM/SIGKILL on POSIX systems.
 #pragma once
 
 #include <chrono>
@@ -71,9 +69,8 @@ public:
     ProcessRegistry(const ProcessRegistry&) = delete;
     ProcessRegistry& operator=(const ProcessRegistry&) = delete;
 
-    // Record an already-spawned process. Phase 7 will wire this up to
-    // Boost.Process; today callers in tests pass a fully-populated
-    // ProcessSession with a fake pid (or none at all).
+    // Record an already-spawned process. Callers pass a fully-populated
+    // ProcessSession with a pid (or none for test scenarios).
     std::string register_process(ProcessSession session);
 
     std::optional<ProcessSession> get(const std::string& id) const;
@@ -81,8 +78,8 @@ public:
     std::vector<ProcessSession> list_finished() const;
 
     void mark_exited(const std::string& id, int exit_code);
-    // Mark the session state=Killed. No syscall is issued in phase 2 —
-    // callers wire this to actual signal delivery during phase 7.
+    // Mark the session state=Killed. Sends SIGTERM, waits 2s, then
+    // SIGKILL if the process is still alive (POSIX only).
     void kill(const std::string& id);
 
     // Append `chunk` to the process's rolling output buffer, scan the

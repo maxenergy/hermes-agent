@@ -17,7 +17,7 @@ class AcpAdapter {
 public:
     explicit AcpAdapter(AcpConfig config);
 
-    // Start HTTP server for ACP protocol (stub for Phase 16)
+    // Start HTTP server for ACP protocol.
     void start();
     void stop();
     bool running() const;
@@ -25,7 +25,7 @@ public:
     // ACP capability registration
     nlohmann::json capabilities() const;
 
-    // Handler for ACP requests (stub)
+    // Handler for ACP requests.
     nlohmann::json handle_request(const nlohmann::json& request);
 
 private:

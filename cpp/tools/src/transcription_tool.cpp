@@ -1,6 +1,8 @@
 #include "hermes/tools/transcription_tool.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include "hermes/environments/local.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <string>
@@ -41,9 +43,46 @@ std::string handle_transcribe(const nlohmann::json& args,
             "' — supported: .mp3, .wav, .ogg, .flac, .m4a, .webm");
     }
 
-    // TODO(phase-9): wire whisper
-    return tool_error(
-        "transcription backend not available — install faster-whisper");
+    const auto language =
+        args.contains("language") ? args["language"].get<std::string>()
+                                  : std::string("auto");
+
+    // Try whisper.cpp CLI first, then faster-whisper.
+    hermes::environments::LocalEnvironment env;
+    hermes::environments::ExecuteOptions opts;
+    opts.timeout = std::chrono::seconds(300);
+
+    // Attempt whisper (whisper.cpp)
+    std::string cmd = "whisper --model base --language " + language +
+                      " --output-format json " + audio_path;
+    auto result = env.execute("which whisper >/dev/null 2>&1 && " + cmd, opts);
+
+    if (result.exit_code != 0) {
+        // Fall back to faster-whisper
+        cmd = "faster-whisper --model base --language " + language +
+              " --output_format json " + audio_path;
+        result = env.execute("which faster-whisper >/dev/null 2>&1 && " + cmd, opts);
+    }
+
+    if (result.exit_code != 0) {
+        return tool_error(
+            "no whisper binary found in PATH — install whisper.cpp or faster-whisper");
+    }
+
+    // Parse JSON output from whisper.
+    auto parsed = nlohmann::json::parse(result.stdout_text, nullptr, false);
+    if (parsed.is_discarded()) {
+        // Return raw text if not valid JSON.
+        nlohmann::json r;
+        r["text"] = result.stdout_text;
+        r["model"] = model;
+        return tool_result(r);
+    }
+
+    nlohmann::json r;
+    r["transcription"] = parsed;
+    r["model"] = model;
+    return tool_result(r);
 }
 
 }  // namespace

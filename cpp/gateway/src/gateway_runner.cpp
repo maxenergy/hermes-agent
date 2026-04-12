@@ -86,4 +86,24 @@ void GatewayRunner::send_to_platform(const std::string& platform_name,
         "no adapter registered for platform: " + platform_name);
 }
 
+std::vector<GatewayRunner::AdapterInfo> GatewayRunner::list_adapters() const {
+    std::vector<AdapterInfo> out;
+    out.reserve(adapters_.size());
+    for (const auto& adapter : adapters_) {
+        auto p = adapter->platform();
+        auto name = platform_to_string(p);
+        bool connected = false;
+        // Check if adapter was connected based on runtime status.
+        auto status = read_runtime_status();
+        if (status) {
+            auto it = status->platform_states.find(p);
+            if (it != status->platform_states.end()) {
+                connected = (it->second == "connected");
+            }
+        }
+        out.push_back({std::move(name), connected});
+    }
+    return out;
+}
+
 }  // namespace hermes::gateway

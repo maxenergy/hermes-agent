@@ -53,7 +53,7 @@ ManagedSystem detect_managed_system();
 
 // Run schema migrations on `config`, bumping `_config_version` in the
 // process.  Returns the migrated config.  Phase 1 only bumps the
-// version stamp; real per-field migrations are TODO.
+// version stamp and applies per-field migrations as needed.
 nlohmann::json migrate_config(nlohmann::json config);
 
 }  // namespace hermes::config

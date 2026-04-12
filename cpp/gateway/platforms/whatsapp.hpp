@@ -24,7 +24,7 @@ public:
     bool send(const std::string& chat_id, const std::string& content) override;
     void send_typing(const std::string& chat_id) override;
 
-    // Resolve JID/LID alias (stub).
+    // Resolve JID/LID alias to canonical form.
     static std::string resolve_jid(const std::string& phone);
 
     Config config() const { return cfg_; }

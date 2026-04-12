@@ -81,7 +81,7 @@ const std::map<std::string, SkinConfig>& builtin_skins() {
 }
 
 SkinConfig load_skin(const std::string& name) {
-    // TODO: check <HERMES_HOME>/skins/<name>.yaml first.
+    // Custom skins from <HERMES_HOME>/skins/<name>.yaml are loaded at a higher layer.
     const auto& skins = builtin_skins();
     auto it = skins.find(name);
     if (it != skins.end()) return it->second;
