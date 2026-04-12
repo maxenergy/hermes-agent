@@ -1,9 +1,11 @@
 #include "hermes/agent/ai_agent.hpp"
 
+#include "hermes/core/path.hpp"
 #include "hermes/llm/error_classifier.hpp"
 #include "hermes/llm/model_metadata.hpp"
 #include "hermes/llm/prompt_cache.hpp"
 #include "hermes/llm/retry_policy.hpp"
+#include "hermes/state/trajectory.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -227,6 +229,45 @@ struct AIAgent::Impl {
         std::this_thread::sleep_for(d);
     }
 
+    void save_trajectory(const ConversationResult& result) {
+        if (!config.save_trajectories) return;
+        try {
+            auto traj_dir = hermes::core::path::get_hermes_home() / "trajectories";
+            std::string filename = config.session_id.empty()
+                                       ? "trajectory_samples.jsonl"
+                                       : (config.session_id + ".jsonl");
+            hermes::state::TrajectoryWriter writer(traj_dir / filename);
+
+            // Convert messages to JSON array.
+            nlohmann::json msgs_json = nlohmann::json::array();
+            for (const auto& m : result.messages) {
+                nlohmann::json mj;
+                mj["role"] = hermes::llm::role_to_string(m.role);
+                mj["content"] = m.content_text;
+                if (!m.tool_calls.empty()) {
+                    mj["tool_calls"] = nlohmann::json::array();
+                    for (const auto& tc : m.tool_calls) {
+                        mj["tool_calls"].push_back(
+                            nlohmann::json{{"id", tc.id},
+                                           {"name", tc.name},
+                                           {"arguments", tc.arguments}});
+                    }
+                }
+                if (m.reasoning) mj["reasoning"] = *m.reasoning;
+                msgs_json.push_back(std::move(mj));
+            }
+
+            hermes::state::TrajectoryRecord rec;
+            rec.model = config.model;
+            rec.messages = std::move(msgs_json);
+            rec.completed = result.completed;
+            rec.error = result.error;
+            writer.write(rec);
+        } catch (...) {
+            // Trajectory saving must not abort the agent.
+        }
+    }
+
     // ── The core loop ─────────────────────────────────────────────────
     ConversationResult run(std::string user_message,
                            std::optional<std::string> system_override,
@@ -388,6 +429,7 @@ struct AIAgent::Impl {
                 result.iterations_used = api_calls + 1;
                 result.usage = total_usage;
                 result.messages = messages;
+                save_trajectory(result);
                 return result;
             }
 
@@ -431,6 +473,7 @@ struct AIAgent::Impl {
                 break;
             }
         }
+        save_trajectory(result);
         return result;
     }
 };

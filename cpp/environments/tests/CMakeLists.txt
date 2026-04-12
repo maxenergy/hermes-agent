@@ -4,6 +4,7 @@ set(HERMES_ENV_TEST_SOURCES
     test_env_filter.cpp
     test_cwd_tracker.cpp
     test_local.cpp
+    test_pty.cpp
     test_docker.cpp
     test_ssh.cpp
     test_file_sync.cpp

@@ -23,6 +23,7 @@ set(HERMES_STATE_TEST_SOURCES
     test_session_db.cpp
     test_process_registry.cpp
     test_memory_store.cpp
+    test_memory_cache.cpp
     test_trajectory.cpp
 )
 

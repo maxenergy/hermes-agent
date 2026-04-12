@@ -44,6 +44,8 @@ add_library(hermes_llm STATIC
     src/message.cpp
     src/usage.cpp
     src/model_metadata.cpp
+    src/model_normalize.cpp
+    src/smart_routing.cpp
     src/models_dev.cpp
     src/prompt_cache.cpp
     src/llm_client.cpp

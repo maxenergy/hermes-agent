@@ -23,6 +23,11 @@ target_link_libraries(hermes_environments
 find_package(Threads REQUIRED)
 target_link_libraries(hermes_environments PUBLIC Threads::Threads)
 
+# libutil provides forkpty() on Linux.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(hermes_environments PRIVATE util)
+endif()
+
 add_library(hermes::environments ALIAS hermes_environments)
 
 if(BUILD_TESTING)

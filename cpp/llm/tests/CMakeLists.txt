@@ -4,6 +4,9 @@ add_executable(hermes_llm_tests
     test_message.cpp
     test_usage.cpp
     test_model_metadata.cpp
+    test_model_normalize.cpp
+    test_smart_routing.cpp
+    test_ollama.cpp
     test_models_dev.cpp
     test_prompt_cache.cpp
     test_llm_client.cpp

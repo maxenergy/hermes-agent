@@ -21,6 +21,8 @@ add_library(hermes_cli_lib STATIC
     src/commands.cpp
     src/skin_engine.cpp
     src/display.cpp
+    src/clipboard.cpp
+    src/colors.cpp
     src/hermes_cli.cpp
     src/main_entry.cpp
 )

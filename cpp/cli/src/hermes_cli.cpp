@@ -132,12 +132,17 @@ bool HermesCLI::process_command(const std::string& input) {
 void HermesCLI::show_banner() {
     const auto& skin = get_active_skin();
     const auto& c = skin.colors;
-    std::cout << c.banner_border << "╔══════════════════════════════════════╗\n"
-              << c.banner_border << "║ "
+    std::cout << "\n"
+              << c.banner_border << "  ╭─────────────────────────────────╮\n"
+              << c.banner_border << "  │  "
               << c.banner_title << skin.branding.agent_name
-              << c.banner_border << "                              ║\n"
-              << c.banner_border << "╚══════════════════════════════════════╝\n"
-              << c.banner_text;
+              << " Agent v0.0.1"
+              << c.banner_border << "              │\n"
+              << c.banner_border << "  │  "
+              << c.banner_dim << "C++17 Backend"
+              << c.banner_border << "                  │\n"
+              << c.banner_border << "  ╰─────────────────────────────────╯\n"
+              << c.banner_text << "\n";
     if (!skin.branding.welcome.empty()) {
         std::cout << skin.branding.welcome << "\n";
     }

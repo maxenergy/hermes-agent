@@ -1,8 +1,11 @@
 // Model metadata lookup, token estimation, and context-limit parsing.
 #include "hermes/llm/model_metadata.hpp"
 
+#include "hermes/llm/llm_client.hpp"
 #include "hermes/llm/message.hpp"
 #include "hermes/llm/usage.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -167,6 +170,61 @@ std::optional<int64_t> parse_context_limit_from_error(std::string_view error_bod
                 // fall through
             }
         }
+    }
+    return std::nullopt;
+}
+
+std::optional<int64_t> query_ollama_num_ctx(const std::string& model) {
+    auto* transport = get_default_transport();
+    if (!transport) return std::nullopt;
+    try {
+        auto resp = transport->post_json(
+            "http://localhost:11434/api/show",
+            {{"Content-Type", "application/json"}},
+            nlohmann::json{{"name", model}}.dump());
+        if (resp.status_code == 200) {
+            auto j = nlohmann::json::parse(resp.body);
+            // num_ctx may appear in the parameters string or in
+            // model_info as a JSON field.
+            if (j.contains("parameters") && j["parameters"].is_string()) {
+                const std::string& params = j["parameters"].get_ref<const std::string&>();
+                // Parse "num_ctx N" from the parameters text.
+                auto pos = params.find("num_ctx");
+                if (pos != std::string::npos) {
+                    pos += 7;  // strlen("num_ctx")
+                    while (pos < params.size() &&
+                           (params[pos] == ' ' || params[pos] == '\t'))
+                        ++pos;
+                    std::string digits;
+                    while (pos < params.size() &&
+                           std::isdigit(static_cast<unsigned char>(params[pos]))) {
+                        digits.push_back(params[pos++]);
+                    }
+                    if (!digits.empty()) {
+                        auto val = std::stoll(digits);
+                        if (val >= 1024 && val <= 10'000'000) {
+                            return val;
+                        }
+                    }
+                }
+            }
+            // Also check model_info.
+            if (j.contains("model_info") && j["model_info"].is_object()) {
+                const auto& info = j["model_info"];
+                for (auto it = info.begin(); it != info.end(); ++it) {
+                    const std::string& key = it.key();
+                    if (key.find("context_length") != std::string::npos &&
+                        it.value().is_number()) {
+                        auto val = it.value().get<int64_t>();
+                        if (val >= 1024 && val <= 10'000'000) {
+                            return val;
+                        }
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // Ollama may not be running — this is non-fatal.
     }
     return std::nullopt;
 }

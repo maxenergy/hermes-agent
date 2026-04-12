@@ -49,4 +49,9 @@ constexpr std::array<int64_t, 5> CONTEXT_PROBE_TIERS = {
 // "llama3:70b" alone.
 std::string strip_provider_prefix(std::string_view model);
 
+// Query a local Ollama instance for the model's num_ctx parameter.
+// Returns std::nullopt on any failure (Ollama not running, model not
+// found, etc.).
+std::optional<int64_t> query_ollama_num_ctx(const std::string& model);
+
 }  // namespace hermes::llm

@@ -22,6 +22,8 @@ set(HERMES_CLI_TEST_SOURCES
     test_display.cpp
     test_main_entry.cpp
     test_cli_commands.cpp
+    test_clipboard.cpp
+    test_colors.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})

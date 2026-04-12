@@ -195,8 +195,14 @@ std::filesystem::path MemoryStore::path_for(MemoryFile which) const {
 }
 
 std::vector<std::string> MemoryStore::read_all(MemoryFile which) {
+    std::lock_guard<std::mutex> lk(cache_mu_);
+    auto& cache = (which == MemoryFile::Agent) ? agent_cache_ : user_cache_;
+    if (cache) return *cache;
+
     auto p = path_for(which);
-    return split_entries(read_file(p));
+    auto entries = split_entries(read_file(p));
+    cache = entries;
+    return entries;
 }
 
 void MemoryStore::add(MemoryFile which, std::string_view entry) {
@@ -211,6 +217,11 @@ void MemoryStore::add(MemoryFile which, std::string_view entry) {
         return;
     entries.push_back(std::move(trimmed));
     write_file(p, join_entries(entries));
+
+    // Invalidate cache.
+    std::lock_guard<std::mutex> lk(cache_mu_);
+    auto& cache = (which == MemoryFile::Agent) ? agent_cache_ : user_cache_;
+    cache.reset();
 }
 
 void MemoryStore::replace(MemoryFile which,
@@ -228,6 +239,10 @@ void MemoryStore::replace(MemoryFile which,
         }
     }
     write_file(p, join_entries(entries));
+
+    std::lock_guard<std::mutex> lk(cache_mu_);
+    auto& cache = (which == MemoryFile::Agent) ? agent_cache_ : user_cache_;
+    cache.reset();
 }
 
 void MemoryStore::remove(MemoryFile which, std::string_view needle) {
@@ -243,7 +258,17 @@ void MemoryStore::remove(MemoryFile which, std::string_view needle) {
     if (it != entries.end()) {
         entries.erase(it);
         write_file(p, join_entries(entries));
+
+        std::lock_guard<std::mutex> lk(cache_mu_);
+        auto& cache = (which == MemoryFile::Agent) ? agent_cache_ : user_cache_;
+        cache.reset();
     }
+}
+
+void MemoryStore::invalidate_cache() {
+    std::lock_guard<std::mutex> lk(cache_mu_);
+    agent_cache_.reset();
+    user_cache_.reset();
 }
 
 std::vector<MemoryStore::ThreatHit> MemoryStore::scan_for_threats(

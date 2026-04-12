@@ -6,6 +6,8 @@
 #pragma once
 
 #include <filesystem>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,8 +51,17 @@ public:
     // Expose the resolved on-disk path for diagnostics / tests.
     std::filesystem::path path_for(MemoryFile which) const;
 
+    // Invalidate the in-memory cache (e.g. after external edits).
+    void invalidate_cache();
+
 private:
     std::filesystem::path dir_;
+
+    // Lazy-loading cache: populated on first read_all(), invalidated on
+    // any mutation (add/replace/remove) or explicit invalidate_cache().
+    mutable std::mutex cache_mu_;
+    mutable std::optional<std::vector<std::string>> agent_cache_;
+    mutable std::optional<std::vector<std::string>> user_cache_;
 };
 
 }  // namespace hermes::state

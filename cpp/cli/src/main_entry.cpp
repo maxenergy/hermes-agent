@@ -14,8 +14,17 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <io.h>
+#define isatty _isatty
+#define STDIN_FILENO 0
+#else
+#include <unistd.h>
+#endif
 
 namespace hermes::cli {
 
@@ -574,6 +583,19 @@ int cmd_uninstall() {
 
 int main_entry(int argc, char* argv[]) {
     if (argc < 2) {
+        // Pipe mode: when stdin is not a TTY, read all input and run as
+        // a single query, then exit.
+        if (!::isatty(STDIN_FILENO)) {
+            std::ostringstream buf;
+            buf << std::cin.rdbuf();
+            std::string input = buf.str();
+            if (!input.empty()) {
+                HermesCLI cli;
+                auto result = cli.query(input);
+                std::cout << result << "\n";
+            }
+            return 0;
+        }
         // Default: interactive chat.
         HermesCLI cli;
         cli.run();
