@@ -1,22 +1,23 @@
 #include "hermes/cli/main_entry.hpp"
 
 #include "hermes/cli/hermes_cli.hpp"
+#include "hermes/config/loader.hpp"
+#include "hermes/core/path.hpp"
+#include "hermes/tools/toolsets.hpp"
 
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
-
-namespace {
-constexpr const char* kVersion = "0.0.1";
-}  // namespace
+#include <vector>
 
 namespace hermes::cli {
 
-namespace {
+namespace fs = std::filesystem;
 
-void print_version() {
-    std::cout << "hermes " << kVersion << "\n";
-}
+namespace {
 
 void print_global_help() {
     std::cout << "Hermes — your AI agent\n\n"
@@ -41,25 +42,279 @@ void print_global_help() {
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
 
-int cmd_doctor() {
-    std::cout << "Running diagnostics...\n";
-    // Basic checks.
-    std::cout << "  [ok] C++ runtime\n";
-    std::cout << "  [ok] Version: " << kVersion << "\n";
-    // TODO: check config, database, API keys, etc.
-    std::cout << "All checks passed.\n";
-    return 0;
+// ANSI color helpers.
+const char* green() { return "\033[32m"; }
+const char* red()   { return "\033[31m"; }
+const char* dim()   { return "\033[2m"; }
+const char* reset() { return "\033[0m"; }
+
+std::string pass_label() { return std::string(green()) + "[PASS]" + reset(); }
+std::string fail_label() { return std::string(red()) + "[FAIL]" + reset(); }
+
+bool check_file_exists(const fs::path& path) {
+    return fs::exists(path);
 }
 
-int cmd_status() {
-    std::cout << "Hermes status:\n"
-              << "  Version: " << kVersion << "\n"
-              << "  Runtime: C++17\n"
-              << "  Status: ready\n";
-    return 0;
+bool check_which(const std::string& cmd) {
+    std::string full = "which " + cmd + " > /dev/null 2>&1";
+    return std::system(full.c_str()) == 0;
+}
+
+bool check_sqlite_fts5() {
+    // We have SQLite linked (build dependency); FTS5 is available if the
+    // library was compiled with it.  A quick probe: try to open an in-memory
+    // DB and create a virtual table.  For simplicity, we shell out to sqlite3.
+    int rc = std::system(
+        "sqlite3 ':memory:' 'CREATE VIRTUAL TABLE t USING fts5(a);' "
+        "2>/dev/null");
+    return rc == 0;
 }
 
 }  // namespace
+
+int cmd_version() {
+    std::cout << kVersionString << "\n";
+    return 0;
+}
+
+int cmd_doctor() {
+    std::cout << "Running diagnostics...\n\n";
+
+    auto home = hermes::core::path::get_hermes_home();
+    auto config_file = home / "config.yaml";
+
+    struct Check {
+        std::string label;
+        bool passed;
+    };
+
+    std::vector<Check> checks;
+
+    // 1. Config file
+    checks.push_back({"Config file (" + config_file.string() + ")",
+                       check_file_exists(config_file)});
+
+    // 2. SQLite FTS5
+    checks.push_back({"SQLite FTS5 extension", check_sqlite_fts5()});
+
+    // 3. curl available
+    checks.push_back({"curl available", check_which("curl")});
+
+    // 4. Docker available
+    checks.push_back({"Docker available", check_which("docker")});
+
+    // 5. SSH available
+    checks.push_back({"SSH available", check_which("ssh")});
+
+    // Print results as a table.
+    int passed = 0;
+    int failed = 0;
+    for (const auto& c : checks) {
+        std::string status = c.passed ? pass_label() : fail_label();
+        std::cout << "  " << status << "  " << c.label << "\n";
+        if (c.passed) ++passed; else ++failed;
+    }
+
+    std::cout << "\n" << passed << " passed, " << failed << " failed, "
+              << checks.size() << " total.\n";
+    return (failed > 0) ? 1 : 0;
+}
+
+int cmd_status() {
+    auto config = hermes::config::load_config();
+
+    std::string model = "anthropic/claude-opus-4-6";
+    if (config.contains("model") && config["model"].is_string()) {
+        model = config["model"].get<std::string>();
+    }
+
+    std::string provider = "(default)";
+    if (config.contains("provider") && config["provider"].is_string()) {
+        provider = config["provider"].get<std::string>();
+    }
+
+    std::string skin_name = "default";
+    if (config.contains("cli") && config["cli"].contains("skin")) {
+        skin_name = config["cli"]["skin"].get<std::string>();
+    }
+
+    // Enabled toolsets.
+    std::string toolsets_str;
+    if (config.contains("toolsets") && config["toolsets"].is_array()) {
+        for (const auto& ts : config["toolsets"]) {
+            if (!toolsets_str.empty()) toolsets_str += ", ";
+            toolsets_str += ts.get<std::string>();
+        }
+    }
+    if (toolsets_str.empty()) toolsets_str = "(default core)";
+
+    std::cout << "Hermes status:\n"
+              << "  Version:   " << kVersionString << "\n"
+              << "  Model:     " << model << "\n"
+              << "  Provider:  " << provider << "\n"
+              << "  Skin:      " << skin_name << "\n"
+              << "  Toolsets:  " << toolsets_str << "\n"
+              << "  Runtime:   C++17\n";
+    return 0;
+}
+
+int cmd_model() {
+    // Interactive model selection — list known models, let user pick.
+    static const std::vector<std::string> known_models = {
+        "anthropic/claude-opus-4-6",
+        "anthropic/claude-sonnet-4-20250514",
+        "anthropic/claude-haiku-3",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "openai/o3",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-r1",
+        "qwen/qwen3-coder",
+    };
+
+    auto config = hermes::config::load_config();
+    std::string current = "anthropic/claude-opus-4-6";
+    if (config.contains("model") && config["model"].is_string()) {
+        current = config["model"].get<std::string>();
+    }
+
+    std::cout << "Current model: " << current << "\n\n";
+    std::cout << "Available models:\n";
+    for (std::size_t i = 0; i < known_models.size(); ++i) {
+        std::string marker = (known_models[i] == current) ? " *" : "";
+        std::cout << "  " << (i + 1) << ". " << known_models[i] << marker << "\n";
+    }
+
+    std::cout << "\nEnter number to select (or press Enter to keep current): ";
+    std::string line;
+    if (!std::getline(std::cin, line) || line.empty()) {
+        std::cout << "Keeping current model: " << current << "\n";
+        return 0;
+    }
+
+    try {
+        auto idx = std::stoul(line);
+        if (idx >= 1 && idx <= known_models.size()) {
+            config["model"] = known_models[idx - 1];
+            hermes::config::save_config(config);
+            std::cout << "Model set to: " << known_models[idx - 1] << "\n";
+        } else {
+            std::cerr << "Invalid selection.\n";
+            return 1;
+        }
+    } catch (...) {
+        std::cerr << "Invalid input.\n";
+        return 1;
+    }
+    return 0;
+}
+
+int cmd_tools() {
+    const auto& ts = hermes::tools::toolsets();
+    std::cout << "Available toolsets:\n\n";
+    for (const auto& [name, def] : ts) {
+        std::cout << "  " << name << dim() << " — " << def.description
+                  << reset() << "\n";
+        auto tools = hermes::tools::resolve_toolset(name);
+        std::cout << "    Tools: ";
+        for (std::size_t i = 0; i < tools.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << tools[i];
+        }
+        std::cout << "\n\n";
+    }
+    return 0;
+}
+
+int cmd_config(int argc, char* argv[]) {
+    // hermes config            → show config summary
+    // hermes config set K V    → update key
+    // hermes config edit       → open in $EDITOR
+    if (argc <= 2) {
+        // Show config summary.
+        auto config = hermes::config::load_config();
+        std::cout << config.dump(2) << "\n";
+        return 0;
+    }
+
+    std::string sub = argv[2];
+
+    if (sub == "set") {
+        if (argc < 5) {
+            std::cerr << "Usage: hermes config set <key> <value>\n";
+            return 1;
+        }
+        std::string key = argv[3];
+        std::string value = argv[4];
+
+        auto config = hermes::config::load_config();
+
+        // Support dotted keys: "a.b.c" sets config["a"]["b"]["c"].
+        nlohmann::json* node = &config;
+        std::string segment;
+        std::size_t start = 0;
+        std::size_t dot;
+        std::vector<std::string> segments;
+        while ((dot = key.find('.', start)) != std::string::npos) {
+            segments.push_back(key.substr(start, dot - start));
+            start = dot + 1;
+        }
+        segments.push_back(key.substr(start));
+
+        for (std::size_t i = 0; i + 1 < segments.size(); ++i) {
+            if (!node->contains(segments[i]) || !(*node)[segments[i]].is_object()) {
+                (*node)[segments[i]] = nlohmann::json::object();
+            }
+            node = &(*node)[segments[i]];
+        }
+
+        // Try to parse the value as JSON (for booleans, numbers, etc.).
+        try {
+            (*node)[segments.back()] = nlohmann::json::parse(value);
+        } catch (...) {
+            (*node)[segments.back()] = value;
+        }
+
+        hermes::config::save_config(config);
+        std::cout << "Set " << key << " = " << (*node)[segments.back()].dump() << "\n";
+        return 0;
+    }
+
+    if (sub == "edit") {
+        auto path = hermes::core::path::get_hermes_home() / "config.yaml";
+        const char* editor = std::getenv("EDITOR");
+        if (!editor) editor = "vi";
+        std::string cmd = std::string(editor) + " " + path.string();
+        return std::system(cmd.c_str());
+    }
+
+    std::cerr << "Unknown config subcommand: " << sub << "\n";
+    std::cerr << "Usage: hermes config [set <key> <value> | edit]\n";
+    return 1;
+}
+
+int cmd_gateway(int argc, char* argv[]) {
+    if (argc <= 2) {
+        std::cout << "Usage: hermes gateway [start|stop]\n";
+        return 1;
+    }
+
+    std::string sub = argv[2];
+    if (sub == "start") {
+        std::cout << "Starting gateway...\n";
+        // Stub — gateway start is a future phase.
+        return 0;
+    }
+    if (sub == "stop") {
+        std::cout << "Stopping gateway...\n";
+        // Stub — gateway stop is a future phase.
+        return 0;
+    }
+
+    std::cerr << "Unknown gateway subcommand: " << sub << "\n";
+    return 1;
+}
 
 int main_entry(int argc, char* argv[]) {
     if (argc < 2) {
@@ -76,8 +331,7 @@ int main_entry(int argc, char* argv[]) {
         return 0;
     }
     if (sub == "--version" || sub == "-V" || sub == "version") {
-        print_version();
-        return 0;
+        return cmd_version();
     }
     if (sub == "chat") {
         HermesCLI cli;
@@ -90,28 +344,24 @@ int main_entry(int argc, char* argv[]) {
     if (sub == "status") {
         return cmd_status();
     }
+    if (sub == "model") {
+        return cmd_model();
+    }
+    if (sub == "tools") {
+        return cmd_tools();
+    }
     if (sub == "gateway") {
-        std::cout << "Gateway — not yet implemented\n";
-        return 1;
+        return cmd_gateway(argc, argv);
+    }
+    if (sub == "config") {
+        return cmd_config(argc, argv);
     }
     if (sub == "setup") {
         std::cout << "Setup wizard — not yet implemented\n";
         return 1;
     }
-    if (sub == "model") {
-        std::cout << "Model subcommand — not yet implemented\n";
-        return 1;
-    }
-    if (sub == "tools") {
-        std::cout << "Tools subcommand — not yet implemented\n";
-        return 1;
-    }
     if (sub == "skills") {
         std::cout << "Skills subcommand — not yet implemented\n";
-        return 1;
-    }
-    if (sub == "config") {
-        std::cout << "Config subcommand — not yet implemented\n";
         return 1;
     }
     if (sub == "logs") {

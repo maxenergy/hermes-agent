@@ -53,12 +53,18 @@ private:
     void handle_yolo();
     void handle_title(const std::string& args);
     void handle_provider(const std::string& args);
+    void handle_insights();
+    void handle_platforms();
 
     nlohmann::json config_;
     std::string session_id_;
     std::vector<nlohmann::json> history_;  // lightweight; full Message in agent
+    std::vector<std::string> input_history_;  // last 100 inputs for /retry
     int64_t total_input_tokens_ = 0;
     int64_t total_output_tokens_ = 0;
+    bool verbose_ = false;
+    bool yolo_ = false;
+    double temperature_ = 1.0;
 };
 
 }  // namespace hermes::cli

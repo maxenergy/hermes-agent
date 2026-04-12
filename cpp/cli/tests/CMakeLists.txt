@@ -20,6 +20,8 @@ set(HERMES_CLI_TEST_SOURCES
     test_skin_engine.cpp
     test_hermes_cli.cpp
     test_display.cpp
+    test_main_entry.cpp
+    test_cli_commands.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
@@ -28,6 +30,7 @@ target_link_libraries(hermes_cli_tests
         hermes::cli
         hermes::core
         hermes::config
+        hermes::tools
         nlohmann_json::nlohmann_json
         GTest::gtest_main
         hermes_warnings

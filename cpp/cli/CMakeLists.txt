@@ -36,6 +36,7 @@ target_link_libraries(hermes_cli_lib
     PUBLIC
         hermes::core
         hermes::config
+        hermes::tools
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes_warnings

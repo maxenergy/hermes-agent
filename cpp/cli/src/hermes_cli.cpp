@@ -2,6 +2,7 @@
 
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
+#include "hermes/tools/toolsets.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -29,6 +30,21 @@ void HermesCLI::run() {
         if (!std::getline(std::cin, line)) break;
         if (line.empty()) continue;
 
+        // Multi-line: detect trailing backslash and continue reading.
+        while (!line.empty() && line.back() == '\\') {
+            line.pop_back();
+            std::string continuation;
+            std::cout << "... " << std::flush;
+            if (!std::getline(std::cin, continuation)) break;
+            line += "\n" + continuation;
+        }
+
+        // Store in input history (cap at 100).
+        input_history_.push_back(line);
+        if (input_history_.size() > 100) {
+            input_history_.erase(input_history_.begin());
+        }
+
         if (line[0] == '/') {
             if (!process_command(line)) {
                 std::cout << "Unknown command: " << line
@@ -42,8 +58,17 @@ void HermesCLI::run() {
             continue;
         }
 
-        // Plain text → agent query (stub for Phase 13).
-        std::cout << "[agent not wired yet] " << line << "\n";
+        // Plain text → agent query with spinner.
+        Spinner spinner(skin);
+        spinner.start("thinking");
+        auto result = query(line);
+        spinner.stop();
+
+        // Print response with skin's response_label prefix.
+        std::cout << skin.colors.response_border
+                  << skin.branding.response_label
+                  << skin.colors.banner_text
+                  << result << "\n";
     }
 }
 
@@ -93,6 +118,8 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "yolo")     { handle_yolo(); }
     else if (canonical == "title")    { handle_title(args); }
     else if (canonical == "provider") { handle_provider(args); }
+    else if (canonical == "insights") { handle_insights(); }
+    else if (canonical == "platforms"){ handle_platforms(); }
     else {
         std::cout << "/" << canonical << " — not yet implemented\n";
     }
@@ -139,6 +166,7 @@ void HermesCLI::show_help() {
 void HermesCLI::handle_new() {
     session_id_.clear();
     history_.clear();
+    input_history_.clear();
     total_input_tokens_ = 0;
     total_output_tokens_ = 0;
     std::cout << "New session started.\n";
@@ -146,6 +174,7 @@ void HermesCLI::handle_new() {
 
 void HermesCLI::handle_reset() {
     history_.clear();
+    input_history_.clear();
     total_input_tokens_ = 0;
     total_output_tokens_ = 0;
     std::cout << "Conversation history cleared.\n";
@@ -165,11 +194,17 @@ void HermesCLI::handle_model(const std::string& args) {
 }
 
 void HermesCLI::handle_skills() {
-    std::cout << "Skills: (skill list not yet wired)\n";
+    // List available skills — stub until skills_list tool is wired.
+    std::cout << "Available skills:\n"
+              << "  (skill list not yet wired — use `hermes skills` subcommand)\n";
 }
 
 void HermesCLI::handle_tools() {
-    std::cout << "Tools: (tool list not yet wired)\n";
+    const auto& ts = hermes::tools::toolsets();
+    std::cout << "Available toolsets:\n";
+    for (const auto& [name, def] : ts) {
+        std::cout << "  " << name << " — " << def.description << "\n";
+    }
 }
 
 void HermesCLI::handle_usage() {
@@ -180,7 +215,9 @@ void HermesCLI::handle_usage() {
 }
 
 void HermesCLI::handle_compress() {
-    std::cout << "Context compression — not yet implemented\n";
+    std::cout << "Compressing context...\n";
+    // Stub — actual compression requires agent wiring.
+    std::cout << "Context compression — not yet wired to agent.\n";
 }
 
 void HermesCLI::handle_status() {
@@ -189,7 +226,10 @@ void HermesCLI::handle_status() {
               << "Model: "
               << (config_.contains("model") ? config_["model"].get<std::string>()
                                             : "anthropic/claude-opus-4-6")
-              << "\n";
+              << "\n"
+              << "Verbose: " << (verbose_ ? "on" : "off") << "\n"
+              << "Yolo: " << (yolo_ ? "on" : "off") << "\n"
+              << "Temperature: " << temperature_ << "\n";
 }
 
 void HermesCLI::handle_commands() {
@@ -201,36 +241,80 @@ void HermesCLI::handle_commands() {
 }
 
 void HermesCLI::handle_verbose() {
-    std::cout << "Verbose mode toggled — not yet implemented\n";
+    verbose_ = !verbose_;
+    config_["display"]["tool_progress_command"] = verbose_;
+    std::cout << "Verbose mode: " << (verbose_ ? "on" : "off") << "\n";
 }
 
 void HermesCLI::handle_personality(const std::string& args) {
     if (args.empty()) {
-        std::cout << "Personality: default\n";
+        std::string current = "default";
+        if (config_.contains("personality") && config_["personality"].is_string()) {
+            current = config_["personality"].get<std::string>();
+        }
+        std::cout << "Personality: " << current << "\n";
     } else {
-        std::cout << "Personality set to: " << args << " — not yet implemented\n";
+        config_["personality"] = args;
+        std::cout << "Personality set to: " << args << "\n";
     }
 }
 
 void HermesCLI::handle_voice(const std::string& args) {
     if (args.empty()) {
-        std::cout << "Voice: default\n";
+        std::string current = "default";
+        if (config_.contains("tts") && config_["tts"].contains("voice") &&
+            config_["tts"]["voice"].is_string()) {
+            current = config_["tts"]["voice"].get<std::string>();
+        }
+        std::cout << "Voice: " << current << "\n";
     } else {
-        std::cout << "Voice set to: " << args << " — not yet implemented\n";
+        config_["tts"]["voice"] = args;
+        std::cout << "Voice set to: " << args << "\n";
     }
 }
 
 void HermesCLI::handle_reasoning(const std::string& args) {
-    std::cout << "Reasoning mode: " << (args.empty() ? "toggle" : args)
-              << " — not yet implemented\n";
+    if (args.empty()) {
+        // Toggle: cycle 0 -> 1 -> 2 -> 3 -> 0.
+        int current = 0;
+        if (config_.contains("reasoning_effort") && config_["reasoning_effort"].is_number()) {
+            current = config_["reasoning_effort"].get<int>();
+        }
+        current = (current + 1) % 4;
+        config_["reasoning_effort"] = current;
+        std::cout << "Reasoning effort set to: " << current << "\n";
+    } else {
+        try {
+            int level = std::stoi(args);
+            if (level < 0 || level > 3) {
+                std::cout << "Reasoning level must be 0-3.\n";
+                return;
+            }
+            config_["reasoning_effort"] = level;
+            std::cout << "Reasoning effort set to: " << level << "\n";
+        } catch (...) {
+            std::cout << "Invalid reasoning level: " << args << " (expected 0-3)\n";
+        }
+    }
 }
 
 void HermesCLI::handle_fast() {
-    std::cout << "Switched to fast model preset — not yet implemented\n";
+    // Toggle temperature between 0.0 and 1.0.
+    if (temperature_ > 0.5) {
+        temperature_ = 0.0;
+    } else {
+        temperature_ = 1.0;
+    }
+    config_["temperature"] = temperature_;
+    std::cout << "Temperature set to: " << temperature_
+              << (temperature_ < 0.5 ? " (fast/deterministic)" : " (creative)")
+              << "\n";
 }
 
 void HermesCLI::handle_yolo() {
-    std::cout << "Auto-approve mode toggled — not yet implemented\n";
+    yolo_ = !yolo_;
+    config_["approval"]["auto_approve"] = yolo_;
+    std::cout << "Auto-approve (yolo) mode: " << (yolo_ ? "on" : "off") << "\n";
 }
 
 void HermesCLI::handle_title(const std::string& args) {
@@ -243,10 +327,28 @@ void HermesCLI::handle_title(const std::string& args) {
 
 void HermesCLI::handle_provider(const std::string& args) {
     if (args.empty()) {
-        std::cout << "Provider: (default)\n";
+        std::string current = "(default)";
+        if (config_.contains("provider") && config_["provider"].is_string()) {
+            current = config_["provider"].get<std::string>();
+        }
+        std::cout << "Provider: " << current << "\n";
     } else {
-        std::cout << "Provider set to: " << args << " — not yet implemented\n";
+        config_["provider"] = args;
+        std::cout << "Provider set to: " << args << "\n";
     }
+}
+
+void HermesCLI::handle_insights() {
+    std::cout << "Session insights:\n"
+              << "  Turns: " << history_.size() << "\n"
+              << "  Input tokens:  " << total_input_tokens_ << "\n"
+              << "  Output tokens: " << total_output_tokens_ << "\n"
+              << "  Input history: " << input_history_.size() << " entries\n";
+}
+
+void HermesCLI::handle_platforms() {
+    std::cout << "Connected platforms:\n"
+              << "  CLI only\n";
 }
 
 }  // namespace hermes::cli
