@@ -4,8 +4,15 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>
+#else
 #include <unistd.h>
 #include <signal.h>
+#endif
 
 #include <openssl/sha.h>
 
@@ -76,7 +83,24 @@ std::chrono::system_clock::time_point iso_to_time(const std::string& s) {
 }
 
 bool process_exists(int pid) {
+#ifdef _WIN32
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) return false;
+    DWORD exit_code = 0;
+    bool alive = GetExitCodeProcess(h, &exit_code) && exit_code == STILL_ACTIVE;
+    CloseHandle(h);
+    return alive;
+#else
     return kill(pid, 0) == 0;
+#endif
+}
+
+int current_pid() {
+#ifdef _WIN32
+    return static_cast<int>(GetCurrentProcessId());
+#else
+    return static_cast<int>(getpid());
+#endif
 }
 
 }  // namespace
@@ -85,7 +109,7 @@ void write_pid_file() {
     auto path = get_pid_file_path();
     fs::create_directories(path.parent_path());
     std::ofstream out(path);
-    out << getpid();
+    out << current_pid();
 }
 
 std::optional<int> read_pid_file() {
@@ -122,7 +146,7 @@ bool acquire_scoped_lock(const std::string& scope,
             in >> j;
             int existing_pid = j.value("pid", 0);
             if (existing_pid > 0 && process_exists(existing_pid) &&
-                existing_pid != static_cast<int>(getpid())) {
+                existing_pid != current_pid()) {
                 return false;  // Lock held by a DIFFERENT live process.
             }
             // If existing_pid == our pid, we just re-take the lock (idempotent).
@@ -132,7 +156,7 @@ bool acquire_scoped_lock(const std::string& scope,
     }
 
     nlohmann::json lock_data = {
-        {"pid", static_cast<int>(getpid())},
+        {"pid", current_pid()},
         {"start_time", time_to_iso(std::chrono::system_clock::now())},
         {"scope", scope},
         {"identity", identity},
@@ -209,11 +233,34 @@ std::optional<RuntimeStatus> read_runtime_status() {
 
 void terminate_pid(int pid, bool force) {
     if (pid <= 0) return;
+#ifdef _WIN32
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+    if (h) {
+        TerminateProcess(h, force ? 9 : 0);
+        CloseHandle(h);
+    }
+#else
     if (force) {
         kill(pid, SIGKILL);
     } else {
         kill(pid, SIGTERM);
     }
+#endif
 }
+
+#ifdef _WIN32
+std::optional<uint64_t> get_process_start_time(int pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) return std::nullopt;
+    FILETIME ct, et, kt, ut;
+    bool ok = GetProcessTimes(h, &ct, &et, &kt, &ut);
+    CloseHandle(h);
+    if (!ok) return std::nullopt;
+    ULARGE_INTEGER u;
+    u.LowPart = ct.dwLowDateTime;
+    u.HighPart = ct.dwHighDateTime;
+    return u.QuadPart;
+}
+#endif
 
 }  // namespace hermes::gateway

@@ -2,7 +2,10 @@
 #include "hermes/environments/env_filter.hpp"
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <stdexcept>
+#include <vector>
 #else
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -34,9 +37,175 @@ namespace hermes::environments {
 LocalEnvironment::LocalEnvironment() {}
 LocalEnvironment::~LocalEnvironment() = default;
 
-CompletedProcess LocalEnvironment::execute(const std::string& /*cmd*/,
-                                           const ExecuteOptions& /*opts*/) {
-    throw std::runtime_error("LocalEnvironment is not supported on Windows");
+namespace {
+
+// Execute a command on Windows using CreatePipe + CreateProcess (non-PTY).
+// When opts.use_pty is true, we attempt CreatePseudoConsole (ConPTY) which is
+// available on Windows 10 1809+. Both paths share the same read/timeout loop.
+CompletedProcess execute_win32(const std::string& command,
+                               const ExecuteOptions& opts) {
+    using clock = std::chrono::steady_clock;
+    auto start = clock::now();
+    CompletedProcess result;
+
+    // Build the "cmd.exe /C <command>" invocation.
+    std::string cmdline = "cmd.exe /C " + command;
+    std::vector<char> cmd_mut(cmdline.begin(), cmdline.end());
+    cmd_mut.push_back('\0');
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    HANDLE stdout_rd = nullptr, stdout_wr = nullptr;
+    HANDLE stderr_rd = nullptr, stderr_wr = nullptr;
+
+    if (!CreatePipe(&stdout_rd, &stdout_wr, &sa, 0) ||
+        !CreatePipe(&stderr_rd, &stderr_wr, &sa, 0)) {
+        result.exit_code = -1;
+        return result;
+    }
+    SetHandleInformation(stdout_rd, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stderr_rd, HANDLE_FLAG_INHERIT, 0);
+
+    // ConPTY path: CreatePseudoConsole + EXTENDED_STARTUPINFO_PRESENT.
+    HPCON hpc = nullptr;
+    bool using_pty = false;
+    if (opts.use_pty) {
+        HANDLE pty_in_rd = nullptr, pty_in_wr = nullptr;
+        HANDLE pty_out_rd = nullptr, pty_out_wr = nullptr;
+        if (CreatePipe(&pty_in_rd, &pty_in_wr, nullptr, 0) &&
+            CreatePipe(&pty_out_rd, &pty_out_wr, nullptr, 0)) {
+            COORD size{80, 25};
+            HRESULT hr = CreatePseudoConsole(size, pty_in_rd, pty_out_wr, 0, &hpc);
+            if (SUCCEEDED(hr)) {
+                using_pty = true;
+                // Replace stdout/stderr readers with the PTY output reader.
+                CloseHandle(stdout_rd); CloseHandle(stdout_wr);
+                CloseHandle(stderr_rd); CloseHandle(stderr_wr);
+                stdout_rd = pty_out_rd;
+                stdout_wr = nullptr;
+                stderr_rd = nullptr;
+                stderr_wr = nullptr;
+                CloseHandle(pty_in_rd);
+                CloseHandle(pty_in_wr);
+                CloseHandle(pty_out_wr);
+            } else {
+                CloseHandle(pty_in_rd); CloseHandle(pty_in_wr);
+                CloseHandle(pty_out_rd); CloseHandle(pty_out_wr);
+            }
+        }
+    }
+
+    STARTUPINFOEXA si_ex{};
+    si_ex.StartupInfo.cb = sizeof(si_ex);
+    DWORD creation_flags = 0;
+    std::vector<BYTE> attr_buf;
+
+    if (using_pty) {
+        SIZE_T attr_size = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+        attr_buf.resize(attr_size);
+        si_ex.lpAttributeList =
+            reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+        InitializeProcThreadAttributeList(si_ex.lpAttributeList, 1, 0, &attr_size);
+        UpdateProcThreadAttribute(si_ex.lpAttributeList, 0,
+                                  PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                  hpc, sizeof(hpc), nullptr, nullptr);
+        creation_flags = EXTENDED_STARTUPINFO_PRESENT;
+    } else {
+        si_ex.StartupInfo.hStdOutput = stdout_wr;
+        si_ex.StartupInfo.hStdError = stderr_wr;
+        si_ex.StartupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    }
+
+    PROCESS_INFORMATION pi{};
+    const char* cwd_cstr = opts.cwd.empty() ? nullptr : opts.cwd.string().c_str();
+
+    BOOL ok = CreateProcessA(nullptr, cmd_mut.data(), nullptr, nullptr, TRUE,
+                             creation_flags, nullptr, cwd_cstr,
+                             &si_ex.StartupInfo, &pi);
+    if (!ok) {
+        if (stdout_wr) CloseHandle(stdout_wr);
+        if (stderr_wr) CloseHandle(stderr_wr);
+        if (stdout_rd) CloseHandle(stdout_rd);
+        if (stderr_rd) CloseHandle(stderr_rd);
+        if (hpc) ClosePseudoConsole(hpc);
+        if (!attr_buf.empty())
+            DeleteProcThreadAttributeList(si_ex.lpAttributeList);
+        result.exit_code = -1;
+        return result;
+    }
+
+    // Close write ends in parent so reads get EOF when child exits.
+    if (stdout_wr) { CloseHandle(stdout_wr); stdout_wr = nullptr; }
+    if (stderr_wr) { CloseHandle(stderr_wr); stderr_wr = nullptr; }
+
+    auto deadline = start + opts.timeout;
+    auto read_available = [](HANDLE h, std::string& out) {
+        if (!h) return true;
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return false;
+        if (avail == 0) return true;
+        char buf[4096];
+        DWORD got = 0;
+        DWORD to_read = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
+        if (ReadFile(h, buf, to_read, &got, nullptr) && got > 0) {
+            out.append(buf, got);
+        }
+        return true;
+    };
+
+    while (true) {
+        DWORD wait = WaitForSingleObject(pi.hProcess, 50);
+        read_available(stdout_rd, result.stdout_text);
+        read_available(stderr_rd, result.stderr_text);
+        if (wait == WAIT_OBJECT_0) break;
+        if (opts.cancel_fn && opts.cancel_fn()) {
+            TerminateProcess(pi.hProcess, 1);
+            result.interrupted = true;
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            break;
+        }
+        if (clock::now() >= deadline) {
+            TerminateProcess(pi.hProcess, 1);
+            result.timed_out = true;
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            break;
+        }
+    }
+
+    // Drain remaining output.
+    read_available(stdout_rd, result.stdout_text);
+    read_available(stderr_rd, result.stderr_text);
+
+    DWORD exit_code = 0;
+    if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
+        result.exit_code = static_cast<int>(exit_code);
+    } else {
+        result.exit_code = -1;
+    }
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (stdout_rd) CloseHandle(stdout_rd);
+    if (stderr_rd) CloseHandle(stderr_rd);
+    if (hpc) ClosePseudoConsole(hpc);
+    if (!attr_buf.empty())
+        DeleteProcThreadAttributeList(si_ex.lpAttributeList);
+
+    result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        clock::now() - start);
+    return result;
+}
+
+}  // namespace
+
+CompletedProcess LocalEnvironment::execute(const std::string& cmd,
+                                           const ExecuteOptions& opts) {
+    return execute_win32(cmd, opts);
 }
 
 #else

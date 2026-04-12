@@ -40,4 +40,10 @@ std::optional<RuntimeStatus> read_runtime_status();
 // Process termination
 void terminate_pid(int pid, bool force = false);
 
+#ifdef _WIN32
+#include <cstdint>
+// Windows-only: returns FILETIME-as-uint64 creation time, nullopt on failure.
+std::optional<uint64_t> get_process_start_time(int pid);
+#endif
+
 }  // namespace hermes::gateway
