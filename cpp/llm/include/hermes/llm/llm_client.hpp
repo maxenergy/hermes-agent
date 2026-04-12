@@ -76,12 +76,23 @@ public:
         const std::string& url,
         const std::unordered_map<std::string, std::string>& headers,
         const std::string& body) = 0;
+
+    /// HTTP GET.  Default delegates to post_json with an empty body for
+    /// back-compat; the real CurlTransport overrides with a proper GET.
+    virtual Response get(
+        const std::string& url,
+        const std::unordered_map<std::string, std::string>& headers) {
+        return post_json(url, headers, "");
+    }
 };
 
-// Real HTTP transport wrapping libcurl/cpr.  If cpr is unavailable at
-// configure time, the returned transport throws std::runtime_error on any
-// post_json() call.
+// Real HTTP transport wrapping libcurl/cpr.  If neither is available at
+// configure time, throws std::runtime_error.
 std::unique_ptr<HttpTransport> make_curl_transport();
+
+// Lazily-created global transport instance.  Returns nullptr when no HTTP
+// backend was compiled in.
+HttpTransport* get_default_transport();
 
 // Deterministic fake transport for unit tests.
 class FakeHttpTransport : public HttpTransport {

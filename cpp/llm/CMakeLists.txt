@@ -24,14 +24,19 @@ if(NOT nlohmann_json_FOUND)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
-# ── cpr (optional) ──────────────────────────────────────────────────────
+# ── HTTP transport: prefer libcurl, fall back to cpr ────────────────────
+find_package(CURL QUIET)
 find_package(cpr CONFIG QUIET)
+set(HERMES_LLM_HAS_CURL FALSE)
 set(HERMES_LLM_HAS_CPR FALSE)
-if(cpr_FOUND)
+if(CURL_FOUND)
+    set(HERMES_LLM_HAS_CURL TRUE)
+    message(STATUS "hermes/llm: libcurl found — real HTTP transport enabled")
+elseif(cpr_FOUND)
     set(HERMES_LLM_HAS_CPR TRUE)
     message(STATUS "hermes/llm: cpr found — real HTTP transport enabled")
 else()
-    message(STATUS "hermes/llm: cpr NOT found — make_curl_transport() will throw")
+    message(STATUS "hermes/llm: no HTTP backend — make_curl_transport() will throw")
 endif()
 
 # ── Library target ──────────────────────────────────────────────────────
@@ -64,7 +69,40 @@ target_link_libraries(hermes_llm
         hermes_warnings
 )
 
-if(HERMES_LLM_HAS_CPR)
+if(HERMES_LLM_HAS_CURL)
+    # Static libcurl requires OpenSSL and zlib as transitive deps.
+    find_package(OpenSSL QUIET)
+    find_package(ZLIB QUIET)
+
+    # CURL::libcurl from vcpkg carries -isystem <vcpkg>/include which
+    # contains nlohmann_json 3.12 headers.  That silently overrides the
+    # system nlohmann_json 3.11 used everywhere else and causes ABI
+    # mismatches.  We only need <curl/curl.h> in llm_client.cpp, so we
+    # add CURL's include dirs with explicit -I for just that TU and
+    # link the .a directly (bypassing the IMPORTED target's transitive
+    # -isystem propagation).
+    get_target_property(_curl_incs CURL::libcurl INTERFACE_INCLUDE_DIRECTORIES)
+    if(_curl_incs)
+        # Per-file INCLUDE_DIRECTORIES keeps curl headers out of other TUs.
+        set_property(SOURCE src/llm_client.cpp APPEND PROPERTY
+            INCLUDE_DIRECTORIES ${_curl_incs})
+    endif()
+
+    # Only llm_client.cpp needs the CURL define.
+    set_property(SOURCE src/llm_client.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS HERMES_LLM_HAS_CURL=1)
+
+    # Link libraries by path to avoid IMPORTED targets injecting
+    # -isystem <vcpkg>/include into every TU.
+    target_link_libraries(hermes_llm PRIVATE
+        ${CURL_LIBRARY_RELEASE}
+        ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY}
+        ${CMAKE_DL_LIBS}
+    )
+    if(ZLIB_FOUND)
+        target_link_libraries(hermes_llm PRIVATE ZLIB::ZLIB)
+    endif()
+elseif(HERMES_LLM_HAS_CPR)
     target_link_libraries(hermes_llm PRIVATE cpr::cpr)
     target_compile_definitions(hermes_llm PRIVATE HERMES_LLM_HAS_CPR=1)
 endif()
