@@ -33,6 +33,12 @@ add_executable(hermes_tools_tests
     test_interrupt.cpp
     test_file_tools.cpp
     test_terminal_tool.cpp
+    test_web_tools.cpp
+    test_vision_tool.cpp
+    test_send_message_tool.cpp
+    test_image_gen_tool.cpp
+    test_tts_tool.cpp
+    test_delegate_tool.cpp
 )
 
 target_link_libraries(hermes_tools_tests

@@ -35,6 +35,12 @@ add_library(hermes_tools STATIC
     src/file_tools.cpp
     src/terminal_tool.cpp
     src/discover_tools.cpp
+    src/web_tools.cpp
+    src/vision_tool.cpp
+    src/send_message_tool.cpp
+    src/image_generation_tool.cpp
+    src/tts_tool.cpp
+    src/delegate_tool.cpp
 )
 
 target_include_directories(hermes_tools

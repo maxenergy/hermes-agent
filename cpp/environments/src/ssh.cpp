@@ -109,7 +109,8 @@ void SSHEnvironment::cleanup() {
                              : config_.user + "@" + config_.host;
     std::string cmd = "ssh -o ControlPath=" + control_socket_path() +
                       " -O exit " + target + " 2>/dev/null";
-    (void)::system(cmd.c_str());
+    int rc = ::system(cmd.c_str());
+    (void)rc;
 }
 
 }  // namespace hermes::environments

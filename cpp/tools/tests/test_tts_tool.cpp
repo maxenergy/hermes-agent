@@ -1,0 +1,43 @@
+#include "hermes/tools/registry.hpp"
+#include "hermes/tools/tts_tool.hpp"
+
+#include <gtest/gtest.h>
+
+using namespace hermes::tools;
+
+namespace {
+
+class TtsToolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        ToolRegistry::instance().clear();
+        register_tts_tools();
+    }
+    void TearDown() override { ToolRegistry::instance().clear(); }
+};
+
+TEST_F(TtsToolTest, EdgeProviderConstructsCommand) {
+    auto result = ToolRegistry::instance().dispatch(
+        "text_to_speech",
+        {{"text", "Hello world"}, {"provider", "edge"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    ASSERT_TRUE(parsed.contains("command"));
+    auto cmd = parsed["command"].get<std::string>();
+    EXPECT_NE(cmd.find("edge-tts"), std::string::npos);
+    EXPECT_NE(cmd.find("Hello world"), std::string::npos);
+    EXPECT_EQ(parsed["format"], "mp3");
+}
+
+TEST_F(TtsToolTest, HttpProviderReturnsError) {
+    auto result = ToolRegistry::instance().dispatch(
+        "text_to_speech",
+        {{"text", "hi"}, {"provider", "elevenlabs"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    EXPECT_TRUE(parsed.contains("error"));
+    EXPECT_NE(parsed["error"].get<std::string>().find("elevenlabs"),
+              std::string::npos);
+}
+
+}  // namespace
