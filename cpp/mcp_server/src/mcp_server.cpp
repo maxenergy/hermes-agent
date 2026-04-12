@@ -1,6 +1,7 @@
 #include "hermes/mcp_server/mcp_server.hpp"
 
 #include <iostream>
+#include <set>
 #include <string>
 
 namespace hermes::mcp_server {
@@ -78,22 +79,102 @@ nlohmann::json HermesMcpServer::handle_messages_read(
 }
 
 nlohmann::json HermesMcpServer::handle_messages_send(
-    const nlohmann::json& /*params*/) {
-    // Stub: message sending requires agent integration
-    return {{"status", "not_implemented"}};
+    const nlohmann::json& params) {
+    auto session_id = params.is_object() ? params.value("session_id", "") : "";
+    auto content = params.is_object() ? params.value("content", "") : "";
+
+    if (content.empty()) {
+        return {{"error", "content is required"}};
+    }
+
+    // Store the user message in the session.
+    if (!session_id.empty() && config_.session_db) {
+        hermes::state::MessageRow msg;
+        msg.session_id = session_id;
+        msg.role = "user";
+        msg.content = content;
+        msg.created_at = std::chrono::system_clock::now();
+        config_.session_db->save_message(msg);
+    }
+
+    // Agent integration: if an agent_factory is set, use it to get a response.
+    if (config_.agent_factory) {
+        try {
+            auto response = config_.agent_factory(content);
+            // Save assistant response to session.
+            if (!session_id.empty() && config_.session_db) {
+                hermes::state::MessageRow resp_msg;
+                resp_msg.session_id = session_id;
+                resp_msg.role = "assistant";
+                resp_msg.content = response;
+                resp_msg.created_at = std::chrono::system_clock::now();
+                config_.session_db->save_message(resp_msg);
+            }
+            return {{"response", response}};
+        } catch (const std::exception& e) {
+            return {{"error", e.what()}};
+        }
+    }
+
+    return {{"response", "agent not configured"},
+            {"status", "message_saved"}};
 }
 
 nlohmann::json HermesMcpServer::handle_events_poll(
-    const nlohmann::json& /*params*/) {
-    // Stub: event polling requires subscription system
-    return {{"events", nlohmann::json::array()}};
+    const nlohmann::json& params) {
+    auto session_id = params.is_object() ? params.value("session_id", "") : "";
+    int limit = params.is_object() ? params.value("limit", 20) : 20;
+
+    if (session_id.empty() || !config_.session_db) {
+        return {{"events", nlohmann::json::array()}};
+    }
+
+    auto messages = config_.session_db->get_messages(session_id);
+
+    // Return last N messages as events.
+    nlohmann::json events = nlohmann::json::array();
+    std::size_t start = 0;
+    if (static_cast<int>(messages.size()) > limit) {
+        start = messages.size() - static_cast<std::size_t>(limit);
+    }
+    for (std::size_t i = start; i < messages.size(); ++i) {
+        events.push_back({
+            {"id", messages[i].id},
+            {"role", messages[i].role},
+            {"content", messages[i].content},
+            {"session_id", messages[i].session_id}
+        });
+    }
+    return {{"events", events}};
 }
 
 nlohmann::json HermesMcpServer::handle_channels_list(
-    const nlohmann::json& /*params*/) {
-    // Stub: returns available communication channels
-    return nlohmann::json::array({nlohmann::json{{"name", "default"},
-                                                 {"type", "conversation"}}});
+    const nlohmann::json& params) {
+    int limit = params.is_object() ? params.value("limit", 50) : 50;
+
+    if (!config_.session_db) {
+        return nlohmann::json::array({nlohmann::json{{"name", "default"},
+                                                     {"type", "conversation"}}});
+    }
+
+    // Query distinct session sources as channels.
+    auto sessions = config_.session_db->list_sessions(limit, 0);
+    std::set<std::string> sources;
+    for (const auto& s : sessions) {
+        sources.insert(s.source);
+    }
+
+    nlohmann::json channels = nlohmann::json::array();
+    for (const auto& src : sources) {
+        channels.push_back({{"name", src}, {"type", "conversation"}});
+    }
+
+    // Always include a default channel.
+    if (channels.empty()) {
+        channels.push_back({{"name", "default"}, {"type", "conversation"}});
+    }
+
+    return channels;
 }
 
 nlohmann::json HermesMcpServer::handle_initialize(

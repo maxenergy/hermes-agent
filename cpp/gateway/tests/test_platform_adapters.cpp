@@ -11,21 +11,40 @@
 #include "../platforms/webhook.hpp"
 #include "../platforms/weixin.hpp"
 
+#include <hermes/llm/llm_client.hpp>
+#include <sstream>
+
 using namespace hermes::gateway;
 using namespace hermes::gateway::platforms;
+using namespace hermes::llm;
 
 // --- Telegram ---
 
 TEST(TelegramAdapter, ConnectWithTokenSucceeds) {
+    FakeHttpTransport fake;
+    // Enqueue a getMe response.
+    fake.enqueue_response({200, R"({"ok":true,"result":{"id":123,"username":"testbot"}})", {}});
+
     TelegramAdapter::Config cfg;
     cfg.bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11";
-    TelegramAdapter adapter(cfg);
+    TelegramAdapter adapter(cfg, &fake);
     EXPECT_TRUE(adapter.connect());
+    EXPECT_TRUE(adapter.connected());
 }
 
 TEST(TelegramAdapter, ConnectEmptyTokenFails) {
     TelegramAdapter::Config cfg;
     TelegramAdapter adapter(cfg);
+    EXPECT_FALSE(adapter.connect());
+}
+
+TEST(TelegramAdapter, ConnectBadResponseFails) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({401, R"({"ok":false})", {}});
+
+    TelegramAdapter::Config cfg;
+    cfg.bot_token = "bad-token";
+    TelegramAdapter adapter(cfg, &fake);
     EXPECT_FALSE(adapter.connect());
 }
 
@@ -46,19 +65,51 @@ TEST(TelegramAdapter, FormatMarkdownV2EscapesAllSpecials) {
 }
 
 TEST(TelegramAdapter, SendReturnsTrue) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"ok":true,"result":{"message_id":1}})", {}});
+
     TelegramAdapter::Config cfg;
     cfg.bot_token = "token";
-    TelegramAdapter adapter(cfg);
+    TelegramAdapter adapter(cfg, &fake);
     EXPECT_TRUE(adapter.send("123", "hello"));
+
+    // Verify the request was made to the correct URL.
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("/sendMessage"), std::string::npos);
+}
+
+TEST(TelegramAdapter, SendTypingMakesRequest) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"ok":true})", {}});
+
+    TelegramAdapter::Config cfg;
+    cfg.bot_token = "token";
+    TelegramAdapter adapter(cfg, &fake);
+    adapter.send_typing("123");
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("/sendChatAction"), std::string::npos);
 }
 
 // --- Discord ---
 
 TEST(DiscordAdapter, ConnectSucceeds) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"id":"123","username":"bot"})", {}});
+
     DiscordAdapter::Config cfg;
     cfg.bot_token = "discord-bot-token";
-    DiscordAdapter adapter(cfg);
+    DiscordAdapter adapter(cfg, &fake);
     EXPECT_TRUE(adapter.connect());
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("/users/@me"), std::string::npos);
+}
+
+TEST(DiscordAdapter, ConnectEmptyTokenFails) {
+    DiscordAdapter::Config cfg;
+    DiscordAdapter adapter(cfg);
+    EXPECT_FALSE(adapter.connect());
 }
 
 TEST(DiscordAdapter, PlatformReturnsDiscord) {
@@ -71,7 +122,47 @@ TEST(DiscordAdapter, MentionFormat) {
     EXPECT_EQ(DiscordAdapter::format_mention("123456"), "<@123456>");
 }
 
+TEST(DiscordAdapter, SendMakesRequest) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"id":"1"})", {}});
+
+    DiscordAdapter::Config cfg;
+    cfg.bot_token = "token";
+    DiscordAdapter adapter(cfg, &fake);
+    EXPECT_TRUE(adapter.send("channel123", "hello world"));
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("/channels/channel123/messages"),
+              std::string::npos);
+}
+
 // --- Slack ---
+
+TEST(SlackAdapter, ConnectSucceeds) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"ok":true,"user_id":"U123"})", {}});
+
+    SlackAdapter::Config cfg;
+    cfg.bot_token = "xoxb-test-token";
+    SlackAdapter adapter(cfg, &fake);
+    EXPECT_TRUE(adapter.connect());
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("auth.test"), std::string::npos);
+}
+
+TEST(SlackAdapter, SendMakesRequest) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, R"({"ok":true,"ts":"123.456"})", {}});
+
+    SlackAdapter::Config cfg;
+    cfg.bot_token = "xoxb-test";
+    SlackAdapter adapter(cfg, &fake);
+    EXPECT_TRUE(adapter.send("C12345", "hello"));
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_NE(fake.requests()[0].url.find("chat.postMessage"), std::string::npos);
+}
 
 TEST(SlackAdapter, PlatformReturnsSlack) {
     SlackAdapter::Config cfg;
@@ -106,32 +197,27 @@ TEST(ApiServerAdapter, ConnectAlwaysSucceeds) {
     ApiServerAdapter::Config cfg;
     ApiServerAdapter adapter(cfg);
     EXPECT_TRUE(adapter.connect());
+    EXPECT_TRUE(adapter.connected());
+}
+
+TEST(ApiServerAdapter, SendStoresResponse) {
+    ApiServerAdapter::Config cfg;
+    ApiServerAdapter adapter(cfg);
+    EXPECT_TRUE(adapter.send("req-1", "hello response"));
+    EXPECT_EQ(adapter.get_pending_response("req-1"), "hello response");
+    // Second call should return empty (consumed).
+    EXPECT_TRUE(adapter.get_pending_response("req-1").empty());
 }
 
 TEST(ApiServerAdapter, HmacVerification) {
-    // Compute expected HMAC-SHA256 of "body" with key "secret".
-    // We can use Slack's compute function (same HMAC core) to get the expected hex.
-    // Instead, test round-trip: compute then verify.
     std::string secret = "test-secret";
     std::string body = "test-body";
-
-    // Compute the HMAC manually via the Slack helper (same algo, minus prefix).
-    auto slack_sig = SlackAdapter::compute_slack_signature(secret, "", body);
-    // The Slack signature is "v0=" + HMAC("v0::body"), different base string.
-    // So let's just test that verify_hmac_signature works with a known pair.
-
-    // Self-consistency: compute signature, then verify.
-    // ApiServer signs the raw body without prefix.
-    // We'll verify a wrong signature returns false.
     EXPECT_FALSE(ApiServerAdapter::verify_hmac_signature(secret, body, "wrong"));
 }
 
 TEST(ApiServerAdapter, HmacVerifySameInput) {
-    // Verify that the same input always produces the same result.
     std::string secret = "key123";
     std::string body = R"({"message":"hello"})";
-
-    // Compute by creating a known digest first (via webhook, same impl).
     bool r1 = ApiServerAdapter::verify_hmac_signature(secret, body, "abc");
     bool r2 = ApiServerAdapter::verify_hmac_signature(secret, body, "abc");
     EXPECT_EQ(r1, r2);
@@ -149,6 +235,23 @@ TEST(WebhookAdapter, ConnectAlwaysSucceeds) {
     WebhookAdapter::Config cfg;
     WebhookAdapter adapter(cfg);
     EXPECT_TRUE(adapter.connect());
+}
+
+TEST(WebhookAdapter, SendPostsToEndpoint) {
+    FakeHttpTransport fake;
+    fake.enqueue_response({200, "{}", {}});
+
+    WebhookAdapter::Config cfg;
+    cfg.endpoint_url = "https://example.com/hook";
+    cfg.signature_secret = "mysecret";
+    WebhookAdapter adapter(cfg, &fake);
+    EXPECT_TRUE(adapter.send("ch1", "payload"));
+
+    ASSERT_EQ(fake.requests().size(), 1u);
+    EXPECT_EQ(fake.requests()[0].url, "https://example.com/hook");
+    // Should have signature header.
+    auto it = fake.requests()[0].headers.find("X-Hermes-Signature");
+    EXPECT_NE(it, fake.requests()[0].headers.end());
 }
 
 // --- Weixin ---
@@ -219,9 +322,14 @@ TEST(LocalAdapter, ConnectSucceeds) {
     EXPECT_TRUE(adapter.connect());
 }
 
-TEST(LocalAdapter, SendReturnsTrue) {
+TEST(LocalAdapter, SendWritesToStdout) {
     LocalAdapter adapter;
-    EXPECT_TRUE(adapter.send("test", "hello"));
+    // Capture stdout.
+    std::ostringstream oss;
+    auto* old = std::cout.rdbuf(oss.rdbuf());
+    EXPECT_TRUE(adapter.send("test", "hello stdout"));
+    std::cout.rdbuf(old);
+    EXPECT_NE(oss.str().find("hello stdout"), std::string::npos);
 }
 
 // --- Factory ---

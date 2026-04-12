@@ -64,6 +64,7 @@ target_link_libraries(hermes_gateway
     PUBLIC
         hermes::core
         hermes::config
+        hermes::llm
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes_warnings

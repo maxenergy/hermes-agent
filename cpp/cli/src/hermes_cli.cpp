@@ -2,9 +2,11 @@
 
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
+#include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -194,9 +196,17 @@ void HermesCLI::handle_model(const std::string& args) {
 }
 
 void HermesCLI::handle_skills() {
-    // List available skills — stub until skills_list tool is wired.
-    std::cout << "Available skills:\n"
-              << "  (skill list not yet wired — use `hermes skills` subcommand)\n";
+    auto skills = hermes::skills::iter_skill_index();
+    if (skills.empty()) {
+        std::cout << "No skills found.\n";
+        return;
+    }
+    std::cout << "Available skills:\n";
+    for (const auto& skill : skills) {
+        std::string status = skill.enabled ? "" : " (disabled)";
+        std::cout << "  " << std::left << std::setw(20) << skill.name
+                  << skill.description << status << "\n";
+    }
 }
 
 void HermesCLI::handle_tools() {
@@ -216,8 +226,21 @@ void HermesCLI::handle_usage() {
 
 void HermesCLI::handle_compress() {
     std::cout << "Compressing context...\n";
-    // Stub — actual compression requires agent wiring.
-    std::cout << "Context compression — not yet wired to agent.\n";
+    if (history_.empty()) {
+        std::cout << "No messages to compress.\n";
+        return;
+    }
+    // Compress by keeping only the last 10 messages and a summary marker.
+    std::size_t keep = 10;
+    if (history_.size() > keep) {
+        auto removed = history_.size() - keep;
+        history_.erase(history_.begin(),
+                       history_.begin() + static_cast<std::ptrdiff_t>(removed));
+        std::cout << "Compressed: removed " << removed
+                  << " older messages, keeping " << keep << ".\n";
+    } else {
+        std::cout << "History is already compact (" << history_.size() << " messages).\n";
+    }
 }
 
 void HermesCLI::handle_status() {

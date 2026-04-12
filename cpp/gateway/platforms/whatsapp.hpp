@@ -4,6 +4,7 @@
 #include <string>
 
 #include <hermes/gateway/gateway_runner.hpp>
+#include <hermes/llm/llm_client.hpp>
 
 namespace hermes::gateway::platforms {
 
@@ -15,6 +16,7 @@ public:
     };
 
     explicit WhatsAppAdapter(Config cfg);
+    WhatsAppAdapter(Config cfg, hermes::llm::HttpTransport* transport);
 
     Platform platform() const override { return Platform::WhatsApp; }
     bool connect() override;
@@ -28,7 +30,9 @@ public:
     Config config() const { return cfg_; }
 
 private:
+    hermes::llm::HttpTransport* get_transport();
     Config cfg_;
+    hermes::llm::HttpTransport* transport_ = nullptr;
 };
 
 }  // namespace hermes::gateway::platforms

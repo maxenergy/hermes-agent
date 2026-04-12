@@ -4,6 +4,7 @@
 #include <string>
 
 #include <hermes/gateway/gateway_runner.hpp>
+#include <hermes/llm/llm_client.hpp>
 
 namespace hermes::gateway::platforms {
 
@@ -16,6 +17,7 @@ public:
     };
 
     explicit SlackAdapter(Config cfg);
+    SlackAdapter(Config cfg, hermes::llm::HttpTransport* transport);
 
     Platform platform() const override { return Platform::Slack; }
     bool connect() override;
@@ -29,9 +31,13 @@ public:
                                                const std::string& body);
 
     Config config() const { return cfg_; }
+    bool connected() const { return connected_; }
 
 private:
+    hermes::llm::HttpTransport* get_transport();
     Config cfg_;
+    hermes::llm::HttpTransport* transport_ = nullptr;
+    bool connected_ = false;
 };
 
 }  // namespace hermes::gateway::platforms

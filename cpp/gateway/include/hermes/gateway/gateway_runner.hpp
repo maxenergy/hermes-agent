@@ -43,6 +43,12 @@ public:
 
     void handle_message(const MessageEvent& event);
 
+    // Send a message to a specific platform adapter by name.
+    // Throws std::runtime_error if the platform is not registered.
+    void send_to_platform(const std::string& platform_name,
+                          const std::string& chat_id,
+                          const std::string& content);
+
 private:
     GatewayConfig config_;
     SessionStore* sessions_;

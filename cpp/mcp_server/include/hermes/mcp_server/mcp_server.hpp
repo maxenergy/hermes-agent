@@ -3,6 +3,7 @@
 
 #include "hermes/state/session_db.hpp"
 
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -12,6 +13,8 @@ namespace hermes::mcp_server {
 
 struct McpServerConfig {
     hermes::state::SessionDB* session_db;
+    // Optional agent factory: given a user message, returns the agent response.
+    std::function<std::string(const std::string&)> agent_factory;
 };
 
 class HermesMcpServer {

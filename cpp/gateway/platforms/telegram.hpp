@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <hermes/gateway/gateway_runner.hpp>
+#include <hermes/llm/llm_client.hpp>
 
 namespace hermes::gateway::platforms {
 
@@ -19,6 +20,8 @@ public:
     };
 
     explicit TelegramAdapter(Config cfg);
+    // Constructor with injectable transport (for testing).
+    TelegramAdapter(Config cfg, hermes::llm::HttpTransport* transport);
 
     Platform platform() const override { return Platform::Telegram; }
     bool connect() override;
@@ -30,9 +33,14 @@ public:
     static std::string format_markdown_v2(const std::string& text);
 
     Config config() const { return cfg_; }
+    bool connected() const { return connected_; }
 
 private:
+    hermes::llm::HttpTransport* get_transport();
     Config cfg_;
+    hermes::llm::HttpTransport* transport_ = nullptr;
+    bool connected_ = false;
+    std::string bot_username_;
 };
 
 }  // namespace hermes::gateway::platforms

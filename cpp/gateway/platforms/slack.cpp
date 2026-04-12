@@ -4,27 +4,78 @@
 #include <iomanip>
 #include <sstream>
 
+#include <nlohmann/json.hpp>
 #include <openssl/hmac.h>
 
 namespace hermes::gateway::platforms {
 
 SlackAdapter::SlackAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
+SlackAdapter::SlackAdapter(Config cfg, hermes::llm::HttpTransport* transport)
+    : cfg_(std::move(cfg)), transport_(transport) {}
+
+hermes::llm::HttpTransport* SlackAdapter::get_transport() {
+    if (transport_) return transport_;
+    return hermes::llm::get_default_transport();
+}
+
 bool SlackAdapter::connect() {
     if (cfg_.bot_token.empty()) return false;
-    // TODO(phase-14+): open Socket Mode WebSocket or start RTM.
-    return true;
+
+    auto* transport = get_transport();
+    if (!transport) return false;
+
+    try {
+        auto resp = transport->post_json(
+            "https://slack.com/api/auth.test",
+            {{"Authorization", "Bearer " + cfg_.bot_token},
+             {"Content-Type", "application/json"}},
+            "{}");
+        if (resp.status_code != 200) return false;
+
+        auto body = nlohmann::json::parse(resp.body);
+        if (!body.value("ok", false)) return false;
+
+        connected_ = true;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
-void SlackAdapter::disconnect() {}
-
-bool SlackAdapter::send(const std::string& /*chat_id*/,
-                        const std::string& /*content*/) {
-    // TODO(phase-14+): POST to chat.postMessage
-    return true;
+void SlackAdapter::disconnect() {
+    connected_ = false;
 }
 
-void SlackAdapter::send_typing(const std::string& /*chat_id*/) {}
+bool SlackAdapter::send(const std::string& chat_id,
+                        const std::string& content) {
+    auto* transport = get_transport();
+    if (!transport) return false;
+
+    nlohmann::json payload = {
+        {"channel", chat_id},
+        {"text", content}
+    };
+
+    try {
+        auto resp = transport->post_json(
+            "https://slack.com/api/chat.postMessage",
+            {{"Authorization", "Bearer " + cfg_.bot_token},
+             {"Content-Type", "application/json"}},
+            payload.dump());
+        if (resp.status_code != 200) return false;
+
+        auto body = nlohmann::json::parse(resp.body);
+        return body.value("ok", false);
+    } catch (...) {
+        return false;
+    }
+}
+
+void SlackAdapter::send_typing(const std::string& /*chat_id*/) {
+    // Slack typing indicators are sent via WebSocket (RTM/Socket Mode),
+    // not via the Web API. No-op for HTTP-only send path.
+}
 
 std::string SlackAdapter::compute_slack_signature(
     const std::string& signing_secret,

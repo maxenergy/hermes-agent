@@ -1,6 +1,8 @@
 // Phase 12 — Local (stdin/stdout) platform adapter implementation.
 #include "local.hpp"
 
+#include <iostream>
+
 namespace hermes::gateway::platforms {
 
 bool LocalAdapter::connect() {
@@ -11,8 +13,8 @@ bool LocalAdapter::connect() {
 void LocalAdapter::disconnect() {}
 
 bool LocalAdapter::send(const std::string& /*chat_id*/,
-                        const std::string& /*content*/) {
-    // TODO(phase-14+): write to stdout.
+                        const std::string& content) {
+    std::cout << content << std::endl;
     return true;
 }
 

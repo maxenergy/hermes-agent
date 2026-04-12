@@ -1,31 +1,97 @@
 // Phase 12 — Weixin (WeChat Official Account) platform adapter implementation.
 #include "weixin.hpp"
 
-#include <regex>
+#include <nlohmann/json.hpp>
 
 namespace hermes::gateway::platforms {
 
 WeixinAdapter::WeixinAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
+WeixinAdapter::WeixinAdapter(Config cfg, hermes::llm::HttpTransport* transport)
+    : cfg_(std::move(cfg)), transport_(transport) {}
+
+hermes::llm::HttpTransport* WeixinAdapter::get_transport() {
+    if (transport_) return transport_;
+    return hermes::llm::get_default_transport();
+}
+
 bool WeixinAdapter::connect() {
     if (cfg_.appid.empty() || cfg_.appsecret.empty()) return false;
-    // TODO(phase-14+): obtain access_token from Weixin API.
-    return true;
+
+    auto* transport = get_transport();
+    if (!transport) return false;
+
+    // Obtain access_token from Weixin API.
+    try {
+        std::string url = "https://api.weixin.qq.com/cgi-bin/token"
+                          "?grant_type=client_credential"
+                          "&appid=" + cfg_.appid +
+                          "&secret=" + cfg_.appsecret;
+        auto resp = transport->get(url, {});
+        if (resp.status_code != 200) return false;
+
+        auto body = nlohmann::json::parse(resp.body);
+        if (!body.contains("access_token")) return false;
+        wx_access_token_ = body["access_token"].get<std::string>();
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
-void WeixinAdapter::disconnect() {}
-
-bool WeixinAdapter::send(const std::string& /*chat_id*/,
-                         const std::string& /*content*/) {
-    return true;
+void WeixinAdapter::disconnect() {
+    wx_access_token_.clear();
 }
 
-void WeixinAdapter::send_typing(const std::string& /*chat_id*/) {}
+bool WeixinAdapter::send(const std::string& chat_id,
+                         const std::string& content) {
+    auto* transport = get_transport();
+    if (!transport) return false;
+
+    // Weixin customer service message API.
+    nlohmann::json payload = {
+        {"touser", chat_id},
+        {"msgtype", "text"},
+        {"text", {{"content", content}}}
+    };
+
+    try {
+        auto resp = transport->post_json(
+            "https://api.weixin.qq.com/cgi-bin/message/custom/send"
+            "?access_token=" + wx_access_token_,
+            {{"Content-Type", "application/json"}},
+            payload.dump());
+        if (resp.status_code != 200) return false;
+
+        auto body = nlohmann::json::parse(resp.body);
+        return body.value("errcode", -1) == 0;
+    } catch (...) {
+        return false;
+    }
+}
+
+void WeixinAdapter::send_typing(const std::string& chat_id) {
+    auto* transport = get_transport();
+    if (!transport) return;
+
+    nlohmann::json payload = {
+        {"touser", chat_id},
+        {"command", "Typing"}
+    };
+
+    try {
+        transport->post_json(
+            "https://api.weixin.qq.com/cgi-bin/message/custom/typing"
+            "?access_token=" + wx_access_token_,
+            {{"Content-Type", "application/json"}},
+            payload.dump());
+    } catch (...) {
+        // Best-effort.
+    }
+}
 
 namespace {
-// Extract text between <Tag> and </Tag> from XML.
 std::string extract_xml_tag(const std::string& xml, const std::string& tag) {
-    // Try CDATA first: <Tag><![CDATA[value]]></Tag>
     std::string cdata_open = "<" + tag + "><![CDATA[";
     std::string cdata_close = "]]></" + tag + ">";
     auto pos = xml.find(cdata_open);
@@ -34,7 +100,6 @@ std::string extract_xml_tag(const std::string& xml, const std::string& tag) {
         auto end = xml.find(cdata_close, start);
         if (end != std::string::npos) return xml.substr(start, end - start);
     }
-    // Fallback: <Tag>value</Tag>
     std::string open = "<" + tag + ">";
     std::string close = "</" + tag + ">";
     pos = xml.find(open);

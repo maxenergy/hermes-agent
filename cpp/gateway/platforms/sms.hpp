@@ -4,6 +4,7 @@
 #include <string>
 
 #include <hermes/gateway/gateway_runner.hpp>
+#include <hermes/llm/llm_client.hpp>
 
 namespace hermes::gateway::platforms {
 
@@ -16,6 +17,7 @@ public:
     };
 
     explicit SmsAdapter(Config cfg);
+    SmsAdapter(Config cfg, hermes::llm::HttpTransport* transport);
 
     Platform platform() const override { return Platform::Sms; }
     bool connect() override;
@@ -26,7 +28,9 @@ public:
     Config config() const { return cfg_; }
 
 private:
+    hermes::llm::HttpTransport* get_transport();
     Config cfg_;
+    hermes::llm::HttpTransport* transport_ = nullptr;
 };
 
 }  // namespace hermes::gateway::platforms

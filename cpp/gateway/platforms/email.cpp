@@ -1,22 +1,35 @@
 // Phase 12 — Email platform adapter implementation.
 #include "email.hpp"
 
+#include <array>
+#include <cstdio>
+
 namespace hermes::gateway::platforms {
 
 EmailAdapter::EmailAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
 bool EmailAdapter::connect() {
     if (cfg_.address.empty() || cfg_.password.empty()) return false;
-    // TODO(phase-14+): IMAP connect + IDLE.
+    // IMAP IDLE connection for receiving is not yet implemented; send via
+    // sendmail/SMTP is available.
     return true;
 }
 
 void EmailAdapter::disconnect() {}
 
-bool EmailAdapter::send(const std::string& /*chat_id*/,
-                        const std::string& /*content*/) {
-    // TODO(phase-14+): SMTP send.
-    return true;
+bool EmailAdapter::send(const std::string& chat_id,
+                        const std::string& content) {
+    // chat_id is the recipient email address.
+    std::string mime = build_mime_message(cfg_.address, chat_id, "Hermes", content);
+
+    // Try sendmail first (available on most Unix systems).
+    std::string cmd = "sendmail -t 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "w");
+    if (!pipe) return false;
+
+    std::fwrite(mime.data(), 1, mime.size(), pipe);
+    int rc = pclose(pipe);
+    return rc == 0;
 }
 
 void EmailAdapter::send_typing(const std::string& /*chat_id*/) {

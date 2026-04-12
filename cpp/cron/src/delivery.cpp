@@ -45,6 +45,10 @@ DeliveryTarget parse_delivery_target(std::string_view target_str) {
     return dt;
 }
 
+void DeliveryRouter::set_gateway_sender(PlatformSendFn sender) {
+    gateway_sender_ = std::move(sender);
+}
+
 void DeliveryRouter::deliver(const std::string& content,
                               const std::vector<DeliveryTarget>& targets,
                               const std::string& job_id,
@@ -53,12 +57,18 @@ void DeliveryRouter::deliver(const std::string& content,
         if (target.platform == "local") {
             deliver_local(content, job_id, run_id);
         } else {
-            // Platform targets are not wired in Phase 10.
-            throw std::runtime_error(
-                "delivery to platform '" + target.platform +
-                "' not yet implemented (gateway not wired)");
+            deliver_to_platform(content, target);
         }
     }
+}
+
+void DeliveryRouter::deliver_to_platform(const std::string& content,
+                                          const DeliveryTarget& target) {
+    if (!gateway_sender_) {
+        throw std::runtime_error(
+            "gateway not running — cannot deliver to " + target.platform);
+    }
+    gateway_sender_(target.platform, target.chat_id, content);
 }
 
 void DeliveryRouter::deliver_local(const std::string& content,

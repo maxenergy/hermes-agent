@@ -2,6 +2,8 @@
 
 #include <hermes/gateway/status.hpp>
 
+#include <stdexcept>
+
 namespace hermes::gateway {
 
 GatewayRunner::GatewayRunner(GatewayConfig config,
@@ -58,6 +60,30 @@ void GatewayRunner::handle_message(const MessageEvent& event) {
     sessions_->get_or_create_session(event.source);
 
     // Phase 12+ will add: command dispatch, agent invocation, etc.
+}
+
+void GatewayRunner::send_to_platform(const std::string& platform_name,
+                                     const std::string& chat_id,
+                                     const std::string& content) {
+    Platform target;
+    try {
+        target = platform_from_string(platform_name);
+    } catch (...) {
+        throw std::runtime_error("unknown platform: " + platform_name);
+    }
+
+    for (auto& adapter : adapters_) {
+        if (adapter->platform() == target) {
+            if (!adapter->send(chat_id, content)) {
+                throw std::runtime_error(
+                    "send failed for platform: " + platform_name);
+            }
+            return;
+        }
+    }
+
+    throw std::runtime_error(
+        "no adapter registered for platform: " + platform_name);
 }
 
 }  // namespace hermes::gateway

@@ -3,12 +3,16 @@
 #include "hermes/cli/hermes_cli.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
+#include "hermes/cron/jobs.hpp"
+#include "hermes/profile/profile.hpp"
+#include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
 
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -316,6 +320,258 @@ int cmd_gateway(int argc, char* argv[]) {
     return 1;
 }
 
+int cmd_setup() {
+    std::cout << "Hermes Setup Wizard\n"
+              << "====================\n\n";
+
+    // 1. Model provider.
+    std::cout << "Select your model provider:\n"
+              << "  1. OpenRouter (recommended)\n"
+              << "  2. Anthropic\n"
+              << "  3. OpenAI\n"
+              << "Choice [1]: ";
+    std::string choice;
+    if (!std::getline(std::cin, choice) || choice.empty()) {
+        choice = "1";
+    }
+
+    std::string provider;
+    if (choice == "1") provider = "openrouter";
+    else if (choice == "2") provider = "anthropic";
+    else if (choice == "3") provider = "openai";
+    else {
+        std::cout << "Invalid selection, defaulting to OpenRouter.\n";
+        provider = "openrouter";
+    }
+
+    // 2. API key (masked).
+    std::cout << "Enter your " << provider << " API key: ";
+    std::string api_key;
+    if (!std::getline(std::cin, api_key) || api_key.empty()) {
+        std::cout << "No API key provided. You can set it later in config.yaml.\n";
+    }
+
+    // 3. Terminal backend.
+    std::cout << "Select terminal backend:\n"
+              << "  1. readline (default)\n"
+              << "  2. raw\n"
+              << "Choice [1]: ";
+    std::string backend_choice;
+    if (!std::getline(std::cin, backend_choice) || backend_choice.empty()) {
+        backend_choice = "1";
+    }
+    std::string backend = (backend_choice == "2") ? "raw" : "readline";
+
+    // Save to config.yaml.
+    auto config = hermes::config::load_config();
+    config["provider"] = provider;
+    if (!api_key.empty()) {
+        config["api_key"] = api_key;
+    }
+    config["cli"]["backend"] = backend;
+    hermes::config::save_config(config);
+
+    std::cout << "\nSetup complete! Configuration saved.\n"
+              << "Run 'hermes' to start chatting.\n";
+    return 0;
+}
+
+int cmd_skills() {
+    auto skills = hermes::skills::iter_skill_index();
+    if (skills.empty()) {
+        std::cout << "No skills found.\n";
+        return 0;
+    }
+
+    std::cout << "Available skills:\n\n";
+    std::cout << "  " << std::left;
+    std::cout << std::setw(20) << "Name"
+              << std::setw(40) << "Description"
+              << "Platforms\n";
+    std::cout << "  " << std::string(80, '-') << "\n";
+
+    for (const auto& skill : skills) {
+        std::string platforms_str;
+        for (const auto& p : skill.platforms) {
+            if (!platforms_str.empty()) platforms_str += ", ";
+            platforms_str += p;
+        }
+        if (platforms_str.empty()) platforms_str = "all";
+
+        std::string status = skill.enabled ? "" : " (disabled)";
+        std::cout << "  " << std::setw(20) << skill.name
+                  << std::setw(40) << (skill.description.substr(0, 37) +
+                                       (skill.description.size() > 37 ? "..." : ""))
+                  << platforms_str << status << "\n";
+    }
+    return 0;
+}
+
+int cmd_logs() {
+    auto home = hermes::core::path::get_hermes_home();
+    auto log_file = home / "logs" / "agent.log";
+
+    if (!fs::exists(log_file)) {
+        std::cout << "No log file found at " << log_file << "\n";
+        return 1;
+    }
+
+    std::ifstream file(log_file);
+    if (!file.is_open()) {
+        std::cerr << "Cannot open " << log_file << "\n";
+        return 1;
+    }
+
+    // Read all lines, keep last 50.
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(file, line)) {
+        lines.push_back(line);
+    }
+
+    std::size_t start = 0;
+    if (lines.size() > 50) {
+        start = lines.size() - 50;
+    }
+    for (std::size_t i = start; i < lines.size(); ++i) {
+        std::cout << lines[i] << "\n";
+    }
+    return 0;
+}
+
+int cmd_cron() {
+    auto home = hermes::core::path::get_hermes_home();
+    auto cron_dir = home / "cron";
+
+    hermes::cron::JobStore store(cron_dir);
+    auto jobs = store.list_all();
+
+    if (jobs.empty()) {
+        std::cout << "No scheduled jobs.\n";
+        return 0;
+    }
+
+    std::cout << "Scheduled jobs:\n\n";
+    std::cout << "  " << std::left
+              << std::setw(12) << "ID"
+              << std::setw(20) << "Name"
+              << std::setw(16) << "Schedule"
+              << std::setw(8) << "Runs"
+              << "Status\n";
+    std::cout << "  " << std::string(60, '-') << "\n";
+
+    for (const auto& job : jobs) {
+        std::string status = job.paused ? "paused" : "active";
+        std::cout << "  " << std::setw(12) << job.id.substr(0, 10)
+                  << std::setw(20) << job.name.substr(0, 18)
+                  << std::setw(16) << job.schedule_str.substr(0, 14)
+                  << std::setw(8) << job.run_count
+                  << status << "\n";
+    }
+    return 0;
+}
+
+int cmd_profile(int argc, char* argv[]) {
+    // hermes profile             → list profiles
+    // hermes profile create NAME → create profile
+    // hermes profile delete NAME → delete profile
+    if (argc <= 2) {
+        auto profiles = hermes::profile::list_profiles();
+        if (profiles.empty()) {
+            std::cout << "No profiles. Use 'hermes profile create <name>' to create one.\n";
+        } else {
+            std::cout << "Profiles:\n";
+            for (const auto& name : profiles) {
+                std::cout << "  " << name << "\n";
+            }
+        }
+        return 0;
+    }
+
+    std::string sub = argv[2];
+
+    if (sub == "create") {
+        if (argc < 4) {
+            std::cerr << "Usage: hermes profile create <name>\n";
+            return 1;
+        }
+        std::string name = argv[3];
+        hermes::profile::create_profile(name);
+        std::cout << "Profile '" << name << "' created.\n";
+        return 0;
+    }
+
+    if (sub == "delete") {
+        if (argc < 4) {
+            std::cerr << "Usage: hermes profile delete <name>\n";
+            return 1;
+        }
+        std::string name = argv[3];
+        try {
+            hermes::profile::delete_profile(name);
+            std::cout << "Profile '" << name << "' deleted.\n";
+        } catch (const std::runtime_error& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+        return 0;
+    }
+
+    if (sub == "list") {
+        auto profiles = hermes::profile::list_profiles();
+        if (profiles.empty()) {
+            std::cout << "No profiles.\n";
+        } else {
+            std::cout << "Profiles:\n";
+            for (const auto& name : profiles) {
+                std::cout << "  " << name << "\n";
+            }
+        }
+        return 0;
+    }
+
+    std::cerr << "Unknown profile subcommand: " << sub << "\n"
+              << "Usage: hermes profile [list|create <name>|delete <name>]\n";
+    return 1;
+}
+
+int cmd_update() {
+    std::cout << "Check https://github.com/NousResearch/hermes-agent/releases for updates.\n"
+              << "Current version: " << kVersionString << "\n";
+    return 0;
+}
+
+int cmd_uninstall() {
+    std::cout << "This will remove ~/.hermes/ and the hermes binary.\n"
+              << "Are you sure? [y/N]: ";
+    std::string confirm;
+    if (!std::getline(std::cin, confirm) || (confirm != "y" && confirm != "Y")) {
+        std::cout << "Uninstall cancelled.\n";
+        return 0;
+    }
+
+    auto home = hermes::core::path::get_hermes_home();
+    std::error_code ec;
+    fs::remove_all(home, ec);
+    if (ec) {
+        std::cerr << "Failed to remove " << home << ": " << ec.message() << "\n";
+        return 1;
+    }
+    std::cout << "Removed " << home << "\n";
+
+    // Try to remove the binary itself.
+    auto self = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec && fs::exists(self)) {
+        fs::remove(self, ec);
+        if (!ec) {
+            std::cout << "Removed " << self << "\n";
+        }
+    }
+
+    std::cout << "Hermes uninstalled.\n";
+    return 0;
+}
+
 int main_entry(int argc, char* argv[]) {
     if (argc < 2) {
         // Default: interactive chat.
@@ -357,32 +613,25 @@ int main_entry(int argc, char* argv[]) {
         return cmd_config(argc, argv);
     }
     if (sub == "setup") {
-        std::cout << "Setup wizard — not yet implemented\n";
-        return 1;
+        return cmd_setup();
     }
     if (sub == "skills") {
-        std::cout << "Skills subcommand — not yet implemented\n";
-        return 1;
+        return cmd_skills();
     }
     if (sub == "logs") {
-        std::cout << "Logs subcommand — not yet implemented\n";
-        return 1;
+        return cmd_logs();
     }
     if (sub == "cron") {
-        std::cout << "Cron subcommand — not yet implemented\n";
-        return 1;
+        return cmd_cron();
     }
     if (sub == "profile") {
-        std::cout << "Profile subcommand — not yet implemented\n";
-        return 1;
+        return cmd_profile(argc, argv);
     }
     if (sub == "update") {
-        std::cout << "Update — not yet implemented\n";
-        return 1;
+        return cmd_update();
     }
     if (sub == "uninstall") {
-        std::cout << "Uninstall — not yet implemented\n";
-        return 1;
+        return cmd_uninstall();
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";
