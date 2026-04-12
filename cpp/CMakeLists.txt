@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.20)
 # on the first configure.
 
 project(hermes_cpp
-    VERSION 0.0.1
+    VERSION 0.1.0
     LANGUAGES CXX
     DESCRIPTION "C++17 reimplementation of the Hermes Agent backend")
 
@@ -38,10 +38,10 @@ add_subdirectory(core)
 add_subdirectory(approval)
 add_subdirectory(config)
 add_subdirectory(profile)
-add_subdirectory(auth)
 add_subdirectory(state)
 add_subdirectory(external)
 add_subdirectory(llm)
+add_subdirectory(auth)
 add_subdirectory(environments)
 add_subdirectory(agent)
 add_subdirectory(tools)
@@ -54,3 +54,17 @@ add_subdirectory(plugins)
 add_subdirectory(mcp_server)
 add_subdirectory(acp)
 add_subdirectory(tests)
+
+# ---------------------------------------------------------------------------
+# Install hooks: ship built-in and optional skills alongside the binary.
+# These live at the Python repo root (one level up from cpp/) and are
+# copied into $CMAKE_INSTALL_PREFIX/share/hermes/ at install time.
+# ---------------------------------------------------------------------------
+if(EXISTS ${CMAKE_SOURCE_DIR}/../skills)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/../skills
+            DESTINATION share/hermes)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/../optional-skills)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/../optional-skills
+            DESTINATION share/hermes)
+endif()
