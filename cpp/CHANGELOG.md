@@ -1,6 +1,29 @@
 # Changelog
 
-## [0.0.1] - 2026-04-12
+## [0.1.0] - 2026-04-13
+
+### Added
+- Batch 12: Modal, Daytona, Singularity, claw, Honcho, IMAP platform/tool integrations
+- Batch 11: PTY support, Ollama client, smart routing, model normalization, CI wiring, Doxygen docs
+- Batch 13: architecture docs (Mermaid diagrams), module dependency listing, release + build-release scripts
+- Install hook copying `skills/` and `optional-skills/` to `share/hermes/`
+- `HERMES_SKILLS_SEARCH_PATH` env var + system-path fallback in `skill_utils::get_all_skills_dirs()`
+- `cpp/docs/architecture.md` (6 Mermaid diagrams: component, agent loop, tool dispatch, gateway, memory/context, build deps)
+- `cpp/docs/module-dependency.md` (first-party link graph for all 20 library targets)
+- `cpp/scripts/release.sh` semver bumper + tagger; `cpp/scripts/build-release.sh` release artifact builder
+
+### Changed
+- `cpp/CMakeLists.txt` project version bumped 0.0.1 -> 0.1.0
+
+- Windows ConPTY + `TerminateProcess` + `GetProcessTimes` under `#ifdef _WIN32`
+- Multi-arch Dockerfile (`ARG TARGETARCH`) + `docker-buildx.sh` + `termux-build.sh`
+- GitHub Copilot OAuth device code flow (`CopilotOAuth` with polling + token exchange)
+- Nous Research subscription status check (`SubscriptionStatus` with 1h cache)
+
+### Metrics
+- 858/858 tests passing (up from 728 in 0.0.1-alpha)
+
+## [0.0.1-alpha] - 2026-04-12
 
 ### Added
 - Core utility library (12 modules): strings, path, atomic_io, env, time, redact, logging, retry, url_safety, ansi_strip, fuzzy, patch_parser
