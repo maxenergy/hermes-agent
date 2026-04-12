@@ -49,6 +49,9 @@ add_library(hermes_tools STATIC
     src/homeassistant_tool.cpp
     src/browser_backend.cpp
     src/browser_tool.cpp
+    src/transcription_tool.cpp
+    src/voice_mode_tool.cpp
+    src/rl_training_tool.cpp
 )
 
 target_include_directories(hermes_tools
