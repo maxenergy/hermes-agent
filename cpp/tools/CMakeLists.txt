@@ -31,6 +31,10 @@ add_library(hermes_tools STATIC
     src/binary_extensions.cpp
     src/managed_tool_gateway.cpp
     src/env_passthrough.cpp
+    src/file_operations.cpp
+    src/file_tools.cpp
+    src/terminal_tool.cpp
+    src/discover_tools.cpp
 )
 
 target_include_directories(hermes_tools
@@ -44,6 +48,8 @@ target_link_libraries(hermes_tools
     PUBLIC
         hermes::core
         hermes::llm
+        hermes::environments
+        hermes::state
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes_warnings

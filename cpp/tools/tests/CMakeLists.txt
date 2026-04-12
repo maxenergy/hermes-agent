@@ -31,6 +31,8 @@ add_executable(hermes_tools_tests
     test_managed_tool_gateway.cpp
     test_env_passthrough.cpp
     test_interrupt.cpp
+    test_file_tools.cpp
+    test_terminal_tool.cpp
 )
 
 target_link_libraries(hermes_tools_tests
