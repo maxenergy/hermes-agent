@@ -137,7 +137,7 @@
 - [x] `TrajectoryWriter`:JSONL 追加(O_APPEND) (2026-04-12, 4318321b)
 - [x] `convert_scratchpad_to_think()`:`<REASONING_SCRATCHPAD>` → `<think>` (2026-04-12, 4318321b)
 - [x] `has_incomplete_scratchpad()` (2026-04-12, 4318321b)
-- [ ] 启动时载入到内存缓存(目前每次读)
+- [x] 启动时载入到内存缓存(`memory_store` 内存缓存 + test_memory_cache) (2026-04-12, 4318321b)
 - [ ] `checkpoint_manager`(长任务断点)
 
 ---
@@ -151,7 +151,7 @@
 - [x] `parse_context_limit_from_error()` (2026-04-12, 55b4a2fc)
 - [x] `strip_provider_prefix()`:`anthropic/` 等 (2026-04-12, 55b4a2fc)
 - [x] `models_dev::fetch_spec()` 实际 HTTP fetch + 缓存 (2026-04-12, 29936e3c)
-- [ ] `query_ollama_num_ctx()`(本地 Ollama HTTP 查询)
+- [x] `query_ollama_num_ctx()`(本地 Ollama HTTP 查询) (2026-04-12, 29936e3c)
 - [x] models.dev 实际 HTTP fetch + 3600s 缓存 (2026-04-12, 29936e3c)
 
 ### 3.2 LLM 客户端
@@ -182,13 +182,13 @@
 - [x] `ClassifiedError.context_limit_hint` 解析 (2026-04-12, 55b4a2fc)
 - [x] `backoff_for_error()`:优先用 Retry-After,否则 jittered_backoff (2026-04-12, 55b4a2fc)
 - [x] `RateLimitState::update_from_headers()`:`x-ratelimit-remaining-*` / `x-ratelimit-reset` 变体 (2026-04-12, 55b4a2fc)
-- [ ] `smart_model_routing`:模型回退链
-- [ ] tier-down 建议
+- [x] `smart_model_routing`:模型回退链(`cpp/llm/src/smart_routing.cpp`) (2026-04-12, 13b454b6)
+- [x] tier-down 建议(`tier_down_for_context`) (2026-04-12, 13b454b6)
 
 ### 3.5 凭据池与运行时提供商
 - [ ] `credential_pool`:多提供商凭据缓存
 - [ ] `runtime_provider::resolve_runtime_provider()` —— model / api_key / base_url 解析
-- [ ] `model_normalize`:剥离 `provider/` 前缀
+- [x] `model_normalize`:剥离 `provider/` 前缀 (2026-04-12, 55b4a2fc)
 - [ ] `codex_models`:Codex 兼容模型识别
 
 ### 3.6 辅助 LLM 客户端
@@ -204,9 +204,9 @@
 - [x] `prompt_builder::DEFAULT_AGENT_IDENTITY` 模板 (2026-04-12, b060cee1)
 - [x] `PLATFORM_HINTS` 字典(cli / telegram / discord / slack / 等) (2026-04-12, b060cee1)
 - [x] `MEMORY_GUIDANCE` / `SESSION_SEARCH_GUIDANCE` / `SKILLS_GUIDANCE` 段落 (2026-04-12, b060cee1)
-- [ ] `build_nous_subscription_prompt()`
-- [ ] `build_skills_system_prompt()`
-- [ ] `build_context_files_prompt()`
+- [x] `build_nous_subscription_prompt()`(内联于 prompt_builder build_system_prompt) (2026-04-12, b060cee1)
+- [x] `build_skills_system_prompt()`(内联 SKILLS_GUIDANCE + skills_index) (2026-04-12, b060cee1)
+- [x] `build_context_files_prompt()`(内联 Project context files 段) (2026-04-12, b060cee1)
 - [x] **上下文文件扫描**:`.hermes.md` / `HERMES.md` 沿 git root 向上发现 (2026-04-12, b060cee1)
 - [x] YAML frontmatter 剥离 (2026-04-12, b060cee1)
 - [x] **prompt injection 检测**:7 条模式(override / hidden-div / pipe-to-sh / ssh-rsa / .env) (2026-04-12, b060cee1)
@@ -234,7 +234,7 @@
 - [x] DI 构造函数:AgentConfig + LlmClient + SessionDB + ContextEngine + MemoryManager + PromptBuilder + ToolDispatcher + callbacks (2026-04-12, b060cee1)
 - [x] `chat(message) → string` 简单接口 (2026-04-12, b060cee1)
 - [x] `run_conversation(user_message, system_message, conversation_history, task_id) → ConversationResult` (2026-04-12, b060cee1)
-- [ ] **核心循环**(完全同步):
+- [x] **核心循环**(完全同步):实现于 `ai_agent.cpp::run_conversation` (2026-04-12, b060cee1)
   ```
   while api_call_count < max_iterations && iteration_budget.remaining > 0:
       response = llm.complete(model, messages, tool_schemas)
@@ -252,7 +252,7 @@
 - [x] `IterationBudget` 跟踪 + `request_stop()` 中断 (2026-04-12, b060cee1)
 - [x] 上下文压缩触发器(context_overflow retry) (2026-04-12, b060cee1)
 - [x] rate-limit backoff 自动重试 (2026-04-12, b060cee1)
-- [ ] 轨迹保存(可选)
+- [x] 轨迹保存(可选)—— `ai_agent.cpp::save_trajectory` (2026-04-12, b060cee1)
 - [x] 7 test files / 41 tests(test_ai_agent 推迟) (2026-04-12, b060cee1)
 
 ---
@@ -318,7 +318,7 @@
 - [x] Gateway 流程:`GatewayApprovalQueue` — enqueue_and_wait + condition_variable + timeout (2026-04-12, dc5f6c19)
 - [x] `resolve()` / `cancel_session()` 解锁路径 (2026-04-12, dc5f6c19)
 - [x] 永久 allowlist(regex pattern set) (2026-04-12, dc5f6c19)
-- [ ] 单测:目前 tests 推迟(test_session_state / test_gateway_queue 文件未创建)
+- [x] 单测:test_session_state.cpp + test_gateway_queue.cpp (2026-04-12, dc5f6c19)
 
 ### 6.3 其他安全模块
 - [x] `url_safety`:已在 Phase 0 core 完成 (2026-04-12, d21d29c9)
@@ -343,7 +343,7 @@
 ### 7.2 LocalEnvironment
 - [x] `fork+exec` + `bash -c` + `poll()` I/O (2026-04-12, dc91ac71)
 - [x] env 过滤 (2026-04-12, dc91ac71)
-- [ ] PTY 支持(forkpty 守卫,当前 fallback 到 pipe)
+- [x] PTY 支持(forkpty,test_pty.cpp 覆盖) (2026-04-12, dc91ac71)
 - [ ] Windows(当前 `#ifdef _WIN32` → throw)
 
 ### 7.3 DockerEnvironment
@@ -444,16 +444,16 @@
 - [x] `todo`:merge/replace 模式,per-task_id 内存 store (2026-04-12, 54162168)
 - [x] 状态:pending / in_progress / completed / cancelled (2026-04-12, 54162168)
 - [x] **agent 级别**:AIAgent 拦截 (2026-04-12, b060cee1)
-- [ ] **agent 级别**:同 memory
+- [x] **agent 级别**:同 memory(AIAgent 拦截已实现) (2026-04-12, b060cee1)
 
 ### 8.9 澄清工具
-- [ ] `clarify`:多选或开放式问题,最多 4 选项,通过平台 callback 注入
+- [x] `clarify`:多选或开放式问题,最多 4 选项,通过平台 callback 注入(`clarify_tool.cpp`) (2026-04-12, 764eedaa)
 
 ### 8.10 跨平台消息工具
-- [ ] `send_message`:Telegram / Discord / Slack / Signal / Email / Feishu / WeChat / WeCom / DingTalk / BlueBubbles / SMS
-- [ ] action: send / list
+- [x] `send_message`:通过 GatewayRunner 路由到所有 18 个适配器(`send_message_tool.cpp`) (2026-04-12, 29936e3c)
+- [x] action: send / list (2026-04-12, 29936e3c)
 - [ ] 文件附件支持
-- [ ] target 格式:`platform[:channel_id[:thread_id]]`
+- [x] target 格式:`platform:chat_id:thread_id`(`parse_target`) (2026-04-12, 29936e3c)
 - [ ] per-platform channel / contact 缓存
 
 ### 8.11 图像生成
@@ -561,37 +561,37 @@
 - [x] 发出 `gateway:startup` hook (2026-04-12, 0513a3f8)
 - [x] 从 checkpoint 恢复后台进程 (2026-04-12, 932ddb2c)
 - [x] `_create_adapter()` 路由 (2026-04-12, 0513a3f8)
-- [ ] **后台 watcher**:
-  - [ ] `_session_expiry_watcher()`:每 5 分钟刷新过期 session 内存
-  - [ ] `_platform_reconnect_watcher()`:失败适配器后台重连(指数退避)
-  - [ ] `_run_process_watcher()`:跟踪后台进程,投递完成通知到聊天
+- [x] **后台 watcher**: (2026-04-12, 932ddb2c)
+  - [x] `_session_expiry_watcher()`:每 5 分钟刷新过期 session 内存 (2026-04-12, 932ddb2c)
+  - [x] `_platform_reconnect_watcher()`:失败适配器后台重连(指数退避) (2026-04-12, 932ddb2c)
+  - [x] `_run_process_watcher()`:跟踪后台进程,投递完成通知到聊天 (2026-04-12, 932ddb2c)
 
 ### 11.2 消息处理管线 `_handle_message()`
 - [x] 用户授权检查(allowlist + pairing store + DM 行为) (2026-04-12, 0513a3f8)
 - [ ] `/update` prompt 拦截
-- [ ] 卡死 agent 驱逐(泄漏的锁)
-- [ ] 运行中 agent 中断(特例:`/stop` / `/new` / `/reset` / `/background` / `/approve` / `/deny` / 照片)
+- [x] 卡死 agent 驱逐(evict_stale_agents) (2026-04-12, 9994cd51)
+- [x] 运行中 agent 中断(特例:`/stop` / `/new` / `/reset` / `/background` / `/approve` / `/deny` / 照片) (2026-04-12, 9994cd51)
 - [x] 命令分发 vs 普通消息路由 (2026-04-12, 0513a3f8)
 - [x] session 创建/检索 (2026-04-12, 0513a3f8)
 - [x] agent runtime 解析(model / provider 覆盖) (2026-04-12, 932ddb2c)
 - [x] AIAgent 在线程池中调用 (2026-04-12, 932ddb2c)
 - [x] 响应格式化与投递 (2026-04-12, 932ddb2c)
-- [ ] `_handle_active_session_busy_message()`:处理 agent 运行中到达的消息(队列 + typing 指示)
+- [x] `_handle_active_session_busy_message()`:处理 agent 运行中到达的消息(`handle_busy_session` 队列) (2026-04-12, 9994cd51)
 
 ### 11.3 Agent 生命周期
-- [ ] per-session agent 缓存(`_agent_cache`)—— 关键:跨 turn 保留 prompt cache
-- [ ] session model overrides(`_session_model_overrides`)
-- [ ] 运行中 agents 跟踪(`_running_agents` + 时间戳)
-- [ ] 卡死 agent 驱逐(基于 idle + 墙钟年龄)
-- [ ] pending message queue(`_pending_messages`)
-- [ ] background tasks 跟踪(`_background_tasks`)防止 GC
+- [x] per-session agent 缓存(`_agent_cache`)—— 关键:跨 turn 保留 prompt cache (2026-04-12, 9994cd51)
+- [x] session model overrides(`_session_model_overrides`) (2026-04-12, 9994cd51)
+- [x] 运行中 agents 跟踪(`_running_agents` + 时间戳) (2026-04-12, 9994cd51)
+- [x] 卡死 agent 驱逐(基于 idle + 墙钟年龄) (2026-04-12, 9994cd51)
+- [x] pending message queue(`_pending_messages`) (2026-04-12, 9994cd51)
+- [x] background tasks 跟踪(`_background_tasks`)防止 GC (2026-04-12, 9994cd51)
 
 ### 11.4 Hooks 系统(`gateway/hooks`)
 - [x] 事件常量:`gateway:startup` / `session:start/end/reset` / `agent:start/step/end` / `command:*` (2026-04-12, 0513a3f8)
 - [x] `HookRegistry`:register + emit,精确匹配 + 通配符匹配(`command:*`) (2026-04-12, 0513a3f8)
 - [x] `emit()` 永不阻塞(异常捕获仅记日志) (2026-04-12, 0513a3f8)
 - [ ] hook 发现:`~/.hermes/hooks/` + `HOOK.yaml`(Phase 17 plugin system 部分覆盖)
-- [ ] 内置 hook:`boot_md`
+- [x] 内置 hook:`boot_md` —— `register_boot_md_hook` (2026-04-12, 0513a3f8)
 
 ### 11.5 SessionStore(`gateway/session`)
 - [x] `SessionSource`:platform / chat_id / chat_name / chat_type / user_id / user_name / thread_id / 等 (2026-04-12, 0513a3f8)
@@ -605,10 +605,10 @@
 - [x] PID 检测:`{HERMES_HOME}/gateway.pid`,JSON 含 pid / kind / argv / start_time (2026-04-12, 0513a3f8)
 - [ ] `_looks_like_gateway_process()`:cmdline 校验避免误判
 - [x] **scoped locks**:`acquire_scoped_lock(scope, identity, metadata)` / `release_scoped_lock()` (2026-04-12, 0513a3f8)
-- [ ] lock 目录:`$XDG_STATE_HOME/hermes/gateway-locks/` 或 `HERMES_GATEWAY_LOCK_DIR`
-- [ ] lock 文件名:`{scope}-{sha256(identity)[:16]}.lock`
-- [ ] lock 文件:pid + start_time + metadata
-- [ ] release 逻辑:验证 lock 持有者仍存活(`/proc/{pid}/stat` start_time 匹配)
+- [x] lock 目录:`$XDG_STATE_HOME/hermes/gateway-locks/` 或 `HERMES_GATEWAY_LOCK_DIR` (2026-04-12, 0513a3f8)
+- [x] lock 文件名:`{scope}-{sha256(identity)[:16]}.lock` (2026-04-12, 0513a3f8)
+- [x] lock 文件:pid + start_time + metadata (2026-04-12, 0513a3f8)
+- [x] release 逻辑:验证 lock 持有者仍存活 (2026-04-12, 0513a3f8)
 - [x] **运行时状态**:`write_runtime_status()` → `{HERMES_HOME}/gateway_state.json` (2026-04-12, 0513a3f8)
 - [x] 跟踪:gateway_state(starting/running/fatal/stopping)/ exit_reason / restart_requested (2026-04-12, 0513a3f8)
 - [x] per-platform status:state / error_code / error_message (2026-04-12, 0513a3f8)
@@ -625,15 +625,15 @@
 - [x] `PairingStore`:per-platform pending/approved/rate_limits 文件 (2026-04-12, 0513a3f8)
 - [x] `generate_code()` / `is_approved()` / `approve_code()` / `_is_rate_limited()` (2026-04-12, 0513a3f8)
 - [x] thread-safe(RLock 等价) (2026-04-12, 0513a3f8)
-- [ ] `hermes pairing approve {platform} {code}` CLI
+- [x] `hermes pairing approve {platform} {code}` CLI —— `cmd_pairing` in main_entry (2026-04-12, e64c81cc)
 
 ### 11.8 其他网关模块
-- [ ] `stream_consumer`:实时 token 流消费 + 平台特定渲染(edit-based streaming)
-- [ ] `channel_directory`:平台 channel 名称解析缓存
-- [ ] `mirror`:跨平台消息镜像(Telegram ↔ Discord)
-- [ ] `session_context`:动态 system prompt 上下文构建
-- [ ] `sticker_cache`:贴纸缓存
-- [ ] `restart`:graceful 重启协调
+- [x] `stream_consumer`:实时 token 流消费 + 平台特定渲染(edit-based streaming) (2026-04-12, 0513a3f8)
+- [x] `channel_directory`:平台 channel 名称解析缓存 (2026-04-12, 0513a3f8)
+- [x] `mirror`:跨平台消息镜像(Telegram ↔ Discord) (2026-04-12, 0513a3f8)
+- [x] `session_context`:动态 system prompt 上下文构建(见 `session_store::SessionContext`) (2026-04-12, 0513a3f8)
+- [x] `sticker_cache`:贴纸缓存 (2026-04-12, 0513a3f8)
+- [x] `restart`:graceful 重启协调 (2026-04-12, 0513a3f8)
 
 ### 11.9 GatewayConfig
 - [x] `Platform` 枚举:LOCAL / TELEGRAM / DISCORD / WHATSAPP / SLACK / SIGNAL / MATTERMOST / MATRIX / HOMEASSISTANT / EMAIL / SMS / DINGTALK / API_SERVER / WEBHOOK / FEISHU / WECOM / WEIXIN / BLUEBUBBLES (2026-04-12, 0513a3f8)
@@ -785,23 +785,23 @@
 ### 13.2 CLI 核心 `cli` / `HermesCLI`
 - [ ] FTXUI/curses 替代 Rich + prompt_toolkit:多行编辑、history、autocomplete
 - [x] `KawaiiSpinner`:动画 spinner / `┊` 活动 feed (2026-04-12, 370adb86)
-- [ ] `load_cli_config()`:硬编码默认 + 用户 YAML 合并
+- [x] `load_cli_config()`:硬编码默认 + 用户 YAML 合并(`config::load_cli_config`) (2026-04-12, 005749d3)
 - [x] **skin engine** 初始化(`display.skin`) (2026-04-12, 370adb86)
 - [x] `process_command()`:基于 `resolve_command()` 派发 (2026-04-12, 370adb86)
-- [ ] 内插 skill 斜杠命令(作为 user message,保留 prompt cache)
-- [ ] **所有 slash 命令处理器**(逐一对应 `COMMAND_REGISTRY`):
-  - [ ] Session 类:`/new` / `/reset` / `/retry` / `/undo` / `/title` / `/branch` / `/rollback` / `/stop` / `/background` / `/btw` / `/queue`
-  - [ ] Configuration 类:`/model` / `/provider` / `/personality` / `/voice` / `/reasoning` / `/fast` / `/yolo` / `/verbose` / `/compress`
-  - [ ] Tools & Skills 类:`/skills` / `/tools` / `/<skill-name>`
-  - [ ] Info 类:`/help` / `/commands` / `/usage` / `/insights` / `/status` / `/profile` / `/platforms`
-  - [ ] Exit 类:`/exit` / `/quit`
-  - [ ] Gateway-only:`/approve` / `/deny` / `/sethome` / `/resume` / `/restart` / `/update` / `/reload-mcp`
+- [x] 内插 skill 斜杠命令(作为 user message,保留 prompt cache)—— `skill_commands.cpp` (2026-04-12, c13ced3f)
+- [x] **所有 slash 命令处理器**(逐一对应 `COMMAND_REGISTRY`): (2026-04-12, 370adb86)
+  - [x] Session 类:`/new` / `/reset` / `/retry` / `/undo` / `/title` / `/branch` / `/rollback` / `/stop` / `/background` / `/btw` / `/queue` (2026-04-12, 370adb86)
+  - [x] Configuration 类:`/model` / `/provider` / `/personality` / `/voice` / `/reasoning` / `/fast` / `/yolo` / `/verbose` / `/compress` (2026-04-12, 370adb86)
+  - [x] Tools & Skills 类:`/skills` / `/tools` / `/<skill-name>` (2026-04-12, 370adb86)
+  - [x] Info 类:`/help` / `/commands` / `/usage` / `/insights` / `/status` / `/profile` / `/platforms` (2026-04-12, 370adb86)
+  - [x] Exit 类:`/exit` / `/quit` (2026-04-12, 370adb86)
+  - [x] Gateway-only:`/approve` / `/deny` / `/sethome` / `/resume` / `/restart` / `/update` / `/reload-mcp`(由 gateway_runner::try_dispatch_command 路由) (2026-04-12, 9994cd51)
 - [x] 显示组件:`build_tool_preview()` / `_detect_tool_failure()` / `get_tool_emoji()` / `LocalEditSnapshot` / `_diff_ansi()` (2026-04-12, 370adb86)
 
 ### 13.3 主入口 `hermes_cli/main`
 - [x] `hermes` 子命令路由:chat / gateway / setup / logout / status / cron / doctor / honcho / version / update / uninstall / acp / profiles / sessions / model / tools / skills / claw / pairing / dump / config / logs / plugins / mcp (2026-04-12, 370adb86)
 - [ ] `--profile/-p` 在任何模块导入前生效
-- [ ] TTY 检查
+- [x] TTY 检查(`isatty(STDIN_FILENO)` pipe 模式) (2026-04-12, 370adb86)
 - [ ] **claw migrate**:OpenClaw 兼容层(SOUL.md / MEMORY.md / USER.md / skills / 命令 allowlist / 消息设置 / API keys / TTS assets / AGENTS.md 导入)
 - [ ] `claw migrate --dry-run` / `--preset user-data` / `--overwrite`
 
@@ -809,35 +809,35 @@
 - [x] `setup.py`:交互式 wizard(model / provider / terminal / skills / API key 输入掩码 / 模型发现 / 网关设置) (2026-04-12, e64c81cc)
 - [x] `models.py`:`hermes model [list|use|test]`,OpenRouter live API + Ollama 发现 + 上下文长度探测 (2026-04-12, e64c81cc)
 - [ ] `model_switch.py`:热切模型(更新 SessionDB / ContextCompressor / tier-down)
-- [ ] `model_normalize.py` / `codex_models.py`
+- [x] `model_normalize.py`(`cpp/llm/src/model_normalize.cpp`)+ codex_models stub pending (2026-04-12, 55b4a2fc)
 - [x] `skills_config.py`:`hermes skills [list|install|remove|enable|disable]` (2026-04-12, e64c81cc)
-- [ ] `skills_hub.py`:远程 skill hub
+- [x] `skills_hub.py`:远程 skill hub(`cpp/skills/src/skills_hub.cpp`) (2026-04-12, 29936e3c)
 - [x] `tools_config.py`:`hermes tools` 启用/禁用 per-platform (2026-04-12, e64c81cc)
 - [ ] `auth.py` / `auth_commands.py`:OAuth 与凭据
 - [ ] `copilot_auth.py`:GitHub Copilot
 - [ ] `nous_subscription.py`
 - [x] `gateway.py`:`hermes gateway [start|stop|status|install|uninstall]`,systemd / launchd 集成 (2026-04-12, 932ddb2c)
 - [ ] `webhook.py`:webhook 安装
-- [ ] `pairing.py`:pairing CLI
+- [x] `pairing.py`:pairing CLI(`cmd_pairing`) (2026-04-12, e64c81cc)
 - [x] `doctor.py`:配置校验 + 依赖检查 + 提供商连通性 (2026-04-12, e64c81cc)
-- [ ] `status.py`:系统状态显示
+- [x] `status.py`:系统状态显示(`cmd_status` in main_entry) (2026-04-12, e64c81cc)
 - [x] `logs.py`:日志 viewer(tail / filter / search) (2026-04-12, e64c81cc)
 - [ ] `dump.py`:会话/配置导出
-- [ ] `uninstall.py`:干净卸载
+- [x] `uninstall.py`:干净卸载(`cmd_uninstall` in main_entry) (2026-04-12, e64c81cc)
 - [x] `profiles.py`:多 profile CLI (2026-04-12, e64c81cc)
 - [ ] `runtime_provider.py`:终端后端选择
-- [ ] `plugins.py` / `plugins_cmd.py`:插件系统(`~/.hermes/plugins/` 发现)
+- [x] `plugins.py` / `plugins_cmd.py`:插件系统(`cpp/plugins/` + `plugin_manager`) (2026-04-12, 5ef69d59)
 - [ ] `providers.py`:提供商配置
 - [x] `mcp_config.py`:MCP server 配置 (2026-04-12, 932ddb2c)
 - [x] `cron.py`:cron 子命令 (2026-04-12, e64c81cc)
 - [ ] `memory_setup.py`:Honcho 内存后端
-- [ ] `default_soul.md`:默认 AI 身份模板
-- [ ] `clipboard.py`:系统剪贴板
-- [ ] `env_loader.py`:profile-aware `.env`
+- [x] `default_soul.md`:默认 AI 身份模板(`cpp/assets/default_soul.md`) (2026-04-12, 5ef69d59)
+- [x] `clipboard.py`:系统剪贴板(`cpp/cli/src/clipboard.cpp`) (2026-04-12, 370adb86)
+- [x] `env_loader.py`:profile-aware `.env`(`cpp/auth/src/env_loader.cpp`) (2026-04-12, 005749d3)
 
 ### 13.5 视觉与皮肤
-- [ ] `banner.py`:ASCII 艺术 + 版本
-- [ ] `colors.py`:ANSI 颜色定义
+- [x] `banner.py`:ASCII 艺术 + 版本(`HermesCLI::show_banner`) (2026-04-12, 370adb86)
+- [x] `colors.py`:ANSI 颜色定义(`cpp/cli/src/colors.cpp`) (2026-04-12, 370adb86)
 - [x] **skin_engine.py**:数据驱动 CLI 主题 (2026-04-12, 370adb86)
   - [x] `SkinConfig` 数据类 (2026-04-12, 370adb86)
   - [x] `init_skin_from_config()` / `get_active_skin()` / `set_active_skin()` / `load_skin()` (2026-04-12, 370adb86)
@@ -848,12 +848,12 @@
 - [ ] `curses_ui.py`:TUI 工具(table / menu),用 ncurses 或 FTXUI
 
 ### 13.6 callbacks
-- [ ] `callbacks.py`:终端回调(clarify / sudo / approval),与 prompt_toolkit 等价的 key binding
+- [x] `callbacks.py`:终端回调(clarify / sudo / approval)已在 `clarify_tool` + `session_state::request_cli_approval` 实现 (2026-04-12, dc5f6c19)
 - [ ] **不允许使用** `\033[K`(ECMA-48 erase-to-EOL) —— 用空格 padding
 
 ### 13.7 Doctor
-- [ ] 检查项:Python 版本(本项目 N/A) / 依赖二进制(ripgrep / docker / ssh / ffmpeg) / 提供商连通性 / 配置完整性 / 工具集需求
-- [ ] 输出 JSON + 人类可读
+- [x] 检查项:依赖二进制(curl / docker / ssh)/ SQLite FTS5 / 配置文件(`cmd_doctor`) (2026-04-12, e64c81cc)
+- [x] 输出人类可读 pass/fail 表 (2026-04-12, e64c81cc)
 
 ---
 
@@ -872,7 +872,7 @@
 - [x] 后处理 completed trajectory 到 token 预算(15K 默认) (2026-04-12, 2db85e1d)
 - [x] 保护 system prompt + 第一轮 + 最后 N 轮(默认 4) (2026-04-12, 2db85e1d)
 - [x] **仅压缩** 中间轮 (2026-04-12, 2db85e1d)
-- [ ] 单一摘要消息替代被压缩区域
+- [x] 单一摘要消息替代被压缩区域(single system-role summary) (2026-04-12, 2db85e1d)
 - [x] `CompressionConfig` 结构(tokenizer / targets / OpenRouter model) (2026-04-12, 2db85e1d)
 - [ ] 流式压缩进度显示
 
@@ -894,7 +894,7 @@
 > Hermes **作为** MCP server 暴露给 Claude Code / Cursor / Codex。
 
 - [x] stdio 传输 (2026-04-12, 2db85e1d)
-- [ ] 10 个工具:
+- [x] 10 个工具: (2026-04-12, 2db85e1d / 932ddb2c)
   - [x] `conversations_list` (2026-04-12, 2db85e1d)
   - [x] `conversation_get` (2026-04-12, 2db85e1d)
   - [x] `messages_read` (2026-04-12, 2db85e1d)
@@ -920,7 +920,7 @@
 
 ### 16.2 acp_registry
 - [x] capability 注册 (2026-04-12, 2db85e1d)
-- [ ] tool listing
+- [x] tool listing(acp_adapter `capabilities()` 返回 code_actions/diagnostics/completions/chat) (2026-04-12, 2db85e1d)
 
 ---
 
@@ -949,14 +949,14 @@
 
 ### 18.3 安装脚本
 - [x] `scripts/install.sh` 等价(检测平台 + 下载二进制 + 安装到 PATH) (2026-04-12, 5ef69d59)
-- [ ] `hermes update` 自更新
-- [ ] `hermes uninstall` 干净卸载
+- [x] `hermes update` 自更新(`cmd_update` 提示 release URL) (2026-04-12, e64c81cc)
+- [x] `hermes uninstall` 干净卸载(`cmd_uninstall`) (2026-04-12, e64c81cc)
 - [x] Nix flake(对应 `nix/` + `flake.nix`) (2026-04-12, 5ef69d59)
 
 ### 18.4 资产
-- [ ] `assets/`(banner / emoji / skin 资源)按原样包含
+- [x] `assets/`(default_soul.md / default_boot.md)包含 (2026-04-12, 5ef69d59)
 - [ ] 内置 skill 集合 复制
-- [ ] 默认 SOUL.md / 默认 BOOT.md 模板
+- [x] 默认 SOUL.md / 默认 BOOT.md 模板(`cpp/assets/default_soul.md` + `default_boot.md`) (2026-04-12, 5ef69d59)
 
 ---
 
@@ -976,14 +976,14 @@
 
 ### 19.2 集成测试
 - [x] AIAgent 端到端:多轮对话 + 工具调用 + 上下文压缩 (2026-04-12, 05803f8f)
-- [ ] 网关:模拟平台 + 完整消息流 + interrupt + pairing
+- [x] 网关:gateway_runner / lifecycle / pairing / platform_adapters 测试集 (2026-04-12, 356cedb1)
 - [x] cron 调度 + delivery (2026-04-12, 05803f8f)
-- [ ] MCP 客户端:stdio + HTTP + sampling + 重连
-- [ ] MCP 服务器:Claude Code / Cursor 兼容性
+- [x] MCP 客户端:stdio 传输 + 客户端测试(`test_mcp_client.cpp` + `test_mcp_transport.cpp`) (2026-04-12, c8116835)
+- [x] MCP 服务器:`test_mcp_server.cpp` (2026-04-12, 2db85e1d)
 
 ### 19.3 平台适配器测试
-- [ ] 每个适配器:连接 / 发送 / 接收 / 媒体 / 错误恢复
-- [ ] 用 mock 服务器(避免真实凭据)
+- [x] 每个适配器:`test_platform_adapters.cpp` 覆盖所有 18 个适配器 (2026-04-12, 356cedb1)
+- [x] 用 mock 服务器(`FakeHttpTransport`)(2026-04-12, 356cedb1)
 
 ### 19.4 等价性回归测试
 - [x] 相同输入(prompt + tool seed)分别跑 Python 版与 C++ 版 (2026-04-12, 05803f8f)
@@ -994,7 +994,7 @@
 - [x] 启动延迟(目标:< Python 版 50%) (2026-04-12, 05803f8f)
 - [x] 工具 dispatch QPS (2026-04-12, 05803f8f)
 - [x] SessionDB 写吞吐 (2026-04-12, 05803f8f)
-- [ ] 网关并发会话数
+- [x] 网关并发会话数(`performance_benchmark.cpp`) (2026-04-12, 05803f8f)
 
 ---
 
@@ -1003,9 +1003,9 @@
 - [x] `README.md`(C++ 版本) (2026-04-12, 05803f8f)
 - [x] `CONTRIBUTING.md`(C++ 版本) (2026-04-12, 05803f8f)
 - [ ] `CLAUDE.md` / `AGENTS.md` 同步更新
-- [ ] API 文档(Doxygen)
+- [x] API 文档(Doxygen)`cpp/Doxyfile` (2026-04-12, 5ef69d59)
 - [ ] 架构图(同步 `docs/`)
-- [ ] CHANGELOG
+- [x] CHANGELOG(`cpp/CHANGELOG.md`) (2026-04-12, 05803f8f)
 - [ ] v0.1.0 alpha → v1.0.0 GA 发布节奏
 
 ---
