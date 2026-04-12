@@ -45,6 +45,7 @@ add_executable(hermes_tools_tests
     test_skills_tool.cpp
     test_session_search_tool.cpp
     test_homeassistant_tool.cpp
+    test_browser_tool.cpp
 )
 
 target_link_libraries(hermes_tools_tests

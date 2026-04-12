@@ -47,6 +47,8 @@ add_library(hermes_tools STATIC
     src/skills_tool.cpp
     src/session_search_tool.cpp
     src/homeassistant_tool.cpp
+    src/browser_backend.cpp
+    src/browser_tool.cpp
 )
 
 target_include_directories(hermes_tools
