@@ -23,6 +23,12 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_status.cpp
     test_gateway_runner.cpp
     test_platform_adapters.cpp
+    test_stream_consumer.cpp
+    test_channel_directory.cpp
+    test_message_mirror.cpp
+    test_sticker_cache.cpp
+    test_restart.cpp
+    test_gateway_lifecycle.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})
