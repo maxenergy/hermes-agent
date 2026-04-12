@@ -1,0 +1,49 @@
+name: C++ CI
+on:
+  push:
+    paths: ['cpp/**']
+  pull_request:
+    paths: ['cpp/**']
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
+            libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+      - name: Configure
+        run: cd cpp && cmake --preset default
+      - name: Build
+        run: cd cpp && cmake --build build/default -j$(nproc)
+      - name: Test
+        run: cd cpp && ctest --test-dir build/default --output-on-failure
+
+  build-linux-asan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+      - name: Configure (ASan)
+        run: cd cpp && cmake --preset asan
+      - name: Build
+        run: cd cpp && cmake --build build/asan -j$(nproc)
+      - name: Test
+        run: cd cpp && ctest --test-dir build/asan --output-on-failure
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake nlohmann-json yaml-cpp sqlitecpp openssl curl
+      - name: Configure
+        run: cd cpp && cmake --preset default -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
+      - name: Build
+        run: cd cpp && cmake --build build/default -j$(sysctl -n hw.ncpu)
+      - name: Test
+        run: cd cpp && ctest --test-dir build/default --output-on-failure

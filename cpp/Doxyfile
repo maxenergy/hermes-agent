@@ -1,0 +1,9 @@
+PROJECT_NAME = "Hermes Agent C++ Backend"
+PROJECT_NUMBER = 0.0.1
+OUTPUT_DIRECTORY = docs/api
+INPUT = core/include agent/include llm/include tools/include gateway/include
+RECURSIVE = YES
+EXTRACT_ALL = YES
+GENERATE_HTML = YES
+GENERATE_LATEX = NO
+USE_MDFILE_AS_MAINPAGE = README.md

@@ -41,23 +41,23 @@
 ### 0.2 第三方依赖选型与封装
 - [x] **HTTP 客户端**:libcurl `CurlTransport` 封装为 `HttpClient`(支持 SOCKS 代理、自动重试、超时) (2026-04-12, 52c4bf0b)
 - [x] **WebSocket**:`Boost.Beast`,用于 Discord/Slack/Matrix 长连接 (2026-04-12, 52c4bf0b)
-- [ ] **JSON**:`nlohmann/json`(等价 Python `json`)
-- [ ] **YAML**:`yaml-cpp`(等价 `pyyaml`)
-- [ ] **正则**:C++ `<regex>` + 备用 `re2`(用于审批模式 45+ 条 PCRE)
-- [ ] **SQLite**:`sqlite3` 直接调用 + `SQLiteCpp` 封装,**必须启用 FTS5**
-- [ ] **加密**:`OpenSSL`(SHA256、HMAC、TLS、libcrypto)
-- [ ] **JWT**:`jwt-cpp`(对应 Python `PyJWT[crypto]`)
-- [ ] **协程 / 异步运行时**:选 `Boost.Asio` 或 `libuv`(后续所有异步 I/O 统一)
-- [ ] **进程管理**:`Boost.Process` 或自建 `posix_spawn` 封装(对应 Python `subprocess` + `ptyprocess`)
-- [ ] **PTY**:Linux/macOS 用 `forkpty`,Windows 用 `pywinpty` 等价物 / ConPTY
-- [ ] **终端 UI**:`FTXUI` 或 `ncurses`(对应 prompt_toolkit + Rich + curses)
+- [x] **JSON**:`nlohmann/json`(等价 Python `json`) (2026-04-12, d21d29c9)
+- [x] **YAML**:`yaml-cpp`(等价 `pyyaml`) (2026-04-12, d21d29c9)
+- [x] **正则**:C++ `<regex>` + 备用 `re2`(用于审批模式 45+ 条 PCRE) (2026-04-12, dc5f6c19)
+- [x] **SQLite**:`sqlite3` 直接调用 + `SQLiteCpp` 封装,**必须启用 FTS5** (2026-04-12, 4318321b)
+- [x] **加密**:`OpenSSL`(SHA256、HMAC、TLS、libcrypto) (2026-04-12, d21d29c9)
+- [x] **JWT**:`jwt-cpp`(对应 Python `PyJWT[crypto]`) (2026-04-12, d21d29c9)
+- [x] **协程 / 异步运行时**:选 `Boost.Asio` 或 `libuv`(后续所有异步 I/O 统一) (2026-04-12, 52c4bf0b)
+- [x] **进程管理**:`Boost.Process` 或自建 `posix_spawn` 封装(对应 Python `subprocess` + `ptyprocess`) (2026-04-12, dc91ac71)
+- [x] **PTY**:Linux/macOS 用 `forkpty`,Windows 用 `pywinpty` 等价物 / ConPTY (2026-04-12, dc91ac71)
+- [x] **终端 UI**:`FTXUI` 或 `ncurses`(对应 prompt_toolkit + Rich + curses) (2026-04-12, 370adb86)
 - [x] **logging**:`spdlog`(滚动文件 + 异步,stderr fallback) (2026-04-12, 52c4bf0b)
-- [ ] **CLI 解析**:`CLI11`(对应 Python `fire`)
-- [ ] **模板引擎**:`inja`(对应 `jinja2`)
-- [ ] **Markdown 渲染**:`md4c` 或 `cmark-gfm`
-- [ ] **base64 / urlencode / unicode NFKC**:`utfcpp` + `unicode-icu`
+- [x] **CLI 解析**:`CLI11`(对应 Python `fire`) (2026-04-12, 370adb86)
+- [x] **模板引擎**:`inja`(对应 `jinja2`) (2026-04-12, b060cee1)
+- [x] **Markdown 渲染**:`md4c` 或 `cmark-gfm` (2026-04-12, 370adb86)
+- [x] **base64 / urlencode / unicode NFKC**:`utfcpp` + `unicode-icu` (2026-04-12, dc5f6c19)
 - [x] **fcntl 文件锁封装**:跨平台 advisory lock 抽象 (2026-04-12, 52c4bf0b)
-- [ ] **fnmatch / glob**:C++17 `<filesystem>` + 自实现 glob
+- [x] **fnmatch / glob**:C++17 `<filesystem>` + 自实现 glob (2026-04-12, d21d29c9)
 
 ### 0.3 基础工具库 `core/`
 - [x] `core/strings.hpp`:split、join、startswith、endswith、trim、lower、upper、contains (2026-04-12, d21d29c9)
@@ -272,33 +272,33 @@
 - [x] `last_resolved_tool_names` save/restore(delegate subagent 安全) (2026-04-12, b2dd6f86)
 
 ### 5.2 工具发现与编排 `model_tools`
-- [ ] `_discover_tools()`:导入所有工具模块,触发自注册
-- [ ] `get_tool_definitions(enabled, disabled)` → JSON schema list
-- [ ] `handle_function_call(function_name, function_args, task_id, user_task)` → JSON 结果
-- [ ] `_last_resolved_tool_names` process-global(注意 delegate 子 agent 时保存/恢复)
-- [ ] cross-tool 引用动态后处理(如 `browser_navigate` ↔ `web_search` 注入)
-- [ ] `TOOL_TO_TOOLSET_MAP` / `TOOLSET_REQUIREMENTS`(用于 doctor 检查)
+- [x] `_discover_tools()`:导入所有工具模块,触发自注册 (2026-04-12, b2dd6f86)
+- [x] `get_tool_definitions(enabled, disabled)` → JSON schema list (2026-04-12, b2dd6f86)
+- [x] `handle_function_call(function_name, function_args, task_id, user_task)` → JSON 结果 (2026-04-12, b2dd6f86)
+- [x] `_last_resolved_tool_names` process-global(注意 delegate 子 agent 时保存/恢复) (2026-04-12, b2dd6f86)
+- [x] cross-tool 引用动态后处理(如 `browser_navigate` ↔ `web_search` 注入) (2026-04-12, b2dd6f86)
+- [x] `TOOL_TO_TOOLSET_MAP` / `TOOLSET_REQUIREMENTS`(用于 doctor 检查) (2026-04-12, b2dd6f86)
 
 ### 5.3 Toolset 定义 `toolsets`
-- [ ] `_HERMES_CORE_TOOLS`:50 个核心工具列表
-- [ ] `TOOLSETS` dict:web / search / vision / image_gen / terminal / moa / skills / browser / file / code / memory / messaging / rl / reasoning / full_stack / research / swe / autonomous
-- [ ] 每个 toolset:`tools` + 可选 `includes`(组合)
-- [ ] `resolve_toolset(name)` → 扁平化工具列表
-- [ ] `validate_toolset(name)`
+- [x] `_HERMES_CORE_TOOLS`:50 个核心工具列表 (2026-04-12, b2dd6f86)
+- [x] `TOOLSETS` dict:web / search / vision / image_gen / terminal / moa / skills / browser / file / code / memory / messaging / rl / reasoning / full_stack / research / swe / autonomous (2026-04-12, b2dd6f86)
+- [x] 每个 toolset:`tools` + 可选 `includes`(组合) (2026-04-12, b2dd6f86)
+- [x] `resolve_toolset(name)` → 扁平化工具列表 (2026-04-12, b2dd6f86)
+- [x] `validate_toolset(name)` (2026-04-12, b2dd6f86)
 
 ### 5.4 Toolset 分布(批处理用)
-- [ ] `toolset_distributions::DISTRIBUTIONS`:default / image_gen / research / science / swe / autonomous 等
-- [ ] 每分布:toolset 名 → 选择概率
-- [ ] `sample_toolsets_from_distribution(name)` 随机采样
+- [x] `toolset_distributions::DISTRIBUTIONS`:default / image_gen / research / science / swe / autonomous 等 (2026-04-12, b2dd6f86)
+- [x] 每分布:toolset 名 → 选择概率 (2026-04-12, b2dd6f86)
+- [x] `sample_toolsets_from_distribution(name)` 随机采样 (2026-04-12, b2dd6f86)
 
 ### 5.5 Budget / 中断 / 预算
-- [ ] `tools/budget_config`:`DEFAULT_RESULT_SIZE_CHARS`
-- [ ] `tools/interrupt`:Ctrl+C / 网关中断信号
-- [ ] `tools/tool_result_storage`:大输出存储与回放,turn 预算执行
-- [ ] `tools/managed_tool_gateway`:Nous 订阅者网关解析 + 第三方厂商代理 URL 构造
-- [ ] `tools/credential_files`:Hermes 凭据文件路径管理
-- [ ] `tools/binary_extensions`:二进制扩展名识别
-- [ ] `tools/env_passthrough`:env var 桥接到后端
+- [x] `tools/budget_config`:`DEFAULT_RESULT_SIZE_CHARS` (2026-04-12, b2dd6f86)
+- [x] `tools/interrupt`:Ctrl+C / 网关中断信号 (2026-04-12, b2dd6f86)
+- [x] `tools/tool_result_storage`:大输出存储与回放,turn 预算执行 (2026-04-12, b2dd6f86)
+- [x] `tools/managed_tool_gateway`:Nous 订阅者网关解析 + 第三方厂商代理 URL 构造 (2026-04-12, 29936e3c)
+- [x] `tools/credential_files`:Hermes 凭据文件路径管理 (2026-04-12, b2dd6f86)
+- [x] `tools/binary_extensions`:二进制扩展名识别 (2026-04-12, b2dd6f86)
+- [x] `tools/env_passthrough`:env var 桥接到后端 (2026-04-12, b2dd6f86)
 - [ ] `tools/debug_helpers`
 
 ---
@@ -963,16 +963,16 @@
 ## 阶段 19 — 测试
 
 ### 19.1 单元测试
-- [ ] core 库:strings / path / atomic_io / env / time / redact / retry / url_safety / ansi / fuzzy / patch_parser
-- [ ] config:加载 / 迁移 / profile 隔离
-- [ ] SessionDB:并发写 / FTS5 / 迁移
-- [ ] ProcessRegistry:spawn / poll / kill / watch_patterns / 限速 / overload kill
-- [ ] LLM clients:OpenAI / Anthropic / OpenRouter mock
-- [ ] prompt caching:cache_control 注入正确性
-- [ ] context compressor:阈值触发 / 中间压缩
-- [ ] tool registry:dispatch / 异步桥接 / 错误包装
-- [ ] 每个工具:正负样本各覆盖
-- [ ] approval:每条危险模式 + 会话状态 + 网关队列
+- [x] core 库:strings / path / atomic_io / env / time / redact / retry / url_safety / ansi / fuzzy / patch_parser (2026-04-12, d21d29c9)
+- [x] config:加载 / 迁移 / profile 隔离 (2026-04-12, 005749d3)
+- [x] SessionDB:并发写 / FTS5 / 迁移 (2026-04-12, 4318321b)
+- [x] ProcessRegistry:spawn / poll / kill / watch_patterns / 限速 / overload kill (2026-04-12, 4318321b)
+- [x] LLM clients:OpenAI / Anthropic / OpenRouter mock (2026-04-12, 55b4a2fc)
+- [x] prompt caching:cache_control 注入正确性 (2026-04-12, 55b4a2fc)
+- [x] context compressor:阈值触发 / 中间压缩 (2026-04-12, b060cee1)
+- [x] tool registry:dispatch / 异步桥接 / 错误包装 (2026-04-12, b2dd6f86)
+- [x] 每个工具:正负样本各覆盖 (2026-04-12, 764eedaa)
+- [x] approval:每条危险模式 + 会话状态 + 网关队列 (2026-04-12, dc5f6c19)
 
 ### 19.2 集成测试
 - [x] AIAgent 端到端:多轮对话 + 工具调用 + 上下文压缩 (2026-04-12, 05803f8f)
