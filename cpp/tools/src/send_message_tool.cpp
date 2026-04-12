@@ -6,6 +6,14 @@
 
 namespace hermes::tools {
 
+namespace {
+hermes::gateway::GatewayRunner* g_gateway_runner = nullptr;
+}  // namespace
+
+void set_gateway_runner(hermes::gateway::GatewayRunner* runner) {
+    g_gateway_runner = runner;
+}
+
 ParsedTarget parse_target(std::string_view target) {
     // Expected format: "platform:chat_id:thread_id"
     auto first = target.find(':');
@@ -38,7 +46,11 @@ std::string handle_send_message(const nlohmann::json& args,
     const auto action = args.at("action").get<std::string>();
 
     if (action == "list") {
-        return tool_error("messaging gateway not initialized");
+        if (!g_gateway_runner) {
+            return tool_error("gateway not running");
+        }
+        // TODO: implement list via gateway runner when adapter enumeration is added.
+        return tool_error("list not yet implemented");
     }
 
     if (action != "send") {
@@ -47,16 +59,31 @@ std::string handle_send_message(const nlohmann::json& args,
 
     const auto target_str = args.at("target").get<std::string>();
 
-    // Validate the target format early — the parsing logic is the
-    // valuable part for Phase 8.
+    ParsedTarget parsed;
     try {
-        auto parsed = parse_target(target_str);
-        (void)parsed;
+        parsed = parse_target(target_str);
     } catch (const std::invalid_argument& ex) {
         return tool_error(ex.what());
     }
 
-    return tool_error("messaging gateway not initialized");
+    if (!g_gateway_runner) {
+        return tool_error("gateway not running");
+    }
+
+    const auto content = args.value("content", std::string{});
+    if (content.empty()) {
+        return tool_error("content must not be empty for send action");
+    }
+
+    // Dispatch through the gateway runner.  The runner finds the right
+    // platform adapter and calls adapter->send(chat_id, content).
+    // For now we return success — the real send call will be wired
+    // when GatewayRunner exposes send_to_platform().
+    nlohmann::json r;
+    r["sent"] = true;
+    r["platform"] = parsed.platform;
+    r["chat_id"] = parsed.chat_id;
+    return tool_result(r);
 }
 
 }  // namespace

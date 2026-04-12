@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace hermes::llm {
@@ -61,18 +62,117 @@ OpenRouterClient::OpenRouterClient(HttpTransport* transport,
     }
 }
 
-CompletionResponse OpenRouterClient::complete(const CompletionRequest& req) {
-    if (req.stream) {
-        throw std::runtime_error("streaming not yet implemented");
+namespace {
+
+std::string extract_or_sse_data(const std::string& line) {
+    std::string trimmed = line;
+    while (!trimmed.empty() &&
+           (trimmed.back() == '\r' || trimmed.back() == '\n' ||
+            trimmed.back() == ' ')) {
+        trimmed.pop_back();
+    }
+    if (trimmed.rfind("data: ", 0) != 0) return {};
+    return trimmed.substr(6);
+}
+
+CompletionResponse parse_openrouter_stream(
+    HttpTransport* transport,
+    const std::string& url,
+    const std::unordered_map<std::string, std::string>& headers,
+    const std::string& body_str) {
+
+    std::string accumulated_content;
+    std::string finish_reason;
+    CanonicalUsage usage;
+    std::vector<ToolCall> tool_calls;
+    json raw_last;
+
+    transport->post_json_stream(url, headers, body_str,
+        [&](const std::string& chunk) {
+            auto data = extract_or_sse_data(chunk);
+            if (data.empty() || data == "[DONE]") return;
+
+            json delta_obj;
+            try { delta_obj = json::parse(data); } catch (...) { return; }
+            raw_last = delta_obj;
+
+            if (!delta_obj.contains("choices") ||
+                !delta_obj["choices"].is_array() ||
+                delta_obj["choices"].empty()) {
+                if (delta_obj.contains("usage"))
+                    usage = normalize_openai_usage(delta_obj["usage"]);
+                return;
+            }
+
+            const auto& choice = delta_obj["choices"][0];
+            if (choice.contains("finish_reason") &&
+                !choice["finish_reason"].is_null())
+                finish_reason = choice["finish_reason"].get<std::string>();
+            if (!choice.contains("delta")) return;
+            const auto& delta = choice["delta"];
+
+            if (delta.contains("content") && delta["content"].is_string())
+                accumulated_content += delta["content"].get<std::string>();
+
+            if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+                for (const auto& tc_delta : delta["tool_calls"]) {
+                    auto idx = tc_delta.value("index", 0);
+                    while (static_cast<int>(tool_calls.size()) <= idx)
+                        tool_calls.emplace_back();
+                    if (tc_delta.contains("id"))
+                        tool_calls[idx].id = tc_delta["id"].get<std::string>();
+                    if (tc_delta.contains("function")) {
+                        const auto& fn = tc_delta["function"];
+                        if (fn.contains("name"))
+                            tool_calls[idx].name = fn["name"].get<std::string>();
+                        if (fn.contains("arguments")) {
+                            auto& args = tool_calls[idx].arguments;
+                            if (!args.is_string()) args = std::string{};
+                            args = args.get<std::string>() +
+                                   fn["arguments"].get<std::string>();
+                        }
+                    }
+                }
+            }
+            if (delta_obj.contains("usage"))
+                usage = normalize_openai_usage(delta_obj["usage"]);
+        });
+
+    for (auto& tc : tool_calls) {
+        if (tc.arguments.is_string()) {
+            auto raw = tc.arguments.get<std::string>();
+            try { tc.arguments = json::parse(raw); } catch (...) { tc.arguments = raw; }
+        }
     }
 
-    const json body = build_body(req);
+    CompletionResponse out;
+    out.raw = raw_last;
+    out.finish_reason = finish_reason;
+    out.usage = usage;
+    out.assistant_message.role = Role::Assistant;
+    out.assistant_message.content_text = accumulated_content;
+    out.assistant_message.tool_calls = std::move(tool_calls);
+    return out;
+}
+
+}  // namespace
+
+CompletionResponse OpenRouterClient::complete(const CompletionRequest& req) {
+    json body = build_body(req);
     std::unordered_map<std::string, std::string> headers = {
         {"Authorization", "Bearer " + api_key_},
         {"Content-Type", "application/json"},
         {"HTTP-Referer", referer_},
         {"X-Title", title_},
     };
+
+    if (req.stream) {
+        body["stream"] = true;
+        return parse_openrouter_stream(
+            transport_, "https://openrouter.ai/api/v1/chat/completions",
+            headers, body.dump());
+    }
+
     const auto resp = transport_->post_json(
         "https://openrouter.ai/api/v1/chat/completions", headers, body.dump());
     if (resp.status_code < 200 || resp.status_code >= 300) {

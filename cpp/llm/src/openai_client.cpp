@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace hermes::llm {
@@ -93,17 +94,146 @@ OpenAIClient::OpenAIClient(HttpTransport* transport,
     }
 }
 
-CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
-    if (req.stream) {
-        // TODO(phase-4): SSE streaming
-        throw std::runtime_error("streaming not yet implemented");
+namespace {
+
+/// Parse an SSE line to extract the data payload.  Returns empty if not
+/// a "data: " line or if it's the terminal "data: [DONE]" marker.
+/// Returns "[DONE]" for the terminal marker so the caller can stop.
+std::string extract_sse_data(const std::string& line) {
+    // Trim trailing whitespace (\r\n).
+    std::string trimmed = line;
+    while (!trimmed.empty() &&
+           (trimmed.back() == '\r' || trimmed.back() == '\n' ||
+            trimmed.back() == ' ')) {
+        trimmed.pop_back();
+    }
+    if (trimmed.rfind("data: ", 0) != 0) return {};
+    return trimmed.substr(6);
+}
+
+CompletionResponse parse_openai_stream(
+    HttpTransport* transport,
+    const std::string& url,
+    const std::unordered_map<std::string, std::string>& headers,
+    const std::string& body_str,
+    const std::string& /*provider*/) {
+
+    std::string accumulated_content;
+    std::string finish_reason;
+    CanonicalUsage usage;
+    // Track tool calls by index.
+    std::vector<ToolCall> tool_calls;
+    json raw_last;
+
+    transport->post_json_stream(url, headers, body_str,
+        [&](const std::string& chunk) {
+            auto data = extract_sse_data(chunk);
+            if (data.empty()) return;
+            if (data == "[DONE]") return;
+
+            json delta_obj;
+            try {
+                delta_obj = json::parse(data);
+            } catch (...) {
+                return;
+            }
+            raw_last = delta_obj;
+
+            if (!delta_obj.contains("choices") ||
+                !delta_obj["choices"].is_array() ||
+                delta_obj["choices"].empty()) {
+                // Could be a usage-only chunk.
+                if (delta_obj.contains("usage")) {
+                    usage = normalize_openai_usage(delta_obj["usage"]);
+                }
+                return;
+            }
+
+            const auto& choice = delta_obj["choices"][0];
+            if (choice.contains("finish_reason") &&
+                !choice["finish_reason"].is_null()) {
+                finish_reason = choice["finish_reason"].get<std::string>();
+            }
+            if (!choice.contains("delta")) return;
+            const auto& delta = choice["delta"];
+
+            // Accumulate content tokens.
+            if (delta.contains("content") && delta["content"].is_string()) {
+                accumulated_content += delta["content"].get<std::string>();
+            }
+
+            // Accumulate tool calls.
+            if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+                for (const auto& tc_delta : delta["tool_calls"]) {
+                    auto idx = tc_delta.value("index", 0);
+                    while (static_cast<int>(tool_calls.size()) <= idx) {
+                        tool_calls.emplace_back();
+                    }
+                    if (tc_delta.contains("id")) {
+                        tool_calls[idx].id = tc_delta["id"].get<std::string>();
+                    }
+                    if (tc_delta.contains("function")) {
+                        const auto& fn = tc_delta["function"];
+                        if (fn.contains("name")) {
+                            tool_calls[idx].name = fn["name"].get<std::string>();
+                        }
+                        if (fn.contains("arguments")) {
+                            // Arguments come as string fragments — accumulate.
+                            auto& args = tool_calls[idx].arguments;
+                            if (!args.is_string()) args = std::string{};
+                            args = args.get<std::string>() +
+                                   fn["arguments"].get<std::string>();
+                        }
+                    }
+                }
+            }
+
+            // Usage in stream chunks (OpenAI includes it with stream_options).
+            if (delta_obj.contains("usage")) {
+                usage = normalize_openai_usage(delta_obj["usage"]);
+            }
+        });
+
+    // Parse accumulated tool call argument strings into JSON.
+    for (auto& tc : tool_calls) {
+        if (tc.arguments.is_string()) {
+            auto raw = tc.arguments.get<std::string>();
+            try {
+                tc.arguments = json::parse(raw);
+            } catch (...) {
+                tc.arguments = raw;
+            }
+        }
     }
 
-    const json body = build_chat_completions_body(req);
+    CompletionResponse out;
+    out.raw = raw_last;
+    out.finish_reason = finish_reason;
+    out.usage = usage;
+    out.assistant_message.role = Role::Assistant;
+    out.assistant_message.content_text = accumulated_content;
+    out.assistant_message.tool_calls = std::move(tool_calls);
+    return out;
+}
+
+}  // namespace
+
+CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
+    json body = build_chat_completions_body(req);
     std::unordered_map<std::string, std::string> headers = {
         {"Authorization", "Bearer " + api_key_},
         {"Content-Type", "application/json"},
     };
+
+    if (req.stream) {
+        body["stream"] = true;
+        // Request usage info in stream mode.
+        body["stream_options"] = {{"include_usage", true}};
+        return parse_openai_stream(
+            transport_, base_url_ + "/chat/completions",
+            headers, body.dump(), provider_name());
+    }
+
     const auto resp = transport_->post_json(
         base_url_ + "/chat/completions", headers, body.dump());
     if (resp.status_code < 200 || resp.status_code >= 300) {

@@ -296,7 +296,7 @@ ManagedSystem detect_managed_system() {
 }
 
 // -----------------------------------------------------------------------
-// migrate_config — Phase 1 stub.
+// migrate_config — incremental per-version field migrations.
 // -----------------------------------------------------------------------
 nlohmann::json migrate_config(nlohmann::json config) {
     if (!config.is_object()) {
@@ -307,12 +307,64 @@ nlohmann::json migrate_config(nlohmann::json config) {
         config["_config_version"].is_number_integer()) {
         current = config["_config_version"].get<int>();
     }
-    // TODO(phase-2): run per-version field migrations here (v1 -> v2,
-    // v2 -> v3, ...).  For Phase 1 we only stamp the current version
-    // so older files start tracking the schema.
-    if (current < kCurrentConfigVersion) {
-        config["_config_version"] = kCurrentConfigVersion;
+
+    // Do not downgrade a config that is already ahead of us.
+    if (current >= kCurrentConfigVersion) {
+        return config;
     }
+
+    // v1 -> v2: add terminal.backend = "local" if missing
+    if (current < 2) {
+        if (!config.contains("terminal") || !config["terminal"].is_object()) {
+            config["terminal"] = nlohmann::json::object();
+        }
+        if (!config["terminal"].contains("backend")) {
+            config["terminal"]["backend"] = "local";
+        }
+        config["_config_version"] = 2;
+        current = 2;
+    }
+
+    // v2 -> v3: rename top-level api_key -> provider_api_key
+    if (current < 3) {
+        if (config.contains("api_key") && !config.contains("provider_api_key")) {
+            config["provider_api_key"] = config["api_key"];
+            config.erase("api_key");
+        }
+        config["_config_version"] = 3;
+        current = 3;
+    }
+
+    // v3 -> v4: add display.skin = "default" if missing
+    if (current < 4) {
+        if (!config.contains("display") || !config["display"].is_object()) {
+            config["display"] = nlohmann::json::object();
+        }
+        if (!config["display"].contains("skin")) {
+            config["display"]["skin"] = "default";
+        }
+        config["_config_version"] = 4;
+        current = 4;
+    }
+
+    // v4 -> v5: add web.backend = "exa" if missing, add tts.provider = "edge" if missing
+    if (current < 5) {
+        if (!config.contains("web") || !config["web"].is_object()) {
+            config["web"] = nlohmann::json::object();
+        }
+        if (!config["web"].contains("backend")) {
+            config["web"]["backend"] = "exa";
+        }
+        if (!config.contains("tts") || !config["tts"].is_object()) {
+            config["tts"] = nlohmann::json::object();
+        }
+        if (!config["tts"].contains("provider")) {
+            config["tts"]["provider"] = "edge";
+        }
+        config["_config_version"] = 5;
+        current = 5;
+    }
+
     return config;
 }
 

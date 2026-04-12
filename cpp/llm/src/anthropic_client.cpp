@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -79,12 +80,143 @@ AnthropicClient::AnthropicClient(HttpTransport* transport,
     }
 }
 
-CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
-    if (req.stream) {
-        // TODO(phase-4): SSE streaming
-        throw std::runtime_error("streaming not yet implemented");
-    }
+namespace {
 
+/// Parse an SSE line to extract the data payload.
+std::string extract_anthropic_sse_data(const std::string& line) {
+    std::string trimmed = line;
+    while (!trimmed.empty() &&
+           (trimmed.back() == '\r' || trimmed.back() == '\n' ||
+            trimmed.back() == ' ')) {
+        trimmed.pop_back();
+    }
+    if (trimmed.rfind("data: ", 0) != 0) return {};
+    return trimmed.substr(6);
+}
+
+/// Parse an SSE event type line.
+std::string extract_anthropic_event_type(const std::string& line) {
+    std::string trimmed = line;
+    while (!trimmed.empty() &&
+           (trimmed.back() == '\r' || trimmed.back() == '\n' ||
+            trimmed.back() == ' ')) {
+        trimmed.pop_back();
+    }
+    if (trimmed.rfind("event: ", 0) != 0) return {};
+    return trimmed.substr(7);
+}
+
+CompletionResponse parse_anthropic_stream(
+    HttpTransport* transport,
+    const std::string& url,
+    const std::unordered_map<std::string, std::string>& headers,
+    const std::string& body_str) {
+
+    std::string accumulated_content;
+    std::string finish_reason;
+    CanonicalUsage usage;
+    std::vector<ToolCall> tool_calls;
+    nlohmann::json raw_last;
+    std::string current_event_type;
+    // Track current content block for tool_use accumulation.
+    int current_block_index = -1;
+    std::string current_tool_input_json;
+
+    transport->post_json_stream(url, headers, body_str,
+        [&](const std::string& chunk) {
+            // Check for event type lines.
+            auto evt = extract_anthropic_event_type(chunk);
+            if (!evt.empty()) {
+                current_event_type = evt;
+                return;
+            }
+
+            auto data = extract_anthropic_sse_data(chunk);
+            if (data.empty()) return;
+
+            nlohmann::json obj;
+            try {
+                obj = nlohmann::json::parse(data);
+            } catch (...) {
+                return;
+            }
+            raw_last = obj;
+
+            auto type = obj.value("type", "");
+
+            if (type == "message_start") {
+                // Extract usage from initial message.
+                if (obj.contains("message") &&
+                    obj["message"].contains("usage")) {
+                    usage = normalize_anthropic_usage(obj["message"]["usage"]);
+                }
+            } else if (type == "content_block_start") {
+                current_block_index = obj.value("index", -1);
+                if (obj.contains("content_block")) {
+                    auto block_type = obj["content_block"].value("type", "");
+                    if (block_type == "tool_use") {
+                        ToolCall tc;
+                        tc.id = obj["content_block"].value("id", "");
+                        tc.name = obj["content_block"].value("name", "");
+                        tc.arguments = nlohmann::json::object();
+                        tool_calls.push_back(std::move(tc));
+                        current_tool_input_json.clear();
+                    }
+                }
+            } else if (type == "content_block_delta") {
+                if (obj.contains("delta")) {
+                    auto delta_type = obj["delta"].value("type", "");
+                    if (delta_type == "text_delta") {
+                        accumulated_content +=
+                            obj["delta"].value("text", "");
+                    } else if (delta_type == "input_json_delta") {
+                        current_tool_input_json +=
+                            obj["delta"].value("partial_json", "");
+                    }
+                }
+            } else if (type == "content_block_stop") {
+                // Finalize tool call input if we were accumulating JSON.
+                if (!current_tool_input_json.empty() && !tool_calls.empty()) {
+                    try {
+                        tool_calls.back().arguments =
+                            nlohmann::json::parse(current_tool_input_json);
+                    } catch (...) {
+                        tool_calls.back().arguments = current_tool_input_json;
+                    }
+                    current_tool_input_json.clear();
+                }
+            } else if (type == "message_delta") {
+                if (obj.contains("delta")) {
+                    finish_reason = obj["delta"].value("stop_reason", "");
+                }
+                if (obj.contains("usage")) {
+                    // Merge output token count from delta.
+                    auto delta_usage = normalize_anthropic_usage(obj["usage"]);
+                    usage.output_tokens = delta_usage.output_tokens;
+                }
+            } else if (type == "message_stop") {
+                // Stream complete.
+            }
+        });
+
+    CompletionResponse out;
+    out.raw = raw_last;
+    out.finish_reason = finish_reason;
+    out.usage = usage;
+    out.assistant_message.role = Role::Assistant;
+    if (!accumulated_content.empty()) {
+        ContentBlock block;
+        block.type = "text";
+        block.text = accumulated_content;
+        out.assistant_message.content_blocks.push_back(std::move(block));
+    }
+    out.assistant_message.tool_calls = std::move(tool_calls);
+    return out;
+}
+
+}  // namespace
+
+CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
     // Work on a copy so the caller's messages are not mutated by cache
     // injection.  apply_anthropic_cache_control mutates in place per
     // spec, so we need a local vector to own the changes.
@@ -141,6 +273,13 @@ CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
     // Opt into extended prompt caching TTL if requested.
     if (req.cache.native_anthropic && req.cache.cache_ttl == "1h") {
         headers["anthropic-beta"] = "extended-cache-ttl-2025-04-11";
+    }
+
+    if (req.stream) {
+        body["stream"] = true;
+        return parse_anthropic_stream(
+            transport_, base_url_ + "/messages",
+            headers, body.dump());
     }
 
     const auto resp = transport_->post_json(

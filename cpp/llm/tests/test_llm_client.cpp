@@ -200,14 +200,116 @@ TEST(LlmClient, OpenRouterSendsRefererAndTitle) {
     EXPECT_NE(seen.url.find("openrouter.ai"), std::string::npos);
 }
 
-TEST(LlmClient, StreamingThrowsNotImplemented) {
+TEST(LlmClient, OpenAiStreamingParsesTokens) {
     FakeHttpTransport fake;
+
+    // Build SSE stream: two content deltas + DONE.
+    std::string sse;
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n";
+    sse += "data: [DONE]\n\n";
+    fake.enqueue_stream_response(sse);
+
     OpenAIClient client(&fake, "sk");
     CompletionRequest req;
     req.model = "gpt-4o";
     req.stream = true;
     req.messages = {user_msg("hi")};
-    EXPECT_THROW(client.complete(req), std::runtime_error);
+
+    auto out = client.complete(req);
+    EXPECT_EQ(out.assistant_message.content_text, "Hello world");
+    EXPECT_EQ(out.finish_reason, "stop");
+    EXPECT_EQ(out.usage.input_tokens, 10);
+    EXPECT_EQ(out.usage.output_tokens, 2);
+
+    // Verify the body includes stream=true.
+    ASSERT_EQ(fake.requests().size(), 1u);
+    auto sent_body = json::parse(fake.requests()[0].body);
+    EXPECT_TRUE(sent_body["stream"].get<bool>());
+}
+
+TEST(LlmClient, AnthropicStreamingParsesTokens) {
+    FakeHttpTransport fake;
+
+    std::string sse;
+    sse += "event: message_start\n";
+    sse += "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":25,\"output_tokens\":0}}}\n\n";
+    sse += "event: content_block_start\n";
+    sse += "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n";
+    sse += "event: content_block_delta\n";
+    sse += "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n";
+    sse += "event: content_block_delta\n";
+    sse += "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" there\"}}\n\n";
+    sse += "event: content_block_stop\n";
+    sse += "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n";
+    sse += "event: message_delta\n";
+    sse += "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n";
+    sse += "event: message_stop\n";
+    sse += "data: {\"type\":\"message_stop\"}\n\n";
+    fake.enqueue_stream_response(sse);
+
+    AnthropicClient client(&fake, "sk-ant");
+    CompletionRequest req;
+    req.model = "claude-sonnet-4-6";
+    req.stream = true;
+    req.messages = {user_msg("hello")};
+
+    auto out = client.complete(req);
+    ASSERT_FALSE(out.assistant_message.content_blocks.empty());
+    EXPECT_EQ(out.assistant_message.content_blocks[0].text, "Hi there");
+    EXPECT_EQ(out.finish_reason, "end_turn");
+    EXPECT_EQ(out.usage.input_tokens, 25);
+    EXPECT_EQ(out.usage.output_tokens, 5);
+}
+
+TEST(LlmClient, OpenRouterStreamingParsesTokens) {
+    FakeHttpTransport fake;
+
+    std::string sse;
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\n";
+    sse += "data: [DONE]\n\n";
+    fake.enqueue_stream_response(sse);
+
+    OpenRouterClient client(&fake, "sk-or", "https://example.com", "test");
+    CompletionRequest req;
+    req.model = "meta-llama/llama-3.3-70b";
+    req.stream = true;
+    req.messages = {user_msg("hi")};
+
+    auto out = client.complete(req);
+    EXPECT_EQ(out.assistant_message.content_text, "OK");
+    EXPECT_EQ(out.finish_reason, "stop");
+    EXPECT_EQ(out.usage.input_tokens, 5);
+    EXPECT_EQ(out.usage.output_tokens, 1);
+}
+
+TEST(LlmClient, OpenAiStreamingParsesToolCalls) {
+    FakeHttpTransport fake;
+
+    std::string sse;
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\": \\\"/tmp\\\"}\"}}]},\"finish_reason\":null}]}\n\n";
+    sse += "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+    sse += "data: [DONE]\n\n";
+    fake.enqueue_stream_response(sse);
+
+    OpenAIClient client(&fake, "sk");
+    CompletionRequest req;
+    req.model = "gpt-4o";
+    req.stream = true;
+    req.messages = {user_msg("read /tmp")};
+
+    auto out = client.complete(req);
+    EXPECT_EQ(out.finish_reason, "tool_calls");
+    ASSERT_EQ(out.assistant_message.tool_calls.size(), 1u);
+    EXPECT_EQ(out.assistant_message.tool_calls[0].name, "read_file");
+    EXPECT_EQ(out.assistant_message.tool_calls[0].id, "call_1");
+    EXPECT_EQ(out.assistant_message.tool_calls[0].arguments["path"], "/tmp");
 }
 
 TEST(LlmClient, FakeTransportThrowsWhenEmpty) {

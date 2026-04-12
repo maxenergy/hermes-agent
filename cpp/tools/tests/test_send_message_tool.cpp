@@ -38,7 +38,8 @@ TEST(ParseTargetTest, InvalidFormatThrows) {
     EXPECT_THROW(parse_target(":empty_platform:tid"), std::invalid_argument);
 }
 
-TEST_F(SendMessageToolTest, SendActionReturnsGatewayError) {
+TEST_F(SendMessageToolTest, SendActionReturnsGatewayNotRunning) {
+    // Without a gateway runner set, send returns a clear error.
     auto result = ToolRegistry::instance().dispatch(
         "send_message",
         {{"action", "send"},
@@ -47,16 +48,16 @@ TEST_F(SendMessageToolTest, SendActionReturnsGatewayError) {
         {});
     auto parsed = nlohmann::json::parse(result);
     EXPECT_TRUE(parsed.contains("error"));
-    EXPECT_NE(parsed["error"].get<std::string>().find("gateway"),
+    EXPECT_NE(parsed["error"].get<std::string>().find("gateway not running"),
               std::string::npos);
 }
 
-TEST_F(SendMessageToolTest, ListActionReturnsGatewayError) {
+TEST_F(SendMessageToolTest, ListActionReturnsGatewayNotRunning) {
     auto result = ToolRegistry::instance().dispatch(
         "send_message", {{"action", "list"}}, {});
     auto parsed = nlohmann::json::parse(result);
     EXPECT_TRUE(parsed.contains("error"));
-    EXPECT_NE(parsed["error"].get<std::string>().find("gateway"),
+    EXPECT_NE(parsed["error"].get<std::string>().find("gateway not running"),
               std::string::npos);
 }
 

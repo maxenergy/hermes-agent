@@ -84,6 +84,18 @@ public:
         const std::unordered_map<std::string, std::string>& headers) {
         return post_json(url, headers, "");
     }
+
+    /// Stream a POST request.  Calls callback for each chunk received.
+    using StreamCallback = std::function<void(const std::string& chunk)>;
+    virtual void post_json_stream(
+        const std::string& url,
+        const std::unordered_map<std::string, std::string>& headers,
+        const std::string& body,
+        StreamCallback on_chunk) {
+        // Default: non-streaming fallback — deliver the whole body as one chunk.
+        auto resp = post_json(url, headers, body);
+        on_chunk(resp.body);
+    }
 };
 
 // Real HTTP transport wrapping libcurl/cpr.  If neither is available at
@@ -104,16 +116,25 @@ public:
     };
 
     void enqueue_response(Response r);
+    /// Enqueue a stream response — the body is delivered line-by-line to the
+    /// StreamCallback when post_json_stream is called.
+    void enqueue_stream_response(std::string sse_body);
     Response post_json(
         const std::string& url,
         const std::unordered_map<std::string, std::string>& headers,
         const std::string& body) override;
+    void post_json_stream(
+        const std::string& url,
+        const std::unordered_map<std::string, std::string>& headers,
+        const std::string& body,
+        StreamCallback on_chunk) override;
 
     const std::vector<Request>& requests() const { return requests_; }
     bool empty() const { return queue_.empty(); }
 
 private:
     std::deque<Response> queue_;
+    std::deque<std::string> stream_queue_;
     std::vector<Request> requests_;
 };
 
