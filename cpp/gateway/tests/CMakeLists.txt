@@ -22,6 +22,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_pairing.cpp
     test_status.cpp
     test_gateway_runner.cpp
+    test_platform_adapters.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

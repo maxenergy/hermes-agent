@@ -32,6 +32,25 @@ add_library(hermes_gateway STATIC
     src/pairing.cpp
     src/status.cpp
     src/gateway_runner.cpp
+    platforms/telegram.cpp
+    platforms/discord.cpp
+    platforms/slack.cpp
+    platforms/whatsapp.cpp
+    platforms/signal.cpp
+    platforms/matrix.cpp
+    platforms/mattermost.cpp
+    platforms/email.cpp
+    platforms/sms.cpp
+    platforms/dingtalk.cpp
+    platforms/feishu.cpp
+    platforms/wecom.cpp
+    platforms/weixin.cpp
+    platforms/bluebubbles.cpp
+    platforms/home_assistant.cpp
+    platforms/api_server.cpp
+    platforms/webhook.cpp
+    platforms/local.cpp
+    platforms/adapter_factory.cpp
 )
 
 target_include_directories(hermes_gateway

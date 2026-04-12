@@ -1,0 +1,34 @@
+// Phase 12 — Signal platform adapter.
+#pragma once
+
+#include <string>
+
+#include <hermes/gateway/gateway_runner.hpp>
+
+namespace hermes::gateway::platforms {
+
+class SignalAdapter : public BasePlatformAdapter {
+public:
+    struct Config {
+        std::string http_url;  // signal-cli REST API URL
+        std::string account;   // phone number or UUID
+    };
+
+    explicit SignalAdapter(Config cfg);
+
+    Platform platform() const override { return Platform::Signal; }
+    bool connect() override;
+    void disconnect() override;
+    bool send(const std::string& chat_id, const std::string& content) override;
+    void send_typing(const std::string& chat_id) override;
+
+    // Resolve UUID+phone alias (stub).
+    static std::string normalize_identifier(const std::string& id);
+
+    Config config() const { return cfg_; }
+
+private:
+    Config cfg_;
+};
+
+}  // namespace hermes::gateway::platforms
