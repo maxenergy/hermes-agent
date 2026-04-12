@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  hermes:
+    build: ..
+    volumes:
+      - hermes-data:/root/.hermes
+    environment:
+      - HERMES_HOME=/root/.hermes
+    restart: unless-stopped
+volumes:
+  hermes-data:

@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes Agent Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hermes gateway start
+Restart=on-failure
+RestartSec=5
+Environment=HERMES_HOME=%h/.hermes
+
+[Install]
+WantedBy=default.target
