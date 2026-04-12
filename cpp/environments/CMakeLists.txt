@@ -6,6 +6,11 @@ add_library(hermes_environments STATIC
     src/docker.cpp
     src/ssh.cpp
     src/file_sync.cpp
+    src/snapshot_store.cpp
+    src/modal.cpp
+    src/daytona.cpp
+    src/singularity.cpp
+    src/managed_modal.cpp
 )
 
 target_include_directories(hermes_environments
@@ -15,7 +20,7 @@ target_include_directories(hermes_environments
 
 target_compile_features(hermes_environments PUBLIC cxx_std_17)
 target_link_libraries(hermes_environments
-    PUBLIC hermes::core
+    PUBLIC hermes::core hermes::llm
     PRIVATE hermes_warnings
 )
 

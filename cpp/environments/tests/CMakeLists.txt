@@ -8,6 +8,11 @@ set(HERMES_ENV_TEST_SOURCES
     test_docker.cpp
     test_ssh.cpp
     test_file_sync.cpp
+    test_snapshot_store.cpp
+    test_modal_environment.cpp
+    test_daytona_environment.cpp
+    test_singularity_environment.cpp
+    test_managed_modal.cpp
 )
 
 add_executable(hermes_environments_tests ${HERMES_ENV_TEST_SOURCES})
