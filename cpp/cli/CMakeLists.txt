@@ -2,11 +2,9 @@
 
 include(FetchContent)
 
+# Use the same nlohmann_json version as hermes::config (3.11.3) to avoid
+# ABI mismatches with system-installed 3.12.x headers.
 if(NOT TARGET nlohmann_json::nlohmann_json)
-    find_package(nlohmann_json CONFIG QUIET)
-endif()
-if(NOT TARGET nlohmann_json::nlohmann_json)
-    message(STATUS "hermes::cli — fetching nlohmann_json 3.11.3")
     FetchContent_Declare(nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG v3.11.3
@@ -44,6 +42,7 @@ target_link_libraries(hermes_cli_lib
         hermes::profile
         nlohmann_json::nlohmann_json
     PRIVATE
+        hermes::gateway
         hermes_warnings
 )
 

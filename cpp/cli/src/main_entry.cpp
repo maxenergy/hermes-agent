@@ -4,6 +4,8 @@
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/cron/jobs.hpp"
+#include "hermes/gateway/pairing.hpp"
+#include "hermes/gateway/gateway_config.hpp"
 #include "hermes/profile/profile.hpp"
 #include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
@@ -49,6 +51,7 @@ void print_global_help() {
               << "  cron        Manage scheduled tasks\n"
               << "  profile     Show user profile\n"
               << "  version     Print version and exit\n"
+              << "  pairing     Manage DM pairing codes\n"
               << "  update      Update Hermes\n"
               << "  uninstall   Remove Hermes\n"
               << "\n"
@@ -581,6 +584,41 @@ int cmd_uninstall() {
     return 0;
 }
 
+int cmd_pairing(int argc, char* argv[]) {
+    // hermes pairing approve <platform> <code>
+    if (argc < 5) {
+        std::cerr << "Usage: hermes pairing approve <platform> <code>\n";
+        return 1;
+    }
+
+    std::string sub = argv[2];
+    if (sub != "approve") {
+        std::cerr << "Unknown pairing subcommand: " << sub << "\n"
+                  << "Usage: hermes pairing approve <platform> <code>\n";
+        return 1;
+    }
+
+    std::string platform_str = argv[3];
+    std::string code = argv[4];
+
+    try {
+        auto platform = hermes::gateway::platform_from_string(platform_str);
+        auto pairing_dir = hermes::core::path::get_hermes_home() / "pairing";
+        hermes::gateway::PairingStore store(pairing_dir);
+
+        if (store.approve_code(platform, code)) {
+            std::cout << "Approved!\n";
+            return 0;
+        } else {
+            std::cout << "Code not found or expired.\n";
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
 int main_entry(int argc, char* argv[]) {
     if (argc < 2) {
         // Pipe mode: when stdin is not a TTY, read all input and run as
@@ -654,6 +692,10 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "uninstall") {
         return cmd_uninstall();
+    }
+
+    if (sub == "pairing") {
+        return cmd_pairing(argc, argv);
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";

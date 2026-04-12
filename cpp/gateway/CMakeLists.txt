@@ -32,6 +32,11 @@ add_library(hermes_gateway STATIC
     src/pairing.cpp
     src/status.cpp
     src/gateway_runner.cpp
+    src/stream_consumer.cpp
+    src/channel_directory.cpp
+    src/message_mirror.cpp
+    src/sticker_cache.cpp
+    src/restart.cpp
     platforms/telegram.cpp
     platforms/discord.cpp
     platforms/slack.cpp
@@ -65,6 +70,7 @@ target_link_libraries(hermes_gateway
         hermes::core
         hermes::config
         hermes::llm
+        hermes::agent
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes_warnings

@@ -22,6 +22,7 @@ int cmd_skills();
 int cmd_logs();
 int cmd_cron();
 int cmd_profile(int argc, char* argv[]);
+int cmd_pairing(int argc, char* argv[]);
 int cmd_update();
 int cmd_uninstall();
 
