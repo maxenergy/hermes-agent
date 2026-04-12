@@ -34,6 +34,7 @@ target_link_libraries(hermes_skills
         hermes::core
         nlohmann_json::nlohmann_json
     PRIVATE
+        hermes_llm
         hermes_warnings
 )
 

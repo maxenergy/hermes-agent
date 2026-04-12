@@ -66,9 +66,10 @@ hermes::llm::HttpTransport* g_vision_transport = nullptr;
 
 std::string handle_vision_analyze(const nlohmann::json& args,
                                   const ToolContext& /*ctx*/) {
-    if (!g_vision_transport) {
-        return tool_error(
-            "HTTP transport not available — rebuild with cpr");
+    auto* transport = g_vision_transport ? g_vision_transport
+                                        : hermes::llm::get_default_transport();
+    if (!transport) {
+        return tool_error("HTTP transport not available");
     }
 
     const auto url = args.at("url").get<std::string>();
@@ -79,19 +80,15 @@ std::string handle_vision_analyze(const nlohmann::json& args,
         return tool_error("URL points to a private/loopback address");
     }
 
-    // Download image via POST (HttpTransport only exposes post_json;
-    // real transport would use GET — we send an empty body).
+    // Download image bytes via HTTP GET.
     std::unordered_map<std::string, std::string> dl_headers;
-    auto img_resp =
-        g_vision_transport->post_json(url, dl_headers, "");
+    auto img_resp = transport->get(url, dl_headers);
 
     if (img_resp.status_code != 200) {
         return tool_error("Failed to download image",
                           {{"status", img_resp.status_code}});
     }
 
-    // In Phase 8 we simply forward the downloaded bytes and prompt to
-    // an auxiliary LLM via the same transport (OpenAI vision endpoint).
     const char* api_key = std::getenv("OPENAI_API_KEY");
     if (!api_key || api_key[0] == '\0') {
         return tool_error("OPENAI_API_KEY not set for vision model");
@@ -128,7 +125,7 @@ std::string handle_vision_analyze(const nlohmann::json& args,
     llm_headers["Content-Type"] = "application/json";
     llm_headers["Authorization"] = std::string("Bearer ") + api_key;
 
-    auto llm_resp = g_vision_transport->post_json(
+    auto llm_resp = transport->post_json(
         "https://api.openai.com/v1/chat/completions", llm_headers,
         vision_req.dump());
 

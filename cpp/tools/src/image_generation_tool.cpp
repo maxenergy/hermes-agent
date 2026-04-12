@@ -12,9 +12,10 @@ hermes::llm::HttpTransport* g_imagegen_transport = nullptr;
 
 std::string handle_image_generate(const nlohmann::json& args,
                                   const ToolContext& /*ctx*/) {
-    if (!g_imagegen_transport) {
-        return tool_error(
-            "HTTP transport not available — rebuild with cpr");
+    auto* transport = g_imagegen_transport ? g_imagegen_transport
+                                          : hermes::llm::get_default_transport();
+    if (!transport) {
+        return tool_error("HTTP transport not available");
     }
 
     const auto prompt = args.at("prompt").get<std::string>();
@@ -41,7 +42,7 @@ std::string handle_image_generate(const nlohmann::json& args,
     headers["Content-Type"] = "application/json";
     headers["Authorization"] = std::string("Bearer ") + api_key;
 
-    auto resp = g_imagegen_transport->post_json(
+    auto resp = transport->post_json(
         "https://api.openai.com/v1/images/generations", headers,
         req_body.dump());
 

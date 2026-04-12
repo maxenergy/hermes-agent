@@ -4,21 +4,31 @@
 
 using namespace hermes::skills;
 
-// 1. search returns empty (stub)
-TEST(SkillsHubTest, SearchReturnsEmpty) {
+// When no HTTP transport is available (test environment), the hub methods
+// should degrade gracefully.
+
+TEST(SkillsHubTest, SearchReturnsEmptyWithoutTransport) {
     SkillsHub hub;
     auto results = hub.search("anything");
     EXPECT_TRUE(results.empty());
 }
 
-// 2. install returns false (stub)
-TEST(SkillsHubTest, InstallReturnsFalse) {
+TEST(SkillsHubTest, InstallReturnsFalseWithoutTransport) {
     SkillsHub hub;
     EXPECT_FALSE(hub.install("some-skill"));
 }
 
-// 3. get returns nullopt (stub)
-TEST(SkillsHubTest, GetReturnsNullopt) {
+TEST(SkillsHubTest, GetReturnsNulloptWithoutTransport) {
     SkillsHub hub;
     EXPECT_FALSE(hub.get("whatever").has_value());
+}
+
+TEST(SkillsHubTest, UninstallReturnsFalseForNonexistent) {
+    SkillsHub hub;
+    EXPECT_FALSE(hub.uninstall("nonexistent-skill-xyz"));
+}
+
+TEST(SkillsHubTest, UpdateReturnsFalseWithoutTransport) {
+    SkillsHub hub;
+    EXPECT_FALSE(hub.update("some-skill"));
 }

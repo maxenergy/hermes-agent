@@ -7,6 +7,7 @@ add_executable(hermes_approval_tests
     test_gateway_queue.cpp
     test_website_policy.cpp
     test_skills_guard.cpp
+    test_osv_check.cpp
     test_mcp_credential_strip.cpp
 )
 

@@ -12,9 +12,10 @@ hermes::llm::HttpTransport* g_web_transport = nullptr;
 
 std::string handle_web_search(const nlohmann::json& args,
                               const ToolContext& /*ctx*/) {
-    if (!g_web_transport) {
-        return tool_error(
-            "HTTP transport not available — rebuild with cpr");
+    auto* transport = g_web_transport ? g_web_transport
+                                     : hermes::llm::get_default_transport();
+    if (!transport) {
+        return tool_error("HTTP transport not available");
     }
 
     const auto query = args.at("query").get<std::string>();
@@ -34,7 +35,7 @@ std::string handle_web_search(const nlohmann::json& args,
     headers["Content-Type"] = "application/json";
     headers["x-api-key"] = api_key;
 
-    auto resp = g_web_transport->post_json(
+    auto resp = transport->post_json(
         "https://api.exa.ai/search", headers, req_body.dump());
 
     if (resp.status_code != 200) {
@@ -64,9 +65,10 @@ std::string handle_web_search(const nlohmann::json& args,
 
 std::string handle_web_extract(const nlohmann::json& args,
                                const ToolContext& /*ctx*/) {
-    if (!g_web_transport) {
-        return tool_error(
-            "HTTP transport not available — rebuild with cpr");
+    auto* transport = g_web_transport ? g_web_transport
+                                     : hermes::llm::get_default_transport();
+    if (!transport) {
+        return tool_error("HTTP transport not available");
     }
 
     const auto url = args.at("url").get<std::string>();
@@ -86,7 +88,7 @@ std::string handle_web_extract(const nlohmann::json& args,
     headers["Content-Type"] = "application/json";
     headers["Authorization"] = std::string("Bearer ") + api_key;
 
-    auto resp = g_web_transport->post_json(
+    auto resp = transport->post_json(
         "https://api.firecrawl.dev/v1/scrape", headers, req_body.dump());
 
     if (resp.status_code != 200) {

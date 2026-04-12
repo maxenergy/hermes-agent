@@ -26,6 +26,17 @@ std::string ha_token() {
     return v ? std::string(v) : std::string();
 }
 
+hermes::llm::HttpTransport* get_ha_transport() {
+    return hermes::llm::get_default_transport();
+}
+
+std::unordered_map<std::string, std::string> ha_headers() {
+    std::unordered_map<std::string, std::string> h;
+    h["Authorization"] = "Bearer " + ha_token();
+    h["Content-Type"] = "application/json";
+    return h;
+}
+
 }  // namespace
 
 void register_homeassistant_tools(ToolRegistry& registry) {
@@ -47,11 +58,39 @@ void register_homeassistant_tools(ToolRegistry& registry) {
 
         e.handler = [](const nlohmann::json& /*args*/,
                        const ToolContext& /*ctx*/) -> std::string {
-            // TODO(phase-9): wire cpr
+            auto* transport = get_ha_transport();
+            if (!transport) return tool_error("HTTP transport not available");
+
             auto url = ha_url() + "/api/states";
-            (void)url;
-            (void)ha_token();
-            return tool_error("HTTP transport not available");
+            auto resp = transport->get(url, ha_headers());
+
+            if (resp.status_code != 200) {
+                return tool_error("Home Assistant API error",
+                                  {{"status", resp.status_code},
+                                   {"body", resp.body}});
+            }
+
+            auto body = nlohmann::json::parse(resp.body, nullptr, false);
+            if (body.is_discarded()) {
+                return tool_error("malformed response from Home Assistant");
+            }
+
+            nlohmann::json entities = nlohmann::json::array();
+            for (const auto& state : body) {
+                nlohmann::json ent;
+                ent["entity_id"] = state.value("entity_id", "");
+                ent["state"] = state.value("state", "");
+                if (state.contains("attributes") &&
+                    state["attributes"].contains("friendly_name")) {
+                    ent["friendly_name"] =
+                        state["attributes"]["friendly_name"];
+                }
+                entities.push_back(std::move(ent));
+            }
+
+            nlohmann::json result;
+            result["entities"] = std::move(entities);
+            return tool_result(result);
         };
 
         registry.register_tool(std::move(e));
@@ -82,12 +121,32 @@ void register_homeassistant_tools(ToolRegistry& registry) {
                 !args["entity_id"].is_string()) {
                 return tool_error("missing required parameter: entity_id");
             }
-            // TODO(phase-9): wire cpr
-            auto url = ha_url() + "/api/states/" +
-                       args["entity_id"].get<std::string>();
-            (void)url;
-            (void)ha_token();
-            return tool_error("HTTP transport not available");
+
+            auto* transport = get_ha_transport();
+            if (!transport) return tool_error("HTTP transport not available");
+
+            auto entity_id = args["entity_id"].get<std::string>();
+            auto url = ha_url() + "/api/states/" + entity_id;
+            auto resp = transport->get(url, ha_headers());
+
+            if (resp.status_code != 200) {
+                return tool_error("Home Assistant API error",
+                                  {{"status", resp.status_code},
+                                   {"body", resp.body}});
+            }
+
+            auto body = nlohmann::json::parse(resp.body, nullptr, false);
+            if (body.is_discarded()) {
+                return tool_error("malformed response from Home Assistant");
+            }
+
+            nlohmann::json result;
+            result["entity_id"] = body.value("entity_id", "");
+            result["state"] = body.value("state", "");
+            if (body.contains("attributes")) {
+                result["attributes"] = body["attributes"];
+            }
+            return tool_result(result);
         };
 
         registry.register_tool(std::move(e));
@@ -108,11 +167,26 @@ void register_homeassistant_tools(ToolRegistry& registry) {
 
         e.handler = [](const nlohmann::json& /*args*/,
                        const ToolContext& /*ctx*/) -> std::string {
-            // TODO(phase-9): wire cpr
+            auto* transport = get_ha_transport();
+            if (!transport) return tool_error("HTTP transport not available");
+
             auto url = ha_url() + "/api/services";
-            (void)url;
-            (void)ha_token();
-            return tool_error("HTTP transport not available");
+            auto resp = transport->get(url, ha_headers());
+
+            if (resp.status_code != 200) {
+                return tool_error("Home Assistant API error",
+                                  {{"status", resp.status_code},
+                                   {"body", resp.body}});
+            }
+
+            auto body = nlohmann::json::parse(resp.body, nullptr, false);
+            if (body.is_discarded()) {
+                return tool_error("malformed response from Home Assistant");
+            }
+
+            nlohmann::json result;
+            result["services"] = body;
+            return tool_result(result);
         };
 
         registry.register_tool(std::move(e));
@@ -156,13 +230,39 @@ void register_homeassistant_tools(ToolRegistry& registry) {
                     return tool_error(std::string("missing required parameter: ") + key);
                 }
             }
-            // TODO(phase-9): wire cpr
+
+            auto* transport = get_ha_transport();
+            if (!transport) return tool_error("HTTP transport not available");
+
             auto url = ha_url() + "/api/services/" +
                        args["domain"].get<std::string>() + "/" +
                        args["service"].get<std::string>();
-            (void)url;
-            (void)ha_token();
-            return tool_error("HTTP transport not available");
+
+            nlohmann::json req_body;
+            req_body["entity_id"] = args["entity_id"].get<std::string>();
+            if (args.contains("data") && args["data"].is_object()) {
+                for (auto& [k, v] : args["data"].items()) {
+                    req_body[k] = v;
+                }
+            }
+
+            auto resp = transport->post_json(url, ha_headers(), req_body.dump());
+
+            if (resp.status_code != 200) {
+                return tool_error("Home Assistant API error",
+                                  {{"status", resp.status_code},
+                                   {"body", resp.body}});
+            }
+
+            auto body = nlohmann::json::parse(resp.body, nullptr, false);
+            if (body.is_discarded()) {
+                return tool_error("malformed response from Home Assistant");
+            }
+
+            nlohmann::json result;
+            result["success"] = true;
+            result["response"] = body;
+            return tool_result(result);
         };
 
         registry.register_tool(std::move(e));

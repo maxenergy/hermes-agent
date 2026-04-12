@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -47,9 +48,6 @@ std::string handle_tts(const nlohmann::json& args,
             << " --voice " << shell_escape(voice)
             << " -w " << shell_escape(output_path.string());
 
-        // We do NOT actually execute here — just return the command
-        // and path.  Real execution requires LocalEnvironment wiring
-        // (Phase 12).
         nlohmann::json result;
         result["audio_path"] = output_path.string();
         result["format"] = "mp3";
@@ -57,9 +55,113 @@ std::string handle_tts(const nlohmann::json& args,
         return tool_result(result);
     }
 
-    // elevenlabs / openai providers need HttpTransport.
-    return tool_error("HTTP-based TTS provider '" + provider +
-                      "' not available — rebuild with cpr");
+    if (provider == "openai") {
+        const char* api_key = std::getenv("OPENAI_API_KEY");
+        if (!api_key || api_key[0] == '\0') {
+            return tool_error("OPENAI_API_KEY not set");
+        }
+
+        auto* transport = hermes::llm::get_default_transport();
+        if (!transport) {
+            return tool_error("HTTP transport not available");
+        }
+
+        // Map voice name — default to "alloy" if the edge-tts voice was used.
+        std::string openai_voice = voice;
+        if (voice.find("Neural") != std::string::npos) {
+            openai_voice = "alloy";
+        }
+
+        nlohmann::json req_body;
+        req_body["model"] = "tts-1";
+        req_body["input"] = text;
+        req_body["voice"] = openai_voice;
+
+        std::unordered_map<std::string, std::string> headers;
+        headers["Content-Type"] = "application/json";
+        headers["Authorization"] = std::string("Bearer ") + api_key;
+
+        auto resp = transport->post_json(
+            "https://api.openai.com/v1/audio/speech", headers,
+            req_body.dump());
+
+        if (resp.status_code != 200) {
+            return tool_error("OpenAI TTS API error",
+                              {{"status", resp.status_code},
+                               {"body", resp.body}});
+        }
+
+        // Write audio bytes to temp file.
+        auto tmpdir = std::filesystem::temp_directory_path();
+        auto output_path = tmpdir / ("hermes_tts_" +
+                                     (ctx.task_id.empty() ? "out" : ctx.task_id) +
+                                     ".mp3");
+        {
+            std::ofstream ofs(output_path, std::ios::binary);
+            ofs.write(resp.body.data(),
+                      static_cast<std::streamsize>(resp.body.size()));
+        }
+
+        nlohmann::json result;
+        result["audio_path"] = output_path.string();
+        result["format"] = "mp3";
+        result["provider"] = "openai";
+        return tool_result(result);
+    }
+
+    if (provider == "elevenlabs") {
+        const char* api_key = std::getenv("ELEVENLABS_API_KEY");
+        if (!api_key || api_key[0] == '\0') {
+            return tool_error("ELEVENLABS_API_KEY not set");
+        }
+
+        auto* transport = hermes::llm::get_default_transport();
+        if (!transport) {
+            return tool_error("HTTP transport not available");
+        }
+
+        // Use the voice parameter as the voice_id.
+        std::string voice_id = voice;
+        if (voice.find("Neural") != std::string::npos) {
+            voice_id = "21m00Tcm4TlvDq8ikWAM";  // default Rachel
+        }
+
+        nlohmann::json req_body;
+        req_body["text"] = text;
+
+        std::unordered_map<std::string, std::string> headers;
+        headers["Content-Type"] = "application/json";
+        headers["xi-api-key"] = api_key;
+
+        auto resp = transport->post_json(
+            "https://api.elevenlabs.io/v1/text-to-speech/" + voice_id,
+            headers, req_body.dump());
+
+        if (resp.status_code != 200) {
+            return tool_error("ElevenLabs TTS API error",
+                              {{"status", resp.status_code},
+                               {"body", resp.body}});
+        }
+
+        // Write audio bytes to temp file.
+        auto tmpdir = std::filesystem::temp_directory_path();
+        auto output_path = tmpdir / ("hermes_tts_" +
+                                     (ctx.task_id.empty() ? "out" : ctx.task_id) +
+                                     ".mp3");
+        {
+            std::ofstream ofs(output_path, std::ios::binary);
+            ofs.write(resp.body.data(),
+                      static_cast<std::streamsize>(resp.body.size()));
+        }
+
+        nlohmann::json result;
+        result["audio_path"] = output_path.string();
+        result["format"] = "mp3";
+        result["provider"] = "elevenlabs";
+        return tool_result(result);
+    }
+
+    return tool_error("Unknown TTS provider: " + provider);
 }
 
 }  // namespace

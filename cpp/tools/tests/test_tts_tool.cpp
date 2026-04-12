@@ -29,14 +29,38 @@ TEST_F(TtsToolTest, EdgeProviderConstructsCommand) {
     EXPECT_EQ(parsed["format"], "mp3");
 }
 
-TEST_F(TtsToolTest, HttpProviderReturnsError) {
+TEST_F(TtsToolTest, OpenAiProviderMissingKeyReturnsError) {
+    unsetenv("OPENAI_API_KEY");
+    auto result = ToolRegistry::instance().dispatch(
+        "text_to_speech",
+        {{"text", "hi"}, {"provider", "openai"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    EXPECT_TRUE(parsed.contains("error"));
+    EXPECT_NE(parsed["error"].get<std::string>().find("OPENAI_API_KEY"),
+              std::string::npos);
+}
+
+TEST_F(TtsToolTest, ElevenLabsProviderMissingKeyReturnsError) {
+    unsetenv("ELEVENLABS_API_KEY");
     auto result = ToolRegistry::instance().dispatch(
         "text_to_speech",
         {{"text", "hi"}, {"provider", "elevenlabs"}},
         {});
     auto parsed = nlohmann::json::parse(result);
     EXPECT_TRUE(parsed.contains("error"));
-    EXPECT_NE(parsed["error"].get<std::string>().find("elevenlabs"),
+    EXPECT_NE(parsed["error"].get<std::string>().find("ELEVENLABS_API_KEY"),
+              std::string::npos);
+}
+
+TEST_F(TtsToolTest, UnknownProviderReturnsError) {
+    auto result = ToolRegistry::instance().dispatch(
+        "text_to_speech",
+        {{"text", "hi"}, {"provider", "foobar"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    EXPECT_TRUE(parsed.contains("error"));
+    EXPECT_NE(parsed["error"].get<std::string>().find("foobar"),
               std::string::npos);
 }
 
