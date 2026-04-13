@@ -11,6 +11,9 @@ add_library(hermes_environments STATIC
     src/daytona.cpp
     src/singularity.cpp
     src/managed_modal.cpp
+    src/dotfile_sync.cpp
+    src/scp_copier.cpp
+    src/spawn_via_env.cpp
 )
 
 target_include_directories(hermes_environments

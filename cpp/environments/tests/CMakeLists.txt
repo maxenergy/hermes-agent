@@ -13,6 +13,9 @@ set(HERMES_ENV_TEST_SOURCES
     test_daytona_environment.cpp
     test_singularity_environment.cpp
     test_managed_modal.cpp
+    test_dotfile_sync.cpp
+    test_scp_copier.cpp
+    test_spawn_via_env.cpp
 )
 
 add_executable(hermes_environments_tests ${HERMES_ENV_TEST_SOURCES})
