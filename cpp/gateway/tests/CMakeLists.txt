@@ -38,6 +38,9 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_slack_socket_mode.cpp
     test_matrix_e2ee.cpp
     test_media_cache.cpp
+    test_safe_fetch.cpp
+    test_slack_subcommand_router.cpp
+    test_channel_cache.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

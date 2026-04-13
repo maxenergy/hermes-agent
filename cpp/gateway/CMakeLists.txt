@@ -62,6 +62,9 @@ add_library(hermes_gateway STATIC
     src/sticker_cache.cpp
     src/restart.cpp
     src/media_cache.cpp
+    src/safe_fetch.cpp
+    src/slack_subcommand_router.cpp
+    src/channel_cache.cpp
     platforms/telegram.cpp
     platforms/websocket_transport.cpp
     platforms/discord.cpp
