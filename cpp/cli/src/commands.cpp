@@ -102,7 +102,8 @@ std::vector<CommandDef> build_registry() {
         {"fast",        "Switch to the fast model preset",       "Configuration", {},                   "",          false, false, ""},
         {"yolo",        "Toggle auto-approve mode",              "Configuration", {},                   "",          false, false, ""},
         {"verbose",     "Toggle verbose output",                 "Configuration", {"v"},                "",          false, false, ""},
-        {"compress",    "Compress conversation context",         "Configuration", {},                   "",          true,  false, ""},
+        {"compress",    "Compress conversation context",         "Configuration", {},                   "[feedback good|bad [note]]", true,  false, ""},
+        {"ref",         "Attach a context reference (file|url)",  "Configuration", {},                   "add <path|url> | list | remove <id>", false, false, ""},
 
         // ── Tools & Skills ───────────────────────────────────────────
         {"skills",      "List available skills",                 "Tools & Skills", {},                  "",          false, false, ""},

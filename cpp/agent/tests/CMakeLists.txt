@@ -26,6 +26,9 @@ add_executable(hermes_agent_tests
     test_ai_agent.cpp
     test_trajectory_saving.cpp
     test_honcho_provider.cpp
+    test_context_references.cpp
+    test_compression_feedback.cpp
+    test_insights.cpp
 )
 
 target_link_libraries(hermes_agent_tests

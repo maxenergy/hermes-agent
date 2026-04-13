@@ -14,6 +14,9 @@ add_library(hermes_agent STATIC
     src/title_generator.cpp
     src/auxiliary_client.cpp
     src/ai_agent.cpp
+    src/context_references.cpp
+    src/compression_feedback.cpp
+    src/insights.cpp
 )
 
 target_include_directories(hermes_agent
