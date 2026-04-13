@@ -23,6 +23,21 @@ namespace {
 std::mutex g_proc_mu;
 std::unique_ptr<hermes::state::ProcessRegistry> g_proc_reg;
 
+// Process-wide terminal environment factory — set by the batch
+// runner / RL CLI so terminal commands issued mid-task route through
+// an isolated backend (docker / modal / ...).  Default is empty → use
+// LocalEnvironment.
+std::mutex g_env_factory_mu;
+TerminalEnvFactory g_env_factory;
+
+std::string env_name_from_ctx(const ToolContext& ctx) {
+    if (ctx.extra.is_object() && ctx.extra.contains("environment") &&
+        ctx.extra["environment"].is_string()) {
+        return ctx.extra["environment"].get<std::string>();
+    }
+    return "local";
+}
+
 hermes::state::ProcessRegistry& proc_registry() {
     std::lock_guard<std::mutex> lk(g_proc_mu);
     if (!g_proc_reg) {
@@ -40,6 +55,25 @@ std::string make_process_id() {
 }
 
 }  // namespace
+
+void set_terminal_env_factory(TerminalEnvFactory factory) {
+    std::lock_guard<std::mutex> lk(g_env_factory_mu);
+    g_env_factory = std::move(factory);
+}
+
+std::unique_ptr<hermes::environments::BaseEnvironment>
+resolve_terminal_env(const std::string& env_name) {
+    TerminalEnvFactory factory;
+    {
+        std::lock_guard<std::mutex> lk(g_env_factory_mu);
+        factory = g_env_factory;
+    }
+    if (factory) {
+        auto e = factory(env_name);
+        if (e) return e;
+    }
+    return std::make_unique<hermes::environments::LocalEnvironment>();
+}
 
 void register_terminal_tools() {
     auto& reg = ToolRegistry::instance();
@@ -102,13 +136,14 @@ void register_terminal_tools() {
 
                 // Spawn background thread.
                 std::string cwd = ctx.cwd;
-                std::thread([proc_id, command, timeout, cwd]() {
-                    hermes::environments::LocalEnvironment env;
+                std::string env_name = env_name_from_ctx(ctx);
+                std::thread([proc_id, command, timeout, cwd, env_name]() {
+                    auto env = resolve_terminal_env(env_name);
                     hermes::environments::ExecuteOptions opts;
                     opts.timeout = std::chrono::seconds(timeout);
                     if (!cwd.empty()) opts.cwd = cwd;
 
-                    auto result = env.execute(command, opts);
+                    auto result = env->execute(command, opts);
 
                     auto& preg = proc_registry();
                     preg.feed_output(proc_id,
@@ -119,13 +154,14 @@ void register_terminal_tools() {
                 return tool_result({{"process_id", proc_id}, {"started", true}});
             }
 
-            // Foreground execution.
-            hermes::environments::LocalEnvironment env;
+            // Foreground execution — routed through the installed
+            // terminal env factory (or LocalEnvironment by default).
+            auto env = resolve_terminal_env(env_name_from_ctx(ctx));
             hermes::environments::ExecuteOptions opts;
             opts.timeout = std::chrono::seconds(timeout);
             if (!ctx.cwd.empty()) opts.cwd = ctx.cwd;
 
-            auto result = env.execute(command, opts);
+            auto result = env->execute(command, opts);
 
             return tool_result(
                 {{"stdout", hermes::core::ansi_strip::strip_ansi(result.stdout_text)},

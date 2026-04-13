@@ -252,6 +252,42 @@ void register_rl_tools(hermes::llm::HttpTransport* transport) {
         reg.register_tool(std::move(e));
     }
 
+    // 10b. score_trajectory — reward-model score for a finished
+    // conversation, used offline to filter SFT data / compute RLHF
+    // rewards.  POSTs the trajectory to ``/score`` on the RL API.
+    {
+        ToolEntry e;
+        e.name = "score_trajectory";
+        e.toolset = "rl";
+        e.description =
+            "Score a completed trajectory (conversations list) with the "
+            "configured RL reward model; returns {score, breakdown}.";
+        e.emoji = "\xF0\x9F\x8F\x85";  // medal
+        e.check_fn = rl_env_available;
+        e.requires_env = {"NOUS_RL_API_URL", "NOUS_RL_API_KEY"};
+        e.schema = {
+            {"type", "object"},
+            {"properties",
+             {{"conversations",
+               {{"type", "array"},
+                {"description",
+                 "HuggingFace SFT conversations array (from/value pairs)"}}},
+              {"reward_model",
+               {{"type", "string"},
+                {"description", "Optional reward model id"}}}}},
+            {"required", nlohmann::json::array({"conversations"})}};
+        e.handler = [tp](const nlohmann::json& args,
+                         const ToolContext& /*ctx*/) -> std::string {
+            nlohmann::json body;
+            body["conversations"] = args.at("conversations");
+            if (args.contains("reward_model")) {
+                body["reward_model"] = args["reward_model"];
+            }
+            return http_post(tp, api_url() + "/score", body);
+        };
+        reg.register_tool(std::move(e));
+    }
+
     // 10. rl_test_inference (bonus)
     {
         ToolEntry e;

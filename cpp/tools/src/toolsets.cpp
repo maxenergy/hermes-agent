@@ -108,7 +108,8 @@ const std::map<std::string, ToolsetDef>& toolsets_storage() {
              "rl_get_current_config", "rl_edit_config",
              "rl_start_training", "rl_check_status",
              "rl_stop_training", "rl_get_results",
-             "rl_list_runs", "rl_test_inference"});
+             "rl_list_runs", "rl_test_inference",
+             "score_trajectory"});
         t["reasoning"] = make("reasoning",
                               "Reasoning helpers — mixture of agents + clarify",
                               {"mixture_of_agents", "clarify"});
