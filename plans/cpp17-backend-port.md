@@ -39,7 +39,7 @@
 - [x] 接入 clang-format / clang-tidy 配置 (2026-04-12, d21d29c9)
 - [x] 接入 GoogleTest(FetchContent v1.15.2,`gtest_discover_tests` 绑定) (2026-04-12, d21d29c9)
 - [x] 接入 sanitizer 构建变体(`asan` preset = ASan + UBSan) (2026-04-12, d21d29c9)
-- [ ] CI 流水线:Linux x86_64 / Linux arm64 / macOS / Windows-MSVC + WSL2(对齐 Python 版支持矩阵)
+- [ ] CI 流水线:Linux x86_64 / Linux arm64 / macOS / Windows-MSVC + WSL2(对齐 Python 版支持矩阵) *— deferred: 03ac9465 多架构 Docker 落地但完整多平台 CI 矩阵未启动*
 - [x] 设置 Release / Debug / asan 三套构建预设(`CMakePresets.json`) (2026-04-12, d21d29c9)
 
 ### 0.2 第三方依赖选型与封装
@@ -102,10 +102,10 @@
 - [x] `~/.hermes/.env` 读写,store 后 chmod 0600 (2026-04-12, 005749d3)
 - [x] `store_credential` / `get_credential` / `clear_credential` / `clear_all_credentials` / `list_credential_keys` (2026-04-12, 005749d3)
 - [x] `load_profile_env()`:HERMES_HOME `.env` + CWD 项目 `.env` 双层 overlay,幂等 (2026-04-12, 005749d3)
-- [ ] OAuth 流程脚手架(对应 `auth_commands.py`)
-- [ ] GitHub Copilot OAuth(对应 `copilot_auth.py`)
-- [ ] Nous 订阅状态校验(对应 `nous_subscription.py`)
-- [ ] 每平台 token scoped lock(见网关阶段)
+- [x] OAuth 流程脚手架(对应 `auth_commands.py`) — `cpp/auth/src/qwen_oauth.cpp` + `copilot_oauth.cpp` + `mcp_oauth.cpp` (2026-04-13, a2052008, a784b2e5, e3dad4d4)
+- [x] GitHub Copilot OAuth(对应 `copilot_auth.py`) — device code flow (2026-04-13, e3dad4d4)
+- [x] Nous 订阅状态校验(对应 `nous_subscription.py`) (2026-04-13, e3dad4d4)
+- [x] 每平台 token scoped lock(见网关阶段) (2026-04-13, f0215995, 2198dc39)
 
 ---
 
@@ -121,7 +121,7 @@
 - [x] `fts_search(query, limit)` (2026-04-12, 4318321b)
 - [x] FTS5 可用性运行时探测(创建临时 FTS5 表) (2026-04-12, 4318321b)
 - [x] 单元测试:并发写、FTS 命中、级联删除 (2026-04-12, 4318321b)
-- [ ] v1→v5 per-version 迁移路径(目前 v6-fresh-install one-shot)
+- [x] v1→v5 per-version 迁移路径(v1→v2→v3→v4→v5→v6 每步独立 + `test_migration.cpp` fixtures) (2026-04-13, fb99baf7)
 
 ### 2.2 ProcessRegistry(后台进程注册表)
 - [x] `ProcessSession` 数据结构(id/command/task_id/pid/state/exit_code/cwd/时间戳/pid_scope/detached) (2026-04-12, 4318321b)
@@ -142,7 +142,7 @@
 - [x] `convert_scratchpad_to_think()`:`<REASONING_SCRATCHPAD>` → `<think>` (2026-04-12, 4318321b)
 - [x] `has_incomplete_scratchpad()` (2026-04-12, 4318321b)
 - [x] 启动时载入到内存缓存(`memory_store` 内存缓存 + test_memory_cache) (2026-04-12, 4318321b)
-- [ ] `checkpoint_manager`(长任务断点)
+- [x] `checkpoint_manager`(长任务断点) (2026-04-13, a2052008)
 
 ---
 
@@ -190,10 +190,10 @@
 - [x] tier-down 建议(`tier_down_for_context`) (2026-04-12, 13b454b6)
 
 ### 3.5 凭据池与运行时提供商
-- [ ] `credential_pool`:多提供商凭据缓存
-- [ ] `runtime_provider::resolve_runtime_provider()` —— model / api_key / base_url 解析
+- [x] `credential_pool`:多提供商凭据缓存 (2026-04-13, cf65e739)
+- [x] `runtime_provider::resolve_runtime_provider()` —— model / api_key / base_url 解析 (2026-04-13, cf65e739)
 - [x] `model_normalize`:剥离 `provider/` 前缀 (2026-04-12, 55b4a2fc)
-- [ ] `codex_models`:Codex 兼容模型识别
+- [x] `codex_models`:Codex 兼容模型识别 (2026-04-13, cf65e739)
 
 ### 3.6 辅助 LLM 客户端
 - [x] `auxiliary_client`:廉价快速模型(默认 Gemini Flash),用于视觉 / 摘要 / 标题生成 (2026-04-12, 13b454b6)
@@ -215,14 +215,14 @@
 - [x] YAML frontmatter 剥离 (2026-04-12, b060cee1)
 - [x] **prompt injection 检测**:7 条模式(override / hidden-div / pipe-to-sh / ssh-rsa / .env) (2026-04-12, b060cee1)
 - [x] `subdirectory_hints::SubdirectoryHintTracker` LRU (2026-04-12, b060cee1)
-- [ ] `context_references` 关联上下文文件与网络源
+- [x] `context_references` 关联上下文文件与网络源 — `cpp/agent/src/context_references.cpp` (2026-04-13, 3d734baf)
 
 ### 4.2 上下文压缩
 - [x] `context_engine.hpp` 抽象基类:`compress()` / `on_session_reset()` / `update_model()` (2026-04-12, b060cee1)
 - [x] `context_compressor`:~50% 阈值触发 (2026-04-12, b060cee1)
 - [x] 算法:保护 head + tail(4 turns / 20K tokens),辅助模型摘要中间 (2026-04-12, b060cee1)
 - [x] 摘要模板:Goal / Progress / Decisions / Files / Next Steps (2026-04-12, b060cee1)
-- [ ] `manual_compression_feedback`:用户对压缩质量反馈
+- [x] `manual_compression_feedback`:用户对压缩质量反馈 — `cpp/agent/src/compression_feedback.cpp` (2026-04-13, 3d734baf)
 
 ### 4.3 内存管理
 - [x] `MemoryManager`:协调 builtin + 至多一个 external provider (2026-04-12, b060cee1)
@@ -231,8 +231,8 @@
 - [x] `prefetch_all` / `sync_all` / `queue_prefetch_all` (2026-04-12, b060cee1)
 - [x] `MemoryProvider` 抽象基类 (2026-04-12, b060cee1)
 - [x] Builtin file-based provider (backed by MemoryStore) (2026-04-12, b060cee1)
-- [ ] Honcho AI provider(可选)
-- [ ] Insights 模块
+- [x] Honcho AI provider(可选) — `cpp/agent/src/honcho_provider.cpp` (2026-04-13, f0215995)
+- [x] Insights 模块 — `cpp/agent/src/insights.cpp` (2026-04-13, 3d734baf)
 
 ### 4.4 AIAgent 主类
 - [x] DI 构造函数:AgentConfig + LlmClient + SessionDB + ContextEngine + MemoryManager + PromptBuilder + ToolDispatcher + callbacks (2026-04-12, b060cee1)
@@ -268,7 +268,7 @@
 - [x] `ToolRegistry` 单例:thread-safe `_tools` map + `_toolset_checks` map (2026-04-12, b2dd6f86)
 - [x] `register()` + `register_toolset_check()` (2026-04-12, b2dd6f86)
 - [x] `dispatch()` → JSON string,exception capture → `{"error": ...}` (2026-04-12, b2dd6f86)
-- [ ] 异步 handler 桥接 `_run_async`
+- [x] 异步 handler 桥接 `_run_async` — `cpp/core/.../async_bridge` (run_async/join_all/settled) (2026-04-13, 7ed8768a)
 - [x] `get_definitions(enabled, disabled)`:check_fn + toolset_check 双过滤 (2026-04-12, b2dd6f86)
 - [x] `get_toolset_for_tool()` (2026-04-12, b2dd6f86)
 - [x] `tool_error()` / `tool_result()` 辅助 (2026-04-12, b2dd6f86)
@@ -303,7 +303,7 @@
 - [x] `tools/credential_files`:Hermes 凭据文件路径管理 (2026-04-12, b2dd6f86)
 - [x] `tools/binary_extensions`:二进制扩展名识别 (2026-04-12, b2dd6f86)
 - [x] `tools/env_passthrough`:env var 桥接到后端 (2026-04-12, b2dd6f86)
-- [ ] `tools/debug_helpers`
+- [x] `tools/debug_helpers` — `cpp/tools/src/debug_helpers.cpp` (2026-04-13, a2052008)
 
 ---
 
