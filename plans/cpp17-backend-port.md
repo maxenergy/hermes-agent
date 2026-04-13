@@ -778,16 +778,16 @@
 - [x] `CommandDef` 结构:name / description / category / aliases / args_hint / subcommands / cli_only / gateway_only / gateway_config_gate (2026-04-12, 370adb86)
 - [x] `COMMAND_REGISTRY` 列表 (2026-04-12, 370adb86)
 - [x] `resolve_command(name)` 名称/别名 → CommandDef (2026-04-12, 370adb86)
-- [ ] `rebuild_lookups()` 插件注册时刷新
+- [x] `rebuild_lookups()` 插件注册时刷新 (2026-04-13, e32ab0de)
 - [x] 派生:`COMMANDS` 扁平字典(autocomplete) (2026-04-12, 370adb86)
 - [x] 派生:`COMMANDS_BY_CATEGORY`(help) (2026-04-12, 370adb86)
 - [x] 派生:`gateway_help_lines()` (2026-04-12, 370adb86)
 - [x] 派生:`telegram_bot_commands()` (2026-04-12, 370adb86)
 - [x] 派生:`slack_subcommand_map()` (2026-04-12, 370adb86)
-- [ ] 派生:`GATEWAY_KNOWN_COMMANDS` frozenset
+- [x] 派生:`GATEWAY_KNOWN_COMMANDS` frozenset (2026-04-13, e32ab0de)
 
 ### 13.2 CLI 核心 `cli` / `HermesCLI`
-- [ ] FTXUI/curses 替代 Rich + prompt_toolkit:多行编辑、history、autocomplete
+- [x] FTXUI/curses 替代 Rich + prompt_toolkit:多行编辑、history、autocomplete — `ftxui_editor.cpp` + `curses_ui.cpp` (2026-04-13, fcf14d8f)
 - [x] `KawaiiSpinner`:动画 spinner / `┊` 活动 feed (2026-04-12, 370adb86)
 - [x] `load_cli_config()`:硬编码默认 + 用户 YAML 合并(`config::load_cli_config`) (2026-04-12, 005749d3)
 - [x] **skin engine** 初始化(`display.skin`) (2026-04-12, 370adb86)
@@ -804,7 +804,7 @@
 
 ### 13.3 主入口 `hermes_cli/main`
 - [x] `hermes` 子命令路由:chat / gateway / setup / logout / status / cron / doctor / honcho / version / update / uninstall / acp / profiles / sessions / model / tools / skills / claw / pairing / dump / config / logs / plugins / mcp (2026-04-12, 370adb86)
-- [ ] `--profile/-p` 在任何模块导入前生效
+- [x] `--profile/-p` 在任何模块导入前生效(argv pre-parse before module init) (2026-04-13, 75529e47)
 - [x] TTY 检查(`isatty(STDIN_FILENO)` pipe 模式) (2026-04-12, 370adb86)
 - [x] **claw migrate**:OpenClaw 兼容层(SOUL.md / MEMORY.md / USER.md / skills / 命令 allowlist / 消息设置 / API keys / TTS assets / AGENTS.md 导入) (2026-04-12, batch11 — cpp/cli/src/claw_migrate.cpp)
 - [x] `claw migrate --dry-run` / `--preset user-data` / `--overwrite` (2026-04-12, batch11)
@@ -812,29 +812,29 @@
 ### 13.4 子命令实现(`hermes_cli/`)
 - [x] `setup.py`:交互式 wizard(model / provider / terminal / skills / API key 输入掩码 / 模型发现 / 网关设置) (2026-04-12, e64c81cc)
 - [x] `models.py`:`hermes model [list|use|test]`,OpenRouter live API + Ollama 发现 + 上下文长度探测 (2026-04-12, e64c81cc)
-- [ ] `model_switch.py`:热切模型(更新 SessionDB / ContextCompressor / tier-down)
+- [x] `model_switch.py`:热切模型(更新 SessionDB / ContextCompressor / tier-down) — `cpp/llm/src/model_switch.cpp` (2026-04-13, cf65e739, 98b3a1d5)
 - [x] `model_normalize.py`(`cpp/llm/src/model_normalize.cpp`)+ codex_models stub pending (2026-04-12, 55b4a2fc)
 - [x] `skills_config.py`:`hermes skills [list|install|remove|enable|disable]` (2026-04-12, e64c81cc)
 - [x] `skills_hub.py`:远程 skill hub(`cpp/skills/src/skills_hub.cpp`) (2026-04-12, 29936e3c)
 - [x] `tools_config.py`:`hermes tools` 启用/禁用 per-platform (2026-04-12, e64c81cc)
-- [ ] `auth.py` / `auth_commands.py`:OAuth 与凭据
-- [ ] `copilot_auth.py`:GitHub Copilot
-- [ ] `nous_subscription.py`
+- [x] `auth.py` / `auth_commands.py`:OAuth 与凭据(`cmd_auth` subcommand) (2026-04-13, c135e144, 98b3a1d5)
+- [x] `copilot_auth.py`:GitHub Copilot device flow (2026-04-13, e3dad4d4)
+- [x] `nous_subscription.py` (2026-04-13, e3dad4d4)
 - [x] `gateway.py`:`hermes gateway [start|stop|status|install|uninstall]`,systemd / launchd 集成 (2026-04-12, 932ddb2c)
-- [ ] `webhook.py`:webhook 安装
+- [x] `webhook.py`:webhook 安装(`cmd_webhook` subcommand) (2026-04-13, c135e144, 98b3a1d5)
 - [x] `pairing.py`:pairing CLI(`cmd_pairing`) (2026-04-12, e64c81cc)
 - [x] `doctor.py`:配置校验 + 依赖检查 + 提供商连通性 (2026-04-12, e64c81cc)
 - [x] `status.py`:系统状态显示(`cmd_status` in main_entry) (2026-04-12, e64c81cc)
 - [x] `logs.py`:日志 viewer(tail / filter / search) (2026-04-12, e64c81cc)
-- [ ] `dump.py`:会话/配置导出
+- [x] `dump.py`:会话/配置导出(`cmd_dump` subcommand) (2026-04-13, c135e144, 98b3a1d5)
 - [x] `uninstall.py`:干净卸载(`cmd_uninstall` in main_entry) (2026-04-12, e64c81cc)
 - [x] `profiles.py`:多 profile CLI (2026-04-12, e64c81cc)
-- [ ] `runtime_provider.py`:终端后端选择
+- [x] `runtime_provider.py`:终端后端选择(`cmd_runtime` subcommand) (2026-04-13, c135e144, 98b3a1d5)
 - [x] `plugins.py` / `plugins_cmd.py`:插件系统(`cpp/plugins/` + `plugin_manager`) (2026-04-12, 5ef69d59)
-- [ ] `providers.py`:提供商配置
+- [x] `providers.py`:提供商配置(`cmd_providers` subcommand) (2026-04-13, c135e144, 98b3a1d5)
 - [x] `mcp_config.py`:MCP server 配置 (2026-04-12, 932ddb2c)
 - [x] `cron.py`:cron 子命令 (2026-04-12, e64c81cc)
-- [ ] `memory_setup.py`:Honcho 内存后端
+- [x] `memory_setup.py`:Honcho 内存后端 — `cpp/agent/src/honcho_provider.cpp` + `/memory` CLI (2026-04-13, f0215995, 98b3a1d5)
 - [x] `default_soul.md`:默认 AI 身份模板(`cpp/assets/default_soul.md`) (2026-04-12, 5ef69d59)
 - [x] `clipboard.py`:系统剪贴板(`cpp/cli/src/clipboard.cpp`) (2026-04-12, 370adb86)
 - [x] `env_loader.py`:profile-aware `.env`(`cpp/auth/src/env_loader.cpp`) (2026-04-12, 005749d3)
@@ -847,13 +847,13 @@
   - [x] `init_skin_from_config()` / `get_active_skin()` / `set_active_skin()` / `load_skin()` (2026-04-12, 370adb86)
   - [x] 内置 skins:default / ares / mono / slate (2026-04-12, 370adb86)
   - [x] user skins:`~/.hermes/skins/*.yaml` (2026-04-12, 370adb86)
-  - [ ] 缺失值从 default 继承
+  - [ ] 缺失值从 default 继承 *— deferred: 当前为整 skin 加载 fallback,字段级 merge 优先级低*
   - [x] 自定义元素:banner colors / spinner faces+verbs+wings / tool prefix / response box / branding (2026-04-12, 370adb86)
-- [ ] `curses_ui.py`:TUI 工具(table / menu),用 ncurses 或 FTXUI
+- [x] `curses_ui.py`:TUI 工具(table / menu),用 ncurses 或 FTXUI — `cpp/cli/src/curses_ui.cpp` (2026-04-13, fcf14d8f)
 
 ### 13.6 callbacks
 - [x] `callbacks.py`:终端回调(clarify / sudo / approval)已在 `clarify_tool` + `session_state::request_cli_approval` 实现 (2026-04-12, dc5f6c19)
-- [ ] **不允许使用** `\033[K`(ECMA-48 erase-to-EOL) —— 用空格 padding
+- [ ] **不允许使用** `\033[K`(ECMA-48 erase-to-EOL) —— 用空格 padding *— pending: `cpp/cli/src/display.cpp` 仍有 2 处需替换为 space-padding*
 
 ### 13.7 Doctor
 - [x] 检查项:依赖二进制(curl / docker / ssh)/ SQLite FTS5 / 配置文件(`cmd_doctor`) (2026-04-12, e64c81cc)
@@ -867,9 +867,9 @@
 - [x] 多进程池并行 trajectory 生成 (2026-04-12, 2db85e1d)
 - [x] JSONL dataset 加载 + 批处理 (2026-04-12, 2db85e1d)
 - [x] checkpointing(故障恢复 + resume) (2026-04-12, 2db85e1d)
-- [ ] per-prompt trajectory 保存:`from`/`value` XML pairs(含 tool 调用/响应)
+- [x] per-prompt trajectory 保存:`from`/`value` XML pairs(含 tool 调用/响应) — `hf_schema.hpp::to_hf_sft_record()` (2026-04-13, 9e2030c5)
 - [x] tool stats 聚合(count / success / failure) (2026-04-12, 2db85e1d)
-- [ ] HuggingFace dataset schema 标准化
+- [x] HuggingFace dataset schema 标准化 — `cpp/batch/include/hermes/batch/hf_schema.hpp` (2026-04-13, 9e2030c5)
 - [x] 通过 `toolset_distributions` 分布采样 (2026-04-12, 2db85e1d)
 
 ### 14.2 trajectory_compressor
@@ -878,18 +878,18 @@
 - [x] **仅压缩** 中间轮 (2026-04-12, 2db85e1d)
 - [x] 单一摘要消息替代被压缩区域(single system-role summary) (2026-04-12, 2db85e1d)
 - [x] `CompressionConfig` 结构(tokenizer / targets / OpenRouter model) (2026-04-12, 2db85e1d)
-- [ ] 流式压缩进度显示
+- [x] 流式压缩进度显示(progress.json checkpoint + periodic stderr progress JSON via watchdog) (2026-04-13, 9e2030c5)
 
 ### 14.3 mini_swe_runner
-- [ ] SWE 任务执行器,Hermes trajectory 输出
-- [ ] 环境:local / Docker / Modal cloud
-- [ ] 终端工具集成(隔离执行)
-- [ ] 批处理 from JSONL,输出 hermes 格式
+- [x] SWE 任务执行器,Hermes trajectory 输出 — `cpp/batch/src/swe_runner.cpp` (2026-04-13, 9e2030c5)
+- [x] 环境:local / Docker / Modal cloud(env-aware batch dispatch + per-task environment 字段) (2026-04-13, 9e2030c5)
+- [x] 终端工具集成(隔离执行) — terminal env factory (2026-04-13, ad0e506e, f0e69e78)
+- [x] 批处理 from JSONL,输出 hermes 格式(BatchConfig default_environment / default_task_type) (2026-04-13, 9e2030c5)
 
 ### 14.4 rl_cli
-- [ ] 专用 RL 训练 CLI(扩展超时,RL 聚焦 prompt)
-- [ ] 完整 toolset(含 RL training tools)
-- [ ] 30 分钟 check interval 支持
+- [x] 专用 RL 训练 CLI(扩展超时,RL 聚焦 prompt) — `hermes rl train|eval|list-environments` (2026-04-13, e5e3eff4)
+- [x] 完整 toolset(含 RL training tools) — terminal + web + rl toolset wired (2026-04-13, e5e3eff4, f0e69e78)
+- [x] 30 分钟 check interval 支持 — 30-min default checkpoint_interval (2026-04-13, e5e3eff4)
 
 ---
 
@@ -918,9 +918,9 @@
 
 ### 16.1 acp_adapter
 - [x] ACP server 入口 (2026-04-12, 2db85e1d)
-- [ ] auth(`agent-client-protocol` 等价)
+- [x] auth(`agent-client-protocol` 等价) — authenticate RPC + per-session tokens + env-credential fallback (2026-04-13, fe4a59e2)
 - [x] handlers (2026-04-12, 2db85e1d)
-- [ ] VS Code / Zed / JetBrains 集成
+- [x] VS Code / Zed / JetBrains 集成(editor integration stubs in `cpp/packaging/{vscode,zed,jetbrains}/`) (2026-04-13, f8e7f749)
 
 ### 16.2 acp_registry
 - [x] capability 注册 (2026-04-12, 2db85e1d)
@@ -943,13 +943,13 @@
 ### 18.1 容器化
 - [x] Dockerfile(对应 `docker/`) (2026-04-12, 5ef69d59)
 - [x] docker-compose(开发 + 网关) (2026-04-12, 5ef69d59)
-- [ ] 多 arch 构建(amd64 + arm64)
+- [x] 多 arch 构建(amd64 + arm64) — `cpp/packaging/docker-buildx.sh` (2026-04-13, 03ac9465)
 
 ### 18.2 系统集成
 - [x] systemd 单元(网关常驻) (2026-04-12, 5ef69d59)
 - [x] launchd plist(macOS) (2026-04-12, 5ef69d59)
-- [ ] Termux 包(Android)
-- [ ] WSL2 兼容性测试
+- [x] Termux 包(Android) — `cpp/packaging/termux-build.sh` (2026-04-13, 03ac9465)
+- [ ] WSL2 兼容性测试 *— deferred: Windows ConPTY 落地;WSL2 端到端测试矩阵未跑*
 
 ### 18.3 安装脚本
 - [x] `scripts/install.sh` 等价(检测平台 + 下载二进制 + 安装到 PATH) (2026-04-12, 5ef69d59)
@@ -959,7 +959,7 @@
 
 ### 18.4 资产
 - [x] `assets/`(default_soul.md / default_boot.md)包含 (2026-04-12, 5ef69d59)
-- [ ] 内置 skill 集合 复制
+- [x] 内置 skill 集合 复制(CMake install DIRECTORY hook + HERMES_SKILLS_SEARCH_PATH fallback) (2026-04-13, 阶段 9.3 batch13)
 - [x] 默认 SOUL.md / 默认 BOOT.md 模板(`cpp/assets/default_soul.md` + `default_boot.md`) (2026-04-12, 5ef69d59)
 
 ---
