@@ -67,6 +67,33 @@ void apply_delta(json& acc, const json& delta) {
     if (delta.contains("role") && delta["role"].is_string()) {
         acc["role"] = delta["role"];
     }
+    // Tool call deltas — accumulate by index.
+    if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+        if (!acc.contains("tool_calls")) acc["tool_calls"] = json::array();
+        auto& tc_arr = acc["tool_calls"];
+        for (const auto& tc_delta : delta["tool_calls"]) {
+            int idx = tc_delta.value("index", 0);
+            while (static_cast<int>(tc_arr.size()) <= idx) {
+                tc_arr.push_back({{"id", ""}, {"function", {{"name", ""}, {"arguments", ""}}}});
+            }
+            auto& slot = tc_arr[idx];
+            if (tc_delta.contains("id") && tc_delta["id"].is_string()) {
+                slot["id"] = tc_delta["id"];
+            }
+            if (tc_delta.contains("function") && tc_delta["function"].is_object()) {
+                const auto& fn = tc_delta["function"];
+                if (fn.contains("name") && fn["name"].is_string()) {
+                    slot["function"]["name"] = slot["function"]["name"].get<std::string>() +
+                                                fn["name"].get<std::string>();
+                }
+                if (fn.contains("arguments") && fn["arguments"].is_string()) {
+                    slot["function"]["arguments"] =
+                        slot["function"]["arguments"].get<std::string>() +
+                        fn["arguments"].get<std::string>();
+                }
+            }
+        }
+    }
 }
 
 }  // namespace
@@ -224,6 +251,27 @@ hermes::llm::CompletionResponse QwenClient::complete(
     out.assistant_message.content_text = acc.value("content", std::string());
     if (acc.contains("reasoning") && acc["reasoning"].is_string()) {
         out.assistant_message.reasoning = acc["reasoning"].get<std::string>();
+    }
+    // Tool calls — convert accumulated JSON into Message::tool_calls.
+    if (acc.contains("tool_calls") && acc["tool_calls"].is_array()) {
+        for (const auto& tc : acc["tool_calls"]) {
+            hermes::llm::ToolCall call;
+            call.id = tc.value("id", "");
+            const auto& fn = tc.value("function", json::object());
+            call.name = fn.value("name", "");
+            // arguments is a JSON-encoded string in the OpenAI streaming
+            // protocol — parse it into structured form for consumers.
+            std::string args_str = fn.value("arguments", "");
+            if (!args_str.empty()) {
+                auto args_json = json::parse(args_str, nullptr, false);
+                call.arguments = args_json.is_discarded()
+                                      ? json{{"_raw", args_str}}
+                                      : args_json;
+            }
+            if (!call.name.empty()) {
+                out.assistant_message.tool_calls.push_back(std::move(call));
+            }
+        }
     }
     if (final_usage.is_object()) {
         out.usage.input_tokens = final_usage.value("prompt_tokens", 0);

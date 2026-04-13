@@ -6,10 +6,14 @@
 
 #include "hermes/cli/skin_engine.hpp"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+namespace hermes::agent { class AIAgent; class PromptBuilder; }
+namespace hermes::llm { class LlmClient; }
 
 namespace hermes::cli {
 
@@ -65,6 +69,13 @@ private:
     bool verbose_ = false;
     bool yolo_ = false;
     double temperature_ = 1.0;
+
+    // Lazily constructed on first plain-text input so the cost is only paid
+    // when the user actually wants to chat (not for /status, /tools, etc.).
+    std::unique_ptr<hermes::llm::LlmClient> llm_client_;
+    std::unique_ptr<hermes::agent::PromptBuilder> prompt_builder_;
+    std::unique_ptr<hermes::agent::AIAgent> agent_;
+    void ensure_agent();
 };
 
 }  // namespace hermes::cli

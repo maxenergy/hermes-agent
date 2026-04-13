@@ -1,5 +1,7 @@
 #include "hermes/cli/hermes_cli.hpp"
 
+#include "hermes/agent/ai_agent.hpp"
+#include "hermes/agent/prompt_builder.hpp"
 #include "hermes/auth/qwen_client.hpp"
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
@@ -8,10 +10,20 @@
 #include "hermes/llm/message.hpp"
 #include "hermes/llm/openai_client.hpp"
 #include "hermes/skills/skill_utils.hpp"
+#include "hermes/tools/clarify_tool.hpp"
+#include "hermes/tools/delegate_tool.hpp"
+#include "hermes/tools/discover_tools.hpp"
+#include "hermes/tools/homeassistant_tool.hpp"
+#include "hermes/tools/memory_tool.hpp"
+#include "hermes/tools/registry.hpp"
+#include "hermes/tools/session_search_tool.hpp"
+#include "hermes/tools/skills_tool.hpp"
+#include "hermes/tools/todo_tool.hpp"
 #include "hermes/tools/toolsets.hpp"
 
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 
 #include <algorithm>
 #include <iomanip>
@@ -21,6 +33,11 @@
 
 namespace hermes::cli {
 
+namespace {
+// Forward declaration — definition below.
+std::unique_ptr<hermes::llm::LlmClient> make_client(const nlohmann::json& cfg);
+}
+
 HermesCLI::HermesCLI() {
     // Load persisted user config so /status, /model, /personality and friends
     // reflect what's on disk instead of an empty default.
@@ -29,6 +46,63 @@ HermesCLI::HermesCLI() {
     } catch (...) {
         config_ = nlohmann::json::object();
     }
+
+    // Register all built-in tools with the global ToolRegistry exactly once
+    // per process — this is what makes file/terminal/web/etc. callable from
+    // within the agent loop.
+    static std::once_flag s_tools_inited;
+    std::call_once(s_tools_inited, [this] {
+        try {
+            hermes::tools::discover_tools();
+            auto& reg = hermes::tools::ToolRegistry::instance();
+            hermes::tools::register_memory_tools(reg);
+            hermes::tools::register_todo_tools(reg);
+            hermes::tools::register_clarify_tools(reg);
+            hermes::tools::register_skills_tools(reg);
+            hermes::tools::register_session_search_tools(reg);
+            hermes::tools::register_homeassistant_tools(reg);
+
+            // Sub-agent factory for delegate_task / mixture_of_agents.
+            // The sub-agent is a fresh QwenClient/OpenAIClient that runs a
+            // single chat turn — no recursive tool calls (max_iterations=1)
+            // to keep cost predictable.
+            class CliSubAgent : public hermes::tools::AIAgent {
+            public:
+                explicit CliSubAgent(std::unique_ptr<hermes::llm::LlmClient> c)
+                    : client_(std::move(c)) {}
+                std::string run(const std::string& goal,
+                                 const std::string& constraints) override {
+                    if (!client_) return "{\"error\":\"no LLM client\"}";
+                    hermes::llm::CompletionRequest req;
+                    req.model = "coder-model";  // Qwen default; ignored by other providers
+                    hermes::llm::Message sys;
+                    sys.role = hermes::llm::Role::System;
+                    sys.content_text = "You are a focused sub-agent. Complete the goal in one response. " + constraints;
+                    hermes::llm::Message user;
+                    user.role = hermes::llm::Role::User;
+                    user.content_text = goal;
+                    req.messages = {sys, user};
+                    try {
+                        auto r = client_->complete(req);
+                        return r.assistant_message.content_text;
+                    } catch (const std::exception& e) {
+                        return std::string("{\"error\":\"") + e.what() + "\"}";
+                    }
+                }
+            private:
+                std::unique_ptr<hermes::llm::LlmClient> client_;
+            };
+
+            auto cfg_copy = config_;  // capture by value for the lambda
+            hermes::tools::register_delegate_tools(
+                [cfg_copy](const std::string& /*model*/)
+                    -> std::unique_ptr<hermes::tools::AIAgent> {
+                    return std::make_unique<CliSubAgent>(make_client(cfg_copy));
+                });
+        } catch (const std::exception& e) {
+            std::cerr << "[warn] tool registration failed: " << e.what() << "\n";
+        }
+    });
 }
 
 HermesCLI::~HermesCLI() = default;
@@ -120,57 +194,90 @@ std::unique_ptr<hermes::llm::LlmClient> make_client(const nlohmann::json& cfg) {
 
 }  // namespace
 
+void HermesCLI::ensure_agent() {
+    if (agent_) return;
+    llm_client_ = make_client(config_);
+    if (!llm_client_) return;  // query() will print a helpful error
+
+    prompt_builder_ = std::make_unique<hermes::agent::PromptBuilder>();
+
+    hermes::agent::AgentConfig acfg;
+    if (config_.contains("model") && config_["model"].is_string()) {
+        acfg.model = config_["model"].get<std::string>();
+    }
+    if (config_.contains("provider") && config_["provider"].is_string()) {
+        acfg.provider = config_["provider"].get<std::string>();
+    }
+    acfg.platform = "cli";
+    acfg.temperature = temperature_;
+    acfg.max_iterations = 30;
+
+    // Resolve enabled tools into ToolSchema list for the LLM.
+    auto schemas = hermes::tools::ToolRegistry::instance().get_definitions();
+
+    // Real dispatcher — routes every tool call through the global registry,
+    // which now holds all built-in tool implementations.
+    hermes::agent::ToolDispatcher dispatcher =
+        [](const std::string& name, const nlohmann::json& args,
+           const std::string& task_id) -> std::string {
+            hermes::tools::ToolContext ctx;
+            ctx.task_id = task_id;
+            ctx.platform = "cli";
+            return hermes::tools::ToolRegistry::instance().dispatch(name, args, ctx);
+        };
+
+    agent_ = std::make_unique<hermes::agent::AIAgent>(
+        std::move(acfg), llm_client_.get(),
+        /*session_db=*/nullptr,
+        /*context_engine=*/nullptr,
+        /*memory=*/nullptr,
+        prompt_builder_.get(),
+        std::move(dispatcher),
+        std::move(schemas));
+}
+
 std::string HermesCLI::query(const std::string& message) {
-    auto client = make_client(config_);
-    if (!client) {
+    ensure_agent();
+    if (!agent_) {
         return "[no provider configured — run `hermes login` or set "
                "OPENAI_API_KEY] " + message;
     }
 
-    std::string model = "qwen3-coder-plus";
-    if (config_.contains("model") && config_["model"].is_string()) {
-        model = config_["model"].get<std::string>();
-    }
-
-    // Convert lightweight history_ (vector<json>) → llm::Message list.
-    std::vector<hermes::llm::Message> messages;
-    for (const auto& h : history_) {
-        if (!h.is_object()) continue;
-        auto role = h.value("role", "user");
-        auto content = h.value("content", "");
-        hermes::llm::Message m;
-        m.role = (role == "assistant") ? hermes::llm::Role::Assistant
-                : (role == "system")    ? hermes::llm::Role::System
-                : (role == "tool")      ? hermes::llm::Role::Tool
-                                         : hermes::llm::Role::User;
-        m.content_text = content;
-        messages.push_back(std::move(m));
-    }
-    hermes::llm::Message user_msg;
-    user_msg.role = hermes::llm::Role::User;
-    user_msg.content_text = message;
-    messages.push_back(user_msg);
-
-    hermes::llm::CompletionRequest req;
-    req.model = model;
-    req.messages = std::move(messages);
-    req.temperature = temperature_;
-
     try {
-        auto resp = client->complete(req);
-        const auto& msg = resp.assistant_message;
-        std::string text = msg.content_text;
-        if (text.empty() && !msg.content_blocks.empty()) {
-            for (const auto& b : msg.content_blocks) {
-                if (b.type == "text") text += b.text;
+        // Reuse history_ as conversation context across turns so the model
+        // sees the running dialog (HermesCLI owns history; AIAgent is
+        // session-less here).
+        std::vector<hermes::llm::Message> history;
+        for (const auto& h : history_) {
+            if (!h.is_object()) continue;
+            auto role = h.value("role", "user");
+            hermes::llm::Message m;
+            m.role = (role == "assistant") ? hermes::llm::Role::Assistant
+                    : (role == "system")    ? hermes::llm::Role::System
+                    : (role == "tool")      ? hermes::llm::Role::Tool
+                                             : hermes::llm::Role::User;
+            m.content_text = h.value("content", "");
+            history.push_back(std::move(m));
+        }
+
+        auto result = agent_->run_conversation(message, std::nullopt, history);
+        std::string text = result.final_response;
+        // Qwen's thinking model can put the actual answer in reasoning when
+        // the model decides to "think aloud" instead of emitting content.
+        // Surface the reasoning so the user isn't left staring at an
+        // empty bubble.
+        if (text.empty() && !result.messages.empty()) {
+            const auto& last = result.messages.back();
+            if (last.reasoning && !last.reasoning->empty()) {
+                text = "(thinking) " + *last.reasoning;
             }
         }
 
-        // Persist the turn into history_ + token counters.
+        // Persist this turn for subsequent /retry/history.
         history_.push_back({{"role", "user"}, {"content", message}});
         history_.push_back({{"role", "assistant"}, {"content", text}});
-        total_input_tokens_ += resp.usage.input_tokens;
-        total_output_tokens_ += resp.usage.output_tokens;
+        total_input_tokens_ += result.usage.input_tokens;
+        total_output_tokens_ += result.usage.output_tokens;
 
         return text.empty() ? "[empty response]" : text;
     } catch (const std::exception& e) {

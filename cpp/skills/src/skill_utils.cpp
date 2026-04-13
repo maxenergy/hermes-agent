@@ -190,56 +190,62 @@ std::vector<std::string> extract_skill_conditions(const nlohmann::json& frontmat
 std::vector<SkillMetadata> iter_skill_index() {
     std::vector<SkillMetadata> result;
 
+    auto load_skill = [&](const fs::path& dir, const std::string& display_name) {
+        std::error_code ec;
+        auto skill_md = dir / "SKILL.md";
+        if (!fs::is_regular_file(skill_md, ec)) return;
+        std::ifstream ifs(skill_md);
+        if (!ifs) return;
+        std::string contents((std::istreambuf_iterator<char>(ifs)),
+                              std::istreambuf_iterator<char>());
+        auto [meta, body] = parse_frontmatter(contents);
+        SkillMetadata sm;
+        sm.name = display_name;
+        sm.path = dir;
+        sm.description = extract_skill_description(meta);
+        if (!meta.is_null()) {
+            if (meta.contains("version") && meta["version"].is_string()) {
+                sm.version = meta["version"].get<std::string>();
+            }
+            if (meta.contains("platforms")) {
+                const auto& p = meta["platforms"];
+                if (p.is_array()) {
+                    for (const auto& item : p) {
+                        if (item.is_string()) sm.platforms.push_back(item.get<std::string>());
+                    }
+                } else if (p.is_string()) {
+                    sm.platforms.push_back(p.get<std::string>());
+                }
+            }
+            if (meta.contains("categories") && meta["categories"].is_array()) {
+                for (const auto& item : meta["categories"]) {
+                    if (item.is_string()) sm.categories.push_back(item.get<std::string>());
+                }
+            }
+        }
+        result.push_back(std::move(sm));
+    };
+
+    // Walk up to 2 levels — Python hermes-agent's skills/ uses either the
+    // flat layout (skills/<name>/SKILL.md) or the category layout
+    // (skills/<category>/<name>/SKILL.md).  We discover both.
     for (const auto& dir : get_all_skills_dirs()) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_directory(ec)) continue;
-
-            auto skill_md = entry.path() / "SKILL.md";
-            if (!fs::is_regular_file(skill_md, ec)) continue;
-
-            // Read file
-            std::ifstream ifs(skill_md);
-            if (!ifs) continue;
-            std::string contents((std::istreambuf_iterator<char>(ifs)),
-                                  std::istreambuf_iterator<char>());
-
-            auto [meta, body] = parse_frontmatter(contents);
-
-            SkillMetadata sm;
-            sm.name = entry.path().filename().string();
-            sm.path = entry.path();
-            sm.description = extract_skill_description(meta);
-
-            if (!meta.is_null()) {
-                if (meta.contains("version") && meta["version"].is_string()) {
-                    sm.version = meta["version"].get<std::string>();
-                }
-                if (meta.contains("platforms")) {
-                    const auto& p = meta["platforms"];
-                    if (p.is_array()) {
-                        for (const auto& item : p) {
-                            if (item.is_string()) {
-                                sm.platforms.push_back(item.get<std::string>());
-                            }
-                        }
-                    } else if (p.is_string()) {
-                        sm.platforms.push_back(p.get<std::string>());
-                    }
-                }
-                if (meta.contains("categories")) {
-                    const auto& c = meta["categories"];
-                    if (c.is_array()) {
-                        for (const auto& item : c) {
-                            if (item.is_string()) {
-                                sm.categories.push_back(item.get<std::string>());
-                            }
-                        }
-                    }
-                }
+            auto sub = entry.path();
+            std::string sub_name = sub.filename().string();
+            // Layout A: skills/<name>/SKILL.md
+            if (fs::is_regular_file(sub / "SKILL.md", ec)) {
+                load_skill(sub, sub_name);
+                continue;
             }
-
-            result.push_back(std::move(sm));
+            // Layout B: skills/<category>/<name>/SKILL.md
+            for (const auto& sub_entry : fs::directory_iterator(sub, ec)) {
+                if (!sub_entry.is_directory(ec)) continue;
+                load_skill(sub_entry.path(),
+                           sub_name + "/" + sub_entry.path().filename().string());
+            }
         }
     }
 
