@@ -131,3 +131,169 @@ TEST(DockerEnvironment, E2E_EchoHello) {
     EXPECT_EQ(result.exit_code, 0);
     EXPECT_NE(result.stdout_text.find("hello"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// resolve_image_digest / pin_configured_image — using mocked runner.
+// ---------------------------------------------------------------------------
+
+TEST(DockerEnvironment, ResolveDigestReturnsInputWhenAlreadyPinned) {
+    he::DockerEnvironment::Config config;
+    config.image = "ubuntu@sha256:abcd1234";
+    he::DockerEnvironment env(config);
+
+    // Runner must NOT be called when image is already digest-pinned.
+    bool runner_called = false;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        runner_called = true;
+        return he::CompletedProcess{};
+    });
+
+    auto out = env.resolve_image_digest("ubuntu@sha256:abcd1234");
+    EXPECT_EQ(out, "ubuntu@sha256:abcd1234");
+    EXPECT_FALSE(runner_called);
+}
+
+TEST(DockerEnvironment, ResolveDigestParsesVerboseManifest) {
+    he::DockerEnvironment env;
+    env.set_docker_runner([&](const std::vector<std::string>& argv) {
+        he::CompletedProcess cp;
+        cp.exit_code = 0;
+        EXPECT_EQ(argv[0], "manifest");
+        EXPECT_EQ(argv[1], "inspect");
+        cp.stdout_text = R"({
+            "Descriptor": {"digest": "sha256:deadbeef0000000000000000000000000000000000000000000000000000dead"},
+            "SchemaV2Manifest": {}
+        })";
+        return cp;
+    });
+
+    auto pinned = env.resolve_image_digest("ubuntu:24.04");
+    EXPECT_EQ(pinned,
+              "ubuntu@sha256:deadbeef0000000000000000000000000000000000000000000000000000dead");
+}
+
+TEST(DockerEnvironment, ResolveDigestCachesResult) {
+    he::DockerEnvironment env;
+    int call_count = 0;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        ++call_count;
+        he::CompletedProcess cp;
+        cp.exit_code = 0;
+        cp.stdout_text = R"({"digest":"sha256:feedface"})";
+        return cp;
+    });
+
+    (void)env.resolve_image_digest("ubuntu:22.04");
+    (void)env.resolve_image_digest("ubuntu:22.04");
+    (void)env.resolve_image_digest("ubuntu:22.04");
+    EXPECT_EQ(call_count, 1);
+}
+
+TEST(DockerEnvironment, ResolveDigestReturnsEmptyOnFailure) {
+    he::DockerEnvironment env;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        he::CompletedProcess cp;
+        cp.exit_code = 1;
+        cp.stdout_text = "manifest unknown";
+        return cp;
+    });
+    EXPECT_EQ(env.resolve_image_digest("missing:tag"), "");
+}
+
+TEST(DockerEnvironment, ResolveDigestFallsBackToBuildx) {
+    he::DockerEnvironment env;
+    int call = 0;
+    env.set_docker_runner([&](const std::vector<std::string>& argv) {
+        ++call;
+        he::CompletedProcess cp;
+        if (argv[0] == "manifest") {
+            cp.exit_code = 1;
+        } else {
+            EXPECT_EQ(argv[0], "buildx");
+            cp.exit_code = 0;
+            cp.stdout_text = R"({"digest":"sha256:cafe0001"})";
+        }
+        return cp;
+    });
+    auto pinned = env.resolve_image_digest("foo:bar");
+    EXPECT_EQ(pinned, "foo@sha256:cafe0001");
+    EXPECT_EQ(call, 2);
+}
+
+TEST(DockerEnvironment, PinConfiguredImageRewritesConfig) {
+    he::DockerEnvironment::Config config;
+    config.image = "alpine:3.20";
+    he::DockerEnvironment env(config);
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        he::CompletedProcess cp;
+        cp.exit_code = 0;
+        cp.stdout_text = R"({"digest":"sha256:aaaaaaaa"})";
+        return cp;
+    });
+    EXPECT_TRUE(env.pin_configured_image());
+
+    // Post-pin, build_docker_args should still work — and a second
+    // resolve of the pinned form should NOT invoke the runner.
+    int call_after = 0;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        ++call_after;
+        return he::CompletedProcess{};
+    });
+    auto again = env.resolve_image_digest("alpine@sha256:aaaaaaaa");
+    EXPECT_EQ(again, "alpine@sha256:aaaaaaaa");
+    EXPECT_EQ(call_after, 0);
+}
+
+TEST(DockerEnvironment, ImageWithRegistryPortSplitsCorrectly) {
+    he::DockerEnvironment env;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        he::CompletedProcess cp;
+        cp.exit_code = 0;
+        cp.stdout_text = R"({"digest":"sha256:0123"})";
+        return cp;
+    });
+    auto pinned = env.resolve_image_digest("registry.local:5000/team/app:1.2");
+    EXPECT_EQ(pinned, "registry.local:5000/team/app@sha256:0123");
+}
+
+// ---------------------------------------------------------------------------
+// Anonymous volume cleanup.
+// ---------------------------------------------------------------------------
+
+TEST(DockerEnvironment, CleanupRemovesTrackedAnonymousVolumes) {
+    he::DockerEnvironment env;
+    std::vector<std::vector<std::string>> invocations;
+    env.set_docker_runner([&](const std::vector<std::string>& argv) {
+        invocations.push_back(argv);
+        he::CompletedProcess cp;
+        cp.exit_code = 0;
+        return cp;
+    });
+
+    env.track_anonymous_volume("hermes-vol-1");
+    env.track_anonymous_volume("hermes-vol-2");
+    env.cleanup();
+
+    ASSERT_EQ(invocations.size(), 2u);
+    EXPECT_EQ(invocations[0][0], "volume");
+    EXPECT_EQ(invocations[0][1], "rm");
+    EXPECT_EQ(invocations[0][3], "hermes-vol-1");
+    EXPECT_EQ(invocations[1][3], "hermes-vol-2");
+
+    // Calling cleanup again should be a no-op (list was cleared).
+    invocations.clear();
+    env.cleanup();
+    EXPECT_TRUE(invocations.empty());
+}
+
+TEST(DockerEnvironment, CleanupIgnoresEmptyVolumeIds) {
+    he::DockerEnvironment env;
+    int count = 0;
+    env.set_docker_runner([&](const std::vector<std::string>&) {
+        ++count;
+        return he::CompletedProcess{};
+    });
+    env.track_anonymous_volume("");
+    env.cleanup();
+    EXPECT_EQ(count, 0);
+}
