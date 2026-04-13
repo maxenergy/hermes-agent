@@ -62,6 +62,7 @@ add_library(hermes_tools STATIC
     src/skill_manager_tool.cpp
     src/mcp_client_tool.cpp
     src/mcp_transport.cpp
+    src/ffmpeg.cpp
 )
 
 target_include_directories(hermes_tools
