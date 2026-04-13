@@ -5,6 +5,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -66,6 +67,29 @@ public:
 
     void shutdown();
 
+    // Server-to-client request/notification handler.  When a message arrives
+    // from the server whose id doesn't match a pending request (or which has
+    // no id — i.e. a notification), it is dispatched to this callback from
+    // within send_request's wait loop.  Handlers for *requests* must return
+    // a JSON value used as the ``result`` of the response.  For
+    // *notifications* (no id), the return value is ignored.
+    //
+    // If the handler throws, a JSON-RPC error with code -32603 is returned.
+    // If no handler is installed, inbound server requests get a method-not-
+    // found error (-32601) and notifications are silently dropped.
+    //
+    // The method and params are passed to the callback.
+    using InboundHandler = std::function<nlohmann::json(
+        const std::string& method, const nlohmann::json& params)>;
+    void set_inbound_handler(InboundHandler handler);
+
+    // Drain any pending messages (notifications / requests) from the
+    // server without blocking on a matching response id.  Useful for
+    // catching ``notifications/tools/list_changed`` outside of a call.
+    // Returns the number of messages processed.
+    int pump_messages(std::chrono::milliseconds budget =
+                          std::chrono::milliseconds(10));
+
     // Build a filtered environment for the child process.  Only safe vars
     // (PATH, HOME, LANG, SHELL, TMPDIR) plus server-specific overrides
     // are included.
@@ -77,11 +101,22 @@ public:
     std::optional<nlohmann::json> read_message(std::chrono::seconds timeout);
 
 private:
+    // Dispatch an inbound server-originated message.  If it's a request
+    // (has a method + id), invokes the installed handler and writes back
+    // a response.  If it's a notification (method but no id), invokes the
+    // handler and ignores the return value.  Returns true if the message
+    // was consumed (i.e. it was not a response we should forward to a
+    // caller of send_request).
+    bool handle_inbound_(const nlohmann::json& msg);
+
     int child_pid_ = -1;
     int stdin_fd_ = -1;   // write to child's stdin
     int stdout_fd_ = -1;  // read from child's stdout
     int next_id_ = 1;
     std::mutex mu_;
+    InboundHandler inbound_handler_;
+    // Pending partial read buffer (for read_message across fragments).
+    std::string read_buf_;
 };
 
 }  // namespace hermes::tools

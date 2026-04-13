@@ -249,7 +249,7 @@ json McpStdioTransport::send_request(const std::string& method,
             throw std::runtime_error(
                 "McpStdioTransport: timeout waiting for response to " + method);
         }
-        if (response->contains("id")) {
+        if (response->contains("id") && !response->contains("method")) {
             int resp_id = -1;
             if ((*response)["id"].is_number()) resp_id = (*response)["id"].get<int>();
             if (resp_id == id) {
@@ -261,10 +261,72 @@ json McpStdioTransport::send_request(const std::string& method,
                 if (response->contains("result")) return (*response)["result"];
                 return *response;
             }
+            continue;
         }
+        handle_inbound_(*response);
     }
     throw std::runtime_error(
         "McpStdioTransport: timeout waiting for response to " + method);
+}
+
+void McpStdioTransport::set_inbound_handler(InboundHandler handler) {
+    inbound_handler_ = std::move(handler);
+}
+
+bool McpStdioTransport::handle_inbound_(const json& msg) {
+    if (!msg.contains("method")) return false;
+    std::string method = msg.value("method", "");
+    json params = msg.value("params", json::object());
+    bool is_request = msg.contains("id") && !msg["id"].is_null();
+    if (is_request) {
+        json response;
+        response["jsonrpc"] = "2.0";
+        response["id"] = msg["id"];
+        if (!inbound_handler_) {
+            response["error"] = {{"code", -32601},
+                                 {"message", "Method not found: " + method}};
+        } else {
+            try {
+                response["result"] = inbound_handler_(method, params);
+            } catch (const std::exception& ex) {
+                response["error"] = {
+                    {"code", -32603},
+                    {"message", std::string("Internal error: ") + ex.what()}};
+            }
+        }
+        try {
+            HANDLE h;
+            {
+                std::lock_guard<std::mutex> lk(g_handles_mu);
+                h = g_handles()[this].stdin_wr;
+            }
+            if (h) {
+                std::string line = response.dump() + "\n";
+                DWORD written = 0;
+                WriteFile(h, line.data(), (DWORD)line.size(), &written, nullptr);
+            }
+        } catch (...) {}
+    } else if (inbound_handler_) {
+        try { (void)inbound_handler_(method, params); } catch (...) {}
+    }
+    return true;
+}
+
+int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
+    std::lock_guard<std::mutex> lock(mu_);
+    int processed = 0;
+    auto deadline = std::chrono::steady_clock::now() + budget;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) break;
+        auto secs = std::chrono::seconds((remaining.count() + 999) / 1000);
+        auto m = read_message(secs);
+        if (!m.has_value()) break;
+        if (m->contains("method")) { handle_inbound_(*m); ++processed; }
+        else { ++processed; }
+    }
+    return processed;
 }
 
 void McpStdioTransport::send_notification(const std::string& method,
@@ -449,7 +511,24 @@ std::optional<json> McpStdioTransport::read_message(std::chrono::seconds timeout
     pfd.events = POLLIN;
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
-    std::string buffer;
+    // Use the persistent read buffer so fragments survive across calls
+    // (important for notifications arriving between requests).
+    std::string& buffer = read_buf_;
+
+    // If we already have a complete line buffered, return it immediately.
+    {
+        auto nl = buffer.find('\n');
+        while (nl != std::string::npos) {
+            std::string line = buffer.substr(0, nl);
+            buffer.erase(0, nl + 1);
+            try {
+                return json::parse(line);
+            } catch (const json::parse_error&) {
+                nl = buffer.find('\n');
+                continue;
+            }
+        }
+    }
 
     while (std::chrono::steady_clock::now() < deadline) {
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -472,16 +551,14 @@ std::optional<json> McpStdioTransport::read_message(std::chrono::seconds timeout
 
             // Check for complete line(s).
             auto newline_pos = buffer.find('\n');
-            if (newline_pos != std::string::npos) {
+            while (newline_pos != std::string::npos) {
                 std::string line = buffer.substr(0, newline_pos);
-                // We discard the rest — MCP is strictly request/response
-                // so we don't expect multiple messages at once in normal use.
-                // But keep any leftover for robustness.
+                buffer.erase(0, newline_pos + 1);
                 try {
                     return json::parse(line);
                 } catch (const json::parse_error&) {
                     // Skip non-JSON lines (e.g. server startup messages).
-                    buffer = buffer.substr(newline_pos + 1);
+                    newline_pos = buffer.find('\n');
                     continue;
                 }
             }
@@ -521,7 +598,8 @@ json McpStdioTransport::send_request(const std::string& method,
         }
 
         // Check if this is our response.
-        if (response->contains("id")) {
+        if (response->contains("id") &&
+            !response->contains("method")) {
             int resp_id = -1;
             if ((*response)["id"].is_number()) {
                 resp_id = (*response)["id"].get<int>();
@@ -540,12 +618,95 @@ json McpStdioTransport::send_request(const std::string& method,
                 }
                 return *response;
             }
+            // Response to a different outstanding request — drop.
+            continue;
         }
-        // Not our response — could be a notification from server; skip it.
+        // Server-originated request or notification — dispatch.
+        handle_inbound_(*response);
     }
 
     throw std::runtime_error(
         "McpStdioTransport: timeout waiting for response to " + method);
+}
+
+void McpStdioTransport::set_inbound_handler(InboundHandler handler) {
+    inbound_handler_ = std::move(handler);
+}
+
+bool McpStdioTransport::handle_inbound_(const json& msg) {
+    if (!msg.contains("method")) return false;
+    std::string method = msg.value("method", "");
+    json params = msg.value("params", json::object());
+
+    bool is_request = msg.contains("id") && !msg["id"].is_null();
+
+    if (is_request) {
+        json response;
+        response["jsonrpc"] = "2.0";
+        response["id"] = msg["id"];
+
+        if (!inbound_handler_) {
+            response["error"] = {
+                {"code", -32601},
+                {"message", "Method not found: " + method}};
+        } else {
+            try {
+                response["result"] = inbound_handler_(method, params);
+            } catch (const std::exception& ex) {
+                response["error"] = {
+                    {"code", -32603},
+                    {"message", std::string("Internal error: ") + ex.what()}};
+            }
+        }
+        // write directly (we're already holding mu_ in send_request; but
+        // write_message doesn't take the lock so this is OK).
+        try {
+            std::string line = response.dump() + "\n";
+            const char* data = line.c_str();
+            std::size_t remaining = line.size();
+            while (remaining > 0) {
+                auto n = ::write(stdin_fd_, data, remaining);
+                if (n <= 0) break;
+                data += n;
+                remaining -= static_cast<std::size_t>(n);
+            }
+        } catch (...) {
+            // ignore write failures on inbound response
+        }
+    } else {
+        // notification
+        if (inbound_handler_) {
+            try {
+                (void)inbound_handler_(method, params);
+            } catch (...) {
+                // ignore
+            }
+        }
+    }
+    return true;
+}
+
+int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
+    std::lock_guard<std::mutex> lock(mu_);
+    int processed = 0;
+    auto deadline = std::chrono::steady_clock::now() + budget;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) break;
+        // Use a 0-timeout (non-blocking-ish) read: cap at remaining.
+        auto secs = std::chrono::seconds((remaining.count() + 999) / 1000);
+        auto m = read_message(secs);
+        if (!m.has_value()) break;
+        if (m->contains("method")) {
+            handle_inbound_(*m);
+            ++processed;
+        } else {
+            // Stray response — drop.
+            ++processed;
+        }
+    }
+    return processed;
 }
 
 void McpStdioTransport::send_notification(const std::string& method,
