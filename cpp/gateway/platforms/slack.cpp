@@ -71,6 +71,34 @@ std::optional<std::string> SlackAdapter::parse_thread_ts(
     return std::nullopt;
 }
 
+bool SlackAdapter::should_handle_event(const nlohmann::json& event,
+                                       const std::string& bot_user_id) {
+    if (!event.is_object()) return false;
+    // Skip our own messages.
+    if (event.contains("bot_id") && event.value("bot_id", "").size() > 0) {
+        return false;
+    }
+    if (event.contains("subtype")) return false;
+
+    // DMs (channel id starts with "D") are always in scope.
+    auto channel = event.value("channel", "");
+    if (!channel.empty() && channel[0] == 'D') return true;
+
+    // Thread replies are in-scope without an explicit mention — once
+    // the bot has been pulled into a thread, every subsequent reply is
+    // assumed to be addressed to it.
+    if (parse_thread_ts(event).has_value()) return true;
+
+    // Otherwise require an @-mention of the bot.  The text contains
+    // "<@U12345>" for the bot's user id.
+    if (!bot_user_id.empty()) {
+        auto text = event.value("text", "");
+        std::string needle = "<@" + bot_user_id + ">";
+        if (text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
 bool SlackAdapter::send_thread_reply(const std::string& chat_id,
                                      const std::string& thread_ts,
                                      const std::string& content) {

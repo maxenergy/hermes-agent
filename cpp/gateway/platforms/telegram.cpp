@@ -85,6 +85,35 @@ bool TelegramAdapter::set_reaction(const std::string& chat_id,
     }
 }
 
+bool TelegramAdapter::set_my_commands(
+    const std::vector<std::pair<std::string, std::string>>& commands) {
+    auto* transport = get_transport();
+    if (!transport) return false;
+    if (cfg_.bot_token.empty()) return false;
+
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& [name, desc] : commands) {
+        if (name.empty()) continue;
+        std::string d = desc;
+        if (d.size() > 256) d.resize(256);
+        if (d.empty()) d = name;
+        arr.push_back({{"command", name}, {"description", d}});
+    }
+
+    nlohmann::json payload = {{"commands", arr}};
+    std::string url =
+        "https://api.telegram.org/bot" + cfg_.bot_token + "/setMyCommands";
+    try {
+        auto resp = transport->post_json(
+            url, {{"Content-Type", "application/json"}}, payload.dump());
+        if (resp.status_code != 200) return false;
+        auto body = nlohmann::json::parse(resp.body);
+        return body.value("ok", false);
+    } catch (...) {
+        return false;
+    }
+}
+
 std::optional<long long> TelegramAdapter::parse_forum_topic(
     const nlohmann::json& message) {
     if (message.contains("message_thread_id") &&

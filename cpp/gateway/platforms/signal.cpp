@@ -3,6 +3,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <hermes/gateway/status.hpp>
+
 namespace hermes::gateway::platforms {
 
 SignalAdapter::SignalAdapter(Config cfg) : cfg_(std::move(cfg)) {}
@@ -17,10 +19,24 @@ hermes::llm::HttpTransport* SignalAdapter::get_transport() {
 
 bool SignalAdapter::connect() {
     if (cfg_.http_url.empty() && cfg_.account.empty()) return false;
+
+    // Token-scoped lock: account number is the credential.
+    if (!cfg_.account.empty() &&
+        !hermes::gateway::acquire_scoped_lock(
+            hermes::gateway::platform_to_string(platform()), cfg_.account, {})) {
+        return false;
+    }
+
     // Signal REST API does not have a dedicated auth/connect endpoint;
     // we verify connectivity by checking the API is reachable.
     auto* transport = get_transport();
-    if (!transport) return false;
+    if (!transport) {
+        if (!cfg_.account.empty()) {
+            hermes::gateway::release_scoped_lock(
+                hermes::gateway::platform_to_string(platform()), cfg_.account);
+        }
+        return false;
+    }
 
     try {
         auto resp = transport->get(
@@ -31,7 +47,12 @@ bool SignalAdapter::connect() {
     }
 }
 
-void SignalAdapter::disconnect() {}
+void SignalAdapter::disconnect() {
+    if (!cfg_.account.empty()) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()), cfg_.account);
+    }
+}
 
 bool SignalAdapter::send(const std::string& chat_id,
                          const std::string& content) {

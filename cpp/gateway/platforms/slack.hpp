@@ -42,6 +42,15 @@ public:
     static std::optional<std::string> parse_thread_ts(
         const nlohmann::json& event);
 
+    // Decide whether the bot should respond to a Slack message event.
+    // Returns true when the event is in a DM, in a thread the bot has
+    // already replied in (thread_ts present and matches bot_user_id when
+    // supplied), or contains an explicit @-mention of `bot_user_id`.
+    // bot_user_id may be empty — in that case any thread reply is treated
+    // as in-scope and only DMs are considered direct.
+    static bool should_handle_event(const nlohmann::json& event,
+                                    const std::string& bot_user_id);
+
     // Send a message as a reply inside a thread.
     bool send_thread_reply(const std::string& chat_id,
                            const std::string& thread_ts,

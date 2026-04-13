@@ -1,11 +1,14 @@
 #include <hermes/gateway/gateway_runner.hpp>
 
 #include <hermes/agent/ai_agent.hpp>
+#include <hermes/core/retry.hpp>
 #include <hermes/gateway/status.hpp>
 
 #include <fstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -366,37 +369,67 @@ void GatewayRunner::start_session_expiry_watcher() {
 
 void GatewayRunner::start_reconnect_watcher() {
     watcher_threads_.emplace_back([this] {
-        int backoff_seconds = 1;
-        constexpr int max_backoff = 300;  // 5 min cap
+        // Per-platform attempt counter — drives jittered exponential backoff.
+        std::unordered_map<int, int> attempts;
+        // Per-platform fatal flag — adapters classified Fatal are not retried.
+        std::unordered_set<int> fatal;
 
         while (!stop_watchers_.load(std::memory_order_acquire)) {
-            for (int i = 0; i < backoff_seconds && !stop_watchers_.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
+            // Sleep 1s polling-tick — actual backoff is enforced per
+            // adapter via the attempt counter.
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             if (stop_watchers_.load()) break;
 
-            bool all_connected = true;
+            auto status = read_runtime_status();
+            if (!status) continue;
+
             for (auto& adapter : adapters_) {
                 auto p = adapter->platform();
-                auto it = config_.platforms.find(p);
-                if (it == config_.platforms.end() || !it->second.enabled)
+                auto pkey = static_cast<int>(p);
+                if (fatal.count(pkey)) continue;
+
+                auto cit = config_.platforms.find(p);
+                if (cit == config_.platforms.end() || !cit->second.enabled)
                     continue;
 
-                auto status = read_runtime_status();
-                if (status) {
-                    auto sit = status->platform_states.find(p);
-                    if (sit != status->platform_states.end() &&
-                        sit->second == "disconnected") {
-                        bool ok = adapter->connect();
-                        if (!ok) all_connected = false;
-                    }
+                auto sit = status->platform_states.find(p);
+                if (sit == status->platform_states.end() ||
+                    sit->second != "disconnected") {
+                    attempts.erase(pkey);
+                    continue;
                 }
-            }
 
-            if (all_connected) {
-                backoff_seconds = 1;
-            } else {
-                backoff_seconds = std::min(backoff_seconds * 2, max_backoff);
+                int n = ++attempts[pkey];
+                auto delay = hermes::core::retry::jittered_backoff(
+                    n, std::chrono::seconds(1), std::chrono::seconds(300));
+                // Wait the per-adapter back-off before retrying.
+                auto until = std::chrono::steady_clock::now() + delay;
+                while (std::chrono::steady_clock::now() < until &&
+                       !stop_watchers_.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                if (stop_watchers_.load()) break;
+
+                bool ok = false;
+                try {
+                    ok = adapter->connect();
+                } catch (...) {
+                    ok = false;
+                }
+                if (ok) {
+                    attempts.erase(pkey);
+                    auto s = read_runtime_status().value_or(RuntimeStatus{});
+                    s.platform_states[p] = "connected";
+                    s.timestamp = std::chrono::system_clock::now();
+                    write_runtime_status(s);
+                } else if (adapter->last_error_kind() ==
+                           AdapterErrorKind::Fatal) {
+                    fatal.insert(pkey);
+                    auto s = read_runtime_status().value_or(RuntimeStatus{});
+                    s.platform_states[p] = "fatal";
+                    s.timestamp = std::chrono::system_clock::now();
+                    write_runtime_status(s);
+                }
             }
         }
     });

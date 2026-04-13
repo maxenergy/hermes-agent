@@ -9,8 +9,17 @@
 #include <system_error>
 
 #include <hermes/core/path.hpp>
+#include <hermes/gateway/status.hpp>
 
 namespace hermes::gateway::platforms {
+
+namespace {
+std::string matrix_lock_identity(const MatrixAdapter::Config& cfg) {
+    // homeserver+username is unique per Matrix account; the access_token
+    // is hashed under it for a stable lock key.
+    return cfg.homeserver + "/" + cfg.username;
+}
+}  // namespace
 
 MatrixAdapter::MatrixAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
@@ -34,8 +43,21 @@ bool MatrixAdapter::connect() {
     if (cfg_.access_token.empty() && (cfg_.username.empty() || cfg_.password.empty()))
         return false;
 
+    // Token-scoped lock: prevent two profiles from logging in as the
+    // same Matrix account simultaneously.
+    if (!hermes::gateway::acquire_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            matrix_lock_identity(cfg_), {})) {
+        return false;
+    }
+
     auto* transport = get_transport();
-    if (!transport) return false;
+    if (!transport) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            matrix_lock_identity(cfg_));
+        return false;
+    }
 
     // If we have an access_token, use it directly.
     if (!cfg_.access_token.empty()) {
@@ -74,6 +96,11 @@ bool MatrixAdapter::connect() {
 
 void MatrixAdapter::disconnect() {
     access_token_.clear();
+    if (!cfg_.homeserver.empty()) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            matrix_lock_identity(cfg_));
+    }
 }
 
 bool MatrixAdapter::send(const std::string& chat_id,

@@ -39,6 +39,13 @@ public:
     bool set_reaction(const std::string& chat_id, long long message_id,
                       const std::string& emoji);
 
+    // Push the bot's slash-command menu to Telegram via setMyCommands.
+    // Each (command, description) pair is sent verbatim — descriptions
+    // longer than 256 chars are truncated.  Returns true on a 200/ok
+    // response.
+    bool set_my_commands(
+        const std::vector<std::pair<std::string, std::string>>& commands);
+
     // Extract the message_thread_id (Telegram forum topic) if present.
     static std::optional<long long> parse_forum_topic(
         const nlohmann::json& message);

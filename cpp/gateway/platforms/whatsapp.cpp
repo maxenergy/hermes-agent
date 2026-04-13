@@ -3,7 +3,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include <hermes/gateway/status.hpp>
+
 namespace hermes::gateway::platforms {
+
+namespace {
+std::string whatsapp_lock_identity(const WhatsAppAdapter::Config& cfg) {
+    // Prefer phone-number-id (graph API) since it's the credential that
+    // Meta scopes per WABA.  Fall back to session_dir for whatsmeow.
+    if (!cfg.phone.empty()) return "phone:" + cfg.phone;
+    return "session:" + cfg.session_dir;
+}
+}  // namespace
 
 WhatsAppAdapter::WhatsAppAdapter(Config cfg) : cfg_(std::move(cfg)) {}
 
@@ -17,12 +28,24 @@ hermes::llm::HttpTransport* WhatsAppAdapter::get_transport() {
 
 bool WhatsAppAdapter::connect() {
     if (cfg_.session_dir.empty() && cfg_.phone.empty()) return false;
+    // Token-scoped lock: phone+session-dir is the credential.
+    if (!hermes::gateway::acquire_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            whatsapp_lock_identity(cfg_), {})) {
+        return false;
+    }
     // WhatsApp uses whatsmeow bridge which requires WebSocket for receiving.
     // connect() notes this; send() can use HTTP API.
     return true;
 }
 
-void WhatsAppAdapter::disconnect() {}
+void WhatsAppAdapter::disconnect() {
+    if (!cfg_.session_dir.empty() || !cfg_.phone.empty()) {
+        hermes::gateway::release_scoped_lock(
+            hermes::gateway::platform_to_string(platform()),
+            whatsapp_lock_identity(cfg_));
+    }
+}
 
 bool WhatsAppAdapter::send(const std::string& chat_id,
                            const std::string& content) {

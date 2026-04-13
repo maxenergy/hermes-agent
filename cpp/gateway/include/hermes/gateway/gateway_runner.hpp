@@ -21,6 +21,18 @@ class AIAgent;
 
 namespace hermes::gateway {
 
+// Classification of the most recent connect() failure.  Returned by
+// BasePlatformAdapter::last_error_kind() so the gateway runner can
+// distinguish "give up — bad credentials" from "retry later — temporary
+// outage".  Adapters that don't override return Unknown, which the
+// runner treats as retryable.
+enum class AdapterErrorKind {
+    None,           // last call succeeded
+    Retryable,      // 429 / 5xx / network blip — retry with backoff
+    Fatal,          // 401 / 403 / lock conflict — stop attempting
+    Unknown,        // adapter did not classify; runner treats as retryable
+};
+
 class BasePlatformAdapter {
 public:
     virtual ~BasePlatformAdapter() = default;
@@ -30,6 +42,12 @@ public:
     virtual bool send(const std::string& chat_id,
                       const std::string& content) = 0;
     virtual void send_typing(const std::string& /*chat_id*/) {}
+
+    // Override to expose a classification of the most recent connect()
+    // failure.  Default is Unknown — the runner will retry indefinitely.
+    virtual AdapterErrorKind last_error_kind() const {
+        return AdapterErrorKind::Unknown;
+    }
 };
 
 struct MessageEvent {
