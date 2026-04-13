@@ -367,6 +367,31 @@ nlohmann::json migrate_config(nlohmann::json config) {
         current = 5;
     }
 
+    // v5 -> v6: seed security + logging sections (match Python DEFAULT_CONFIG).
+    // Preserves any pre-existing user overrides at the field level.
+    if (current < 6) {
+        if (!config.contains("security") || !config["security"].is_object()) {
+            config["security"] = nlohmann::json::object();
+        }
+        auto& sec = config["security"];
+        if (!sec.contains("redact_secrets")) sec["redact_secrets"] = true;
+        if (!sec.contains("tirith_enabled")) sec["tirith_enabled"] = true;
+        if (!sec.contains("tirith_path")) sec["tirith_path"] = "tirith";
+        if (!sec.contains("tirith_timeout")) sec["tirith_timeout"] = 5;
+        if (!sec.contains("tirith_fail_open")) sec["tirith_fail_open"] = true;
+
+        if (!config.contains("logging") || !config["logging"].is_object()) {
+            config["logging"] = nlohmann::json::object();
+        }
+        auto& log = config["logging"];
+        if (!log.contains("level")) log["level"] = "INFO";
+        if (!log.contains("max_size_mb")) log["max_size_mb"] = 5;
+        if (!log.contains("backup_count")) log["backup_count"] = 3;
+
+        config["_config_version"] = 6;
+        current = 6;
+    }
+
     return config;
 }
 

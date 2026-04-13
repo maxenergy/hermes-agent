@@ -39,8 +39,8 @@ TEST(MigrateConfig, V1ToV5FullMigration) {
     };
     auto migrated = hc::migrate_config(cfg);
 
-    // Should now be at v5.
-    EXPECT_EQ(migrated["_config_version"].get<int>(), 5);
+    // Should now be at the current version (v6).
+    EXPECT_EQ(migrated["_config_version"].get<int>(), hc::kCurrentConfigVersion);
 
     // v1->v2: terminal.backend added.
     EXPECT_EQ(migrated["terminal"]["backend"].get<std::string>(), "local");
@@ -68,7 +68,7 @@ TEST(MigrateConfig, V3ToV5SkipsEarlyMigrations) {
     };
     auto migrated = hc::migrate_config(cfg);
 
-    EXPECT_EQ(migrated["_config_version"].get<int>(), 5);
+    EXPECT_EQ(migrated["_config_version"].get<int>(), hc::kCurrentConfigVersion);
     // Pre-existing terminal.backend preserved.
     EXPECT_EQ(migrated["terminal"]["backend"].get<std::string>(), "docker");
     // Pre-existing display.skin preserved (not overwritten by migration).

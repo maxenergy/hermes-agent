@@ -9,7 +9,7 @@ TEST(DefaultConfig, HasVersionStamp) {
     const auto& cfg = hc::default_config();
     ASSERT_TRUE(cfg.contains("_config_version"));
     EXPECT_EQ(cfg["_config_version"].get<int>(), hc::kCurrentConfigVersion);
-    EXPECT_EQ(hc::kCurrentConfigVersion, 5);
+    EXPECT_EQ(hc::kCurrentConfigVersion, 6);
 }
 
 TEST(DefaultConfig, HasModelKey) {

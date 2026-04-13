@@ -6,6 +6,7 @@ set(HERMES_CONFIG_TEST_SOURCES
     test_load_merge.cpp
     test_managed_system.cpp
     test_migrate.cpp
+    test_migration.cpp
 )
 
 add_executable(hermes_config_tests ${HERMES_CONFIG_TEST_SOURCES})

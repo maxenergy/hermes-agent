@@ -54,6 +54,22 @@ nlohmann::json make_default_config() {
         {"provider", "edge"},
     };
 
+    // --- Security (v5 -> v6) ---
+    cfg["security"] = {
+        {"redact_secrets", true},
+        {"tirith_enabled", true},
+        {"tirith_path", "tirith"},
+        {"tirith_timeout", 5},
+        {"tirith_fail_open", true},
+    };
+
+    // --- Logging (v5 -> v6) ---
+    cfg["logging"] = {
+        {"level", "INFO"},
+        {"max_size_mb", 5},
+        {"backup_count", 3},
+    };
+
     cfg["_config_version"] = kCurrentConfigVersion;
     return cfg;
 }
