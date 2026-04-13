@@ -23,9 +23,15 @@
   `dump <sessions|config|memory>`, `webhook install`, `runtime terminal`
 - CI jobs: `build-arm64`, `build-windows` (vcpkg), `build-wsl2`,
   `docker-multiarch` (amd64 + arm64)
+- Discord voice via libopus: `OpusCodec` (48kHz stereo 20ms VOIP)
+  + `DiscordAdapter::join_voice/send_voice_pcm/process_voice_rtp`
+  + SSRC↔user_id mapping (system has libopus-dev → enabled)
+- Matrix E2EE via libolm: `OlmAccount`, `OlmSession`,
+  `MegolmOutboundSession`, `MegolmInboundSession` + adapter wiring
+  (compile-time opt-in via `find_path(olm/olm.h)`)
 
 ### Metrics
-- 869/869 tests passing (up from 728 in 0.0.1-alpha)
+- 887/887 tests passing (up from 728 in 0.0.1-alpha)
 
 ## [0.0.1-alpha] - 2026-04-12
 
