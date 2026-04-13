@@ -403,6 +403,16 @@ std::unordered_map<std::string, std::string> McpStdioTransport::build_child_env(
 
 #else  // POSIX
 
+namespace {
+// Ignore SIGPIPE process-wide so writing to a closed child pipe returns
+// EPIPE instead of killing the process.  Set once on first transport
+// construction.  (Other code may also set this; SIG_IGN is idempotent.)
+struct SigpipeIgnorer {
+    SigpipeIgnorer() { ::signal(SIGPIPE, SIG_IGN); }
+};
+static SigpipeIgnorer g_sigpipe_ignorer;
+}  // namespace
+
 McpStdioTransport::McpStdioTransport(
     const std::string& command,
     const std::vector<std::string>& args,

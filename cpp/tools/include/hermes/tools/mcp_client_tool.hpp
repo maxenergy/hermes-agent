@@ -49,9 +49,9 @@ struct McpServerConfig {
     // capped at ``reconnect_max_ms``).  A small jitter (±20%) is added to
     // each delay, matching the server-side ``jittered_backoff`` contract.
     bool reconnect_enabled = true;
-    int reconnect_initial_ms = 500;
+    int reconnect_initial_ms = 250;
     int reconnect_max_ms = 30000;
-    int reconnect_max_attempts = 5;
+    int reconnect_max_attempts = 3;
 };
 
 class McpClientManager {
