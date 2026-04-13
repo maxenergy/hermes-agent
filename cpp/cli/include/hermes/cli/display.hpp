@@ -31,6 +31,7 @@ private:
     std::thread thread_;
     const SkinConfig& skin_;
     std::string message_;
+    std::size_t last_visible_len_{0};
     mutable std::mutex mu_;
 };
 

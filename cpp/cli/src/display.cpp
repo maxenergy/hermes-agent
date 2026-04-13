@@ -24,8 +24,11 @@ void Spinner::start(const std::string& message) {
 void Spinner::stop() {
     running_.store(false);
     if (thread_.joinable()) thread_.join();
-    // Clear the spinner line.
-    std::cerr << "\r\033[K" << std::flush;
+    // Clear the spinner line by padding with spaces (no ECMA-48 EL — would
+    // leak as literal `?[K` under prompt_toolkit's patch_stdout).
+    std::string clear(last_visible_len_, ' ');
+    std::cerr << "\r" << clear << "\r" << std::flush;
+    last_visible_len_ = 0;
 }
 
 void Spinner::update(const std::string& message) {
@@ -57,8 +60,17 @@ void Spinner::run() {
         std::string line = "\r" + skin_.colors.banner_accent +
                            left + " " + face + " " + right +
                            skin_.colors.banner_text + " " + verb;
-        if (!msg.empty()) line += ": " + msg;
-        line += "\033[K";
+        std::string visible = left + " " + face + " " + right + " " + verb;
+        if (!msg.empty()) {
+            line += ": " + msg;
+            visible += ": " + msg;
+        }
+        // Pad with spaces to cover any leftover from a previously longer
+        // line (no \033[K — pads cleanly under patch_stdout).
+        if (visible.size() < last_visible_len_) {
+            line.append(last_visible_len_ - visible.size(), ' ');
+        }
+        last_visible_len_ = visible.size();
         std::cerr << line << std::flush;
 
         ++idx;

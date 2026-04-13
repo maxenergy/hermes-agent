@@ -39,7 +39,7 @@
 - [x] 接入 clang-format / clang-tidy 配置 (2026-04-12, d21d29c9)
 - [x] 接入 GoogleTest(FetchContent v1.15.2,`gtest_discover_tests` 绑定) (2026-04-12, d21d29c9)
 - [x] 接入 sanitizer 构建变体(`asan` preset = ASan + UBSan) (2026-04-12, d21d29c9)
-- [ ] CI 流水线:Linux x86_64 / Linux arm64 / macOS / Windows-MSVC + WSL2(对齐 Python 版支持矩阵) *— deferred: 03ac9465 多架构 Docker 落地但完整多平台 CI 矩阵未启动*
+- [x] CI 流水线:Linux x86_64(gcc+clang)/ arm64 / macOS / Windows-MSVC + WSL2(fast-gate + full-matrix + vcpkg binary cache) (2026-04-13, bfe44e41)
 - [x] 设置 Release / Debug / asan 三套构建预设(`CMakePresets.json`) (2026-04-12, d21d29c9)
 
 ### 0.2 第三方依赖选型与封装
@@ -438,7 +438,7 @@
 ### 8.6 代码执行
 - [x] `execute_code`:写临时文件 + `hermes_tools.py` 7 函数 stub + LocalEnvironment 执行 (2026-04-12, 764eedaa)
 - [x] 300s 超时,50KB stdout 截断 (2026-04-12, 764eedaa)
-- [ ] UDS RPC(当前用文件 + 子进程) *— deferred: subprocess 模式工作良好,UDS 优化非关键路径*
+- [x] UDS RPC(JSON-RPC 2.0 server+client,Unix socket 0600) (2026-04-13, 98c72fda/708a8822)
 
 ### 8.7 内存工具
 - [x] `memory`:add / read / replace / remove(backed by MemoryStore) (2026-04-12, 54162168)
@@ -468,7 +468,7 @@
 ### 8.12 TTS 工具
 - [x] `text_to_speech`:edge-tts CLI 路径实现 (2026-04-12, dcf1f2a8)
 - [x] ElevenLabs / OpenAI / MiniMax HTTP 后端 (2026-04-12, 29936e3c)
-- [ ] ffmpeg 编码 *— deferred: TTS 后端直接返回 mp3/wav,ffmpeg 后处理非必需*
+- [x] ffmpeg 编码(subprocess wrapper + 11 mocked tests) (2026-04-13, 46dd9ed5/d37511b2)
 
 ### 8.13 转录工具
 - [x] `transcribe_audio`:文件校验 + 扩展名检查 + "install faster-whisper" stub (2026-04-12, 1b30417a)
@@ -572,7 +572,7 @@
 
 ### 11.2 消息处理管线 `_handle_message()`
 - [x] 用户授权检查(allowlist + pairing store + DM 行为) (2026-04-12, 0513a3f8)
-- [ ] `/update` prompt 拦截 *— deferred: gateway dispatch 已支持 update;CLI 端 prompt-time 拦截非阻塞需求*
+- [x] `/update` prompt 拦截(24h throttle + CI/TTY skip gates) (2026-04-13, 36a2696d)
 - [x] 卡死 agent 驱逐(evict_stale_agents) (2026-04-12, 9994cd51)
 - [x] 运行中 agent 中断(特例:`/stop` / `/new` / `/reset` / `/background` / `/approve` / `/deny` / 照片) (2026-04-12, 9994cd51)
 - [x] 命令分发 vs 普通消息路由 (2026-04-12, 0513a3f8)
@@ -853,7 +853,7 @@
 
 ### 13.6 callbacks
 - [x] `callbacks.py`:终端回调(clarify / sudo / approval)已在 `clarify_tool` + `session_state::request_cli_approval` 实现 (2026-04-12, dc5f6c19)
-- [ ] **不允许使用** `\033[K`(ECMA-48 erase-to-EOL) —— 用空格 padding *— pending: `cpp/cli/src/display.cpp` 仍有 2 处需替换为 space-padding*
+- [x] **不允许使用** `\033[K`(ECMA-48 erase-to-EOL) —— 用空格 padding(Spinner 跟踪 last_visible_len_ 填充) (2026-04-14)
 
 ### 13.7 Doctor
 - [x] 检查项:依赖二进制(curl / docker / ssh)/ SQLite FTS5 / 配置文件(`cmd_doctor`) (2026-04-12, e64c81cc)
