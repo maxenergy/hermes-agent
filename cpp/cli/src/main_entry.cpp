@@ -11,12 +11,16 @@
 #include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -586,6 +590,271 @@ int cmd_uninstall() {
     return 0;
 }
 
+// --------------------------------------------------------------------------
+// Long-tail CLI subcommands — model-switch / providers / memory / dump /
+// webhook / runtime.
+// --------------------------------------------------------------------------
+
+namespace {
+// Lightweight YAML load/save used by all the subcommands below.  We only need
+// to round-trip a flat config tree; nlohmann::json (used by the full config
+// loader) already stores ordered keys so we convert through it.
+nlohmann::json load_config_json() {
+    try {
+        return hermes::config::load_cli_config();
+    } catch (...) {
+        return nlohmann::json::object();
+    }
+}
+
+bool save_config_json(const nlohmann::json& j) {
+    try {
+        hermes::config::save_config(j);
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to save config: " << e.what() << "\n";
+        return false;
+    }
+}
+
+// Sets config[path] via dotted-key notation, e.g. "terminal.backend".
+void set_dot_path(nlohmann::json& j, const std::string& dotted,
+                  const nlohmann::json& value) {
+    nlohmann::json* cur = &j;
+    std::string remaining = dotted;
+    while (true) {
+        auto pos = remaining.find('.');
+        std::string head = (pos == std::string::npos) ? remaining
+                                                       : remaining.substr(0, pos);
+        if (pos == std::string::npos) {
+            (*cur)[head] = value;
+            return;
+        }
+        if (!cur->contains(head) || !(*cur)[head].is_object()) {
+            (*cur)[head] = nlohmann::json::object();
+        }
+        cur = &(*cur)[head];
+        remaining = remaining.substr(pos + 1);
+    }
+}
+
+std::string mask_secret(const std::string& s) {
+    if (s.empty()) return "(unset)";
+    if (s.size() <= 8) return "***";
+    return s.substr(0, 4) + "…" + s.substr(s.size() - 4);
+}
+
+std::string random_hex(size_t bytes) {
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(0, 15);
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes * 2);
+    for (size_t i = 0; i < bytes * 2; ++i) out.push_back(hex[dist(rng)]);
+    return out;
+}
+}  // namespace
+
+int cmd_model_switch(int argc, char* argv[]) {
+    if (argc < 4) {
+        std::cerr << "Usage: hermes model switch <provider:model>\n"
+                  << "  e.g. hermes model switch anthropic:claude-opus-4-6\n";
+        return 1;
+    }
+    std::string new_model = argv[3];
+    auto cfg = load_config_json();
+    std::string old_model = cfg.value("model", "(unset)");
+    cfg["model"] = new_model;
+    if (!save_config_json(cfg)) return 1;
+    std::cout << "Switched model: " << old_model << " → " << new_model << "\n";
+    return 0;
+}
+
+int cmd_providers(int argc, char* argv[]) {
+    std::string action = argc > 2 ? argv[2] : "list";
+    if (action != "list") {
+        std::cerr << "Usage: hermes providers list\n";
+        return 1;
+    }
+
+    struct Prov { const char* name; const char* env; };
+    static const Prov provs[] = {
+        {"OpenRouter", "OPENROUTER_API_KEY"},
+        {"Anthropic",  "ANTHROPIC_API_KEY"},
+        {"OpenAI",     "OPENAI_API_KEY"},
+        {"Google",     "GOOGLE_API_KEY"},
+        {"Mistral",    "MISTRAL_API_KEY"},
+        {"MiniMax",    "MINIMAX_API_KEY"},
+        {"Groq",       "GROQ_API_KEY"},
+        {"Nous",       "NOUS_API_KEY"},
+        {"Firecrawl",  "FIRECRAWL_API_KEY"},
+        {"Exa",        "EXA_API_KEY"},
+        {"Tavily",     "TAVILY_API_KEY"},
+        {"ElevenLabs", "ELEVENLABS_API_KEY"},
+    };
+
+    std::cout << std::left << std::setw(14) << "Provider"
+              << std::setw(26) << "Env Var"
+              << "Status\n";
+    std::cout << std::string(60, '-') << "\n";
+    for (const auto& p : provs) {
+        const char* val = std::getenv(p.env);
+        std::string status = val ? mask_secret(val) : "(unset)";
+        std::cout << std::left << std::setw(14) << p.name
+                  << std::setw(26) << p.env
+                  << status << "\n";
+    }
+    return 0;
+}
+
+int cmd_memory(int argc, char* argv[]) {
+    std::string action = argc > 2 ? argv[2] : "setup";
+    if (action != "setup") {
+        std::cerr << "Usage: hermes memory setup\n";
+        return 1;
+    }
+
+    std::cout << "Memory backend setup.\n"
+              << "Enable Honcho AI dialectic user modeling? [y/N]: ";
+    std::string enable;
+    if (!std::getline(std::cin, enable) || (enable != "y" && enable != "Y")) {
+        auto cfg = load_config_json();
+        set_dot_path(cfg, "memory.provider", "builtin");
+        save_config_json(cfg);
+        std::cout << "Using builtin file-based memory.\n";
+        return 0;
+    }
+
+    std::cout << "HONCHO_API_KEY: ";
+    std::string key; std::getline(std::cin, key);
+    std::cout << "Honcho app_id: ";
+    std::string app; std::getline(std::cin, app);
+    std::cout << "Honcho user_id: ";
+    std::string user; std::getline(std::cin, user);
+
+    auto cfg = load_config_json();
+    set_dot_path(cfg, "memory.provider", "honcho");
+    set_dot_path(cfg, "memory.honcho.app_id", app);
+    set_dot_path(cfg, "memory.honcho.user_id", user);
+    if (!save_config_json(cfg)) return 1;
+
+    // Append API key to ~/.hermes/.env (0600).
+    auto envp = hermes::core::path::get_hermes_home() / ".env";
+    std::error_code ec;
+    fs::create_directories(envp.parent_path(), ec);
+    std::ofstream f(envp, std::ios::app);
+    f << "HONCHO_API_KEY=" << key << "\n";
+    f.close();
+    std::error_code pec;
+    fs::permissions(envp, fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace, pec);
+    std::cout << "Honcho configured. Restart hermes to activate.\n";
+    return 0;
+}
+
+int cmd_dump(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr << "Usage: hermes dump <sessions|config|memory>\n";
+        return 1;
+    }
+    std::string what = argv[2];
+    auto home = hermes::core::path::get_hermes_home();
+
+    if (what == "config") {
+        std::cout << load_config_json().dump(2) << "\n";
+        return 0;
+    }
+    if (what == "memory") {
+        for (const char* name : {"MEMORY.md", "USER.md"}) {
+            auto p = home / "memories" / name;
+            std::cout << "# " << name << "\n";
+            std::ifstream f(p);
+            if (f) std::cout << f.rdbuf() << "\n";
+        }
+        return 0;
+    }
+    if (what == "sessions") {
+        auto sdir = home / "sessions";
+        std::error_code ec;
+        if (!fs::exists(sdir, ec)) {
+            std::cout << "[]\n";
+            return 0;
+        }
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& e : fs::directory_iterator(sdir, ec)) {
+            if (!e.is_directory()) continue;
+            auto meta = e.path() / "session.json";
+            std::ifstream f(meta);
+            if (f) {
+                try { arr.push_back(nlohmann::json::parse(f)); }
+                catch (...) { /* skip */ }
+            }
+        }
+        std::cout << arr.dump(2) << "\n";
+        return 0;
+    }
+    std::cerr << "Unknown dump target: " << what << "\n";
+    return 1;
+}
+
+int cmd_webhook(int argc, char* argv[]) {
+    std::string action = argc > 2 ? argv[2] : "install";
+    if (action != "install") {
+        std::cerr << "Usage: hermes webhook install\n";
+        return 1;
+    }
+
+    std::cout << "Generating webhook signature secrets...\n";
+    auto cfg = load_config_json();
+    struct Target {
+        const char* platform;
+        const char* secret_key;
+        const char* path;
+    };
+    static const Target targets[] = {
+        {"api_server", "platforms.api_server.signature_secret", "/api/v1/hermes"},
+        {"webhook",    "platforms.webhook.signature_secret",    "/webhook/hermes"},
+        {"slack",      "platforms.slack.signing_secret",        "/slack/events"},
+    };
+    for (const auto& t : targets) {
+        auto secret = random_hex(32);
+        set_dot_path(cfg, t.secret_key, secret);
+        std::cout << "  " << std::left << std::setw(12) << t.platform
+                  << " → POST " << t.path
+                  << "  secret=" << mask_secret(secret) << "\n";
+    }
+    if (!save_config_json(cfg)) return 1;
+    std::cout << "\nSecrets saved to config.yaml. Configure your hosting layer\n"
+              << "to forward the above paths to the gateway HTTP listener.\n";
+    return 0;
+}
+
+int cmd_runtime(int argc, char* argv[]) {
+    if (argc < 4) {
+        std::cerr << "Usage: hermes runtime terminal <local|docker|ssh|modal|"
+                     "daytona|singularity|managed_modal>\n";
+        return 1;
+    }
+    std::string sub = argv[2];
+    if (sub != "terminal") {
+        std::cerr << "Unknown runtime action: " << sub << "\n";
+        return 1;
+    }
+    std::string backend = argv[3];
+    static const std::vector<std::string> valid = {
+        "local", "docker", "ssh", "modal", "daytona",
+        "singularity", "managed_modal"};
+    if (std::find(valid.begin(), valid.end(), backend) == valid.end()) {
+        std::cerr << "Invalid backend: " << backend << "\n";
+        return 1;
+    }
+    auto cfg = load_config_json();
+    set_dot_path(cfg, "terminal.backend", backend);
+    if (!save_config_json(cfg)) return 1;
+    std::cout << "Terminal backend: " << backend << "\n";
+    return 0;
+}
+
 int cmd_claw(int argc, char* argv[]) {
     if (argc <= 2 || std::string(argv[2]) != "migrate") {
         std::cout << "Usage: hermes claw migrate [--dry-run] [--overwrite] "
@@ -700,6 +969,9 @@ int main_entry(int argc, char* argv[]) {
         return cmd_status();
     }
     if (sub == "model") {
+        if (argc > 2 && std::string(argv[2]) == "switch") {
+            return cmd_model_switch(argc, argv);
+        }
         return cmd_model();
     }
     if (sub == "tools") {
@@ -738,6 +1010,21 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "claw") {
         return cmd_claw(argc, argv);
+    }
+    if (sub == "providers") {
+        return cmd_providers(argc, argv);
+    }
+    if (sub == "memory") {
+        return cmd_memory(argc, argv);
+    }
+    if (sub == "dump") {
+        return cmd_dump(argc, argv);
+    }
+    if (sub == "webhook") {
+        return cmd_webhook(argc, argv);
+    }
+    if (sub == "runtime") {
+        return cmd_runtime(argc, argv);
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";

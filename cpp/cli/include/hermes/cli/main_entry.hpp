@@ -26,7 +26,15 @@ int cmd_pairing(int argc, char* argv[]);
 int cmd_update();
 int cmd_uninstall();
 
+// Long-tail subcommands.
+int cmd_model_switch(int argc, char* argv[]);
+int cmd_providers(int argc, char* argv[]);
+int cmd_memory(int argc, char* argv[]);
+int cmd_dump(int argc, char* argv[]);
+int cmd_webhook(int argc, char* argv[]);
+int cmd_runtime(int argc, char* argv[]);
+
 // Version string constant.
-inline constexpr const char* kVersionString = "hermes-cpp 0.0.1";
+inline constexpr const char* kVersionString = "hermes-cpp 0.1.0";
 
 }  // namespace hermes::cli

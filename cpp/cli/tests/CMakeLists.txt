@@ -25,6 +25,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_clipboard.cpp
     test_colors.cpp
     test_claw_migrate.cpp
+    test_longtail_commands.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
