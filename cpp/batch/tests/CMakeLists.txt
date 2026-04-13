@@ -18,6 +18,8 @@ include(GoogleTest)
 add_executable(hermes_batch_tests
     test_batch_runner.cpp
     test_trajectory_compressor.cpp
+    test_hf_schema.cpp
+    test_swe_runner.cpp
 )
 
 target_link_libraries(hermes_batch_tests

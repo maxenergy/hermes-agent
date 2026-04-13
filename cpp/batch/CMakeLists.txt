@@ -3,6 +3,8 @@
 add_library(hermes_batch STATIC
     src/batch_runner.cpp
     src/trajectory_compressor.cpp
+    src/hf_schema.cpp
+    src/swe_runner.cpp
 )
 
 target_include_directories(hermes_batch
@@ -16,6 +18,7 @@ target_link_libraries(hermes_batch
     PUBLIC
         hermes::agent
         hermes::llm
+        hermes::environments
     PRIVATE
         hermes_warnings
 )
