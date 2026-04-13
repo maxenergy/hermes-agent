@@ -27,6 +27,8 @@ set(HERMES_CLI_TEST_SOURCES
     test_claw_migrate.cpp
     test_longtail_commands.cpp
     test_hook_discovery.cpp
+    test_ftxui_editor.cpp
+    test_curses_ui.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})

@@ -40,7 +40,28 @@ add_library(hermes_cli_lib STATIC
     src/main_entry.cpp
     src/claw_migrate.cpp
     src/hook_discovery.cpp
+    src/ftxui_editor.cpp
+    src/curses_ui.cpp
 )
+
+# Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
+# machine compiles regardless; this option only gates the live-terminal
+# rendering, which requires the ftxui package. Default OFF so the default
+# build does not pull in an additional dep.
+option(HERMES_TUI_FTXUI "Enable FTXUI-based live terminal rendering for HermesCLI" OFF)
+if(HERMES_TUI_FTXUI)
+    find_package(ftxui CONFIG QUIET)
+    if(ftxui_FOUND)
+        target_compile_definitions(hermes_cli_lib PRIVATE HERMES_HAS_FTXUI=1)
+        target_link_libraries(hermes_cli_lib PRIVATE
+            ftxui::screen ftxui::dom ftxui::component)
+        message(STATUS "hermes::cli: FTXUI terminal renderer enabled")
+    else()
+        message(WARNING
+            "HERMES_TUI_FTXUI=ON but ftxui package was not found; "
+            "falling back to plain-readline rendering.")
+    endif()
+endif()
 
 target_include_directories(hermes_cli_lib
     PUBLIC
