@@ -12,6 +12,10 @@ add_executable(hermes_llm_tests
     test_llm_client.cpp
     test_error_classifier.cpp
     test_retry_policy.cpp
+    test_credential_pool.cpp
+    test_codex_models.cpp
+    test_runtime_provider.cpp
+    test_model_switch.cpp
 )
 
 target_link_libraries(hermes_llm_tests

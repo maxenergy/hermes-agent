@@ -54,6 +54,10 @@ add_library(hermes_llm STATIC
     src/openrouter_client.cpp
     src/error_classifier.cpp
     src/retry_policy.cpp
+    src/credential_pool.cpp
+    src/codex_models.cpp
+    src/runtime_provider.cpp
+    src/model_switch.cpp
 )
 
 target_include_directories(hermes_llm
