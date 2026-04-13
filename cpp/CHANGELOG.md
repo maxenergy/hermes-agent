@@ -19,9 +19,13 @@
 - Multi-arch Dockerfile (`ARG TARGETARCH`) + `docker-buildx.sh` + `termux-build.sh`
 - GitHub Copilot OAuth device code flow (`CopilotOAuth` with polling + token exchange)
 - Nous Research subscription status check (`SubscriptionStatus` with 1h cache)
+- CLI long-tail: `hermes model switch`, `providers list`, `memory setup`,
+  `dump <sessions|config|memory>`, `webhook install`, `runtime terminal`
+- CI jobs: `build-arm64`, `build-windows` (vcpkg), `build-wsl2`,
+  `docker-multiarch` (amd64 + arm64)
 
 ### Metrics
-- 858/858 tests passing (up from 728 in 0.0.1-alpha)
+- 869/869 tests passing (up from 728 in 0.0.1-alpha)
 
 ## [0.0.1-alpha] - 2026-04-12
 
