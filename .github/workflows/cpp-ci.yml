@@ -47,3 +47,74 @@ jobs:
         run: cd cpp && cmake --build build/default -j$(sysctl -n hw.ncpu)
       - name: Test
         run: cd cpp && ctest --test-dir build/default --output-on-failure
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
+            libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+      - name: Configure
+        run: cd cpp && cmake --preset default
+      - name: Build
+        run: cd cpp && cmake --build build/default -j$(nproc)
+      - name: Test
+        run: cd cpp && ctest --test-dir build/default --output-on-failure
+
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install vcpkg dependencies
+        shell: cmd
+        run: |
+          vcpkg install nlohmann-json yaml-cpp sqlitecpp openssl curl jwt-cpp --triplet x64-windows
+      - name: Configure
+        shell: cmd
+        run: |
+          cd cpp
+          cmake -B build\default ^
+            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake ^
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+      - name: Build
+        shell: cmd
+        run: cd cpp && cmake --build build\default --config Release --parallel
+      - name: Test
+        shell: cmd
+        run: cd cpp && ctest --test-dir build\default -C Release --output-on-failure
+
+  build-wsl2:
+    runs-on: windows-2022
+    steps:
+      - uses: Vampire/setup-wsl@v3
+        with:
+          distribution: Ubuntu-24.04
+      - uses: actions/checkout@v4
+      - name: Install WSL2 dependencies
+        shell: wsl-bash {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
+            libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+      - name: Build in WSL2
+        shell: wsl-bash {0}
+        run: cd cpp && cmake --preset default && cmake --build build/default -j$(nproc)
+      - name: Test in WSL2
+        shell: wsl-bash {0}
+        run: cd cpp && ctest --test-dir build/default --output-on-failure
+
+  docker-multiarch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build multi-arch image (amd64 + arm64)
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f cpp/packaging/Dockerfile \
+            -t hermes-cpp:ci .
