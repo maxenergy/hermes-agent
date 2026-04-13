@@ -31,6 +31,7 @@ set(HERMES_CORE_TEST_SOURCES
     test_fuzzy.cpp
     test_patch_parser.cpp
     test_async_bridge.cpp
+    test_uds_rpc.cpp
 )
 
 add_executable(hermes_core_tests ${HERMES_CORE_TEST_SOURCES})
