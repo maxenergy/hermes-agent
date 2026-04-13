@@ -14,6 +14,28 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#pragma comment(lib, "Ws2_32.lib")
+// POSIX-shim names used in the shared body below.
+namespace {
+struct WinsockInit {
+    WinsockInit() {
+        WSADATA wsa;
+        ::WSAStartup(MAKEWORD(2, 2), &wsa);
+    }
+    ~WinsockInit() { ::WSACleanup(); }
+};
+// A single process-wide WSAStartup call is safe because WSACleanup is
+// reference-counted per WSAStartup.  The destructor runs at shutdown.
+static WinsockInit g_winsock_init;
+}  // namespace
+// Map POSIX close(int) onto closesocket() for the shared IDLE body below.
+// We only use this on sockets, so redefining close locally is safe.
+#define close(s) ::closesocket(static_cast<SOCKET>(s))
 #endif
 
 #if defined(HERMES_HAVE_OPENSSL)
@@ -109,7 +131,13 @@ void EmailAdapter::start_imap_idle_loop(
         // Best-effort IDLE loop.  When OpenSSL / sockets are unavailable
         // at build time, this thread simply exits — tests that exercise
         // the loop gate on `IMAP_TEST_HOST`.
-#if defined(HERMES_HAVE_OPENSSL) && !defined(_WIN32)
+#if defined(HERMES_HAVE_OPENSSL)
+        // Winsock2 `socket`/`connect`/`getaddrinfo`/`send`/`recv` are
+        // POSIX-compatible on Windows; `close(s)` is remapped to
+        // `closesocket` at the top of this TU.  OpenSSL's SSL_* layer is
+        // platform-agnostic and works identically on top of either.
+        // TODO(win): verify on Windows CI — WSAStartup runs in a static
+        // global, but if multiple TUs link we should ensure only one init.
         while (idle_running_.load()) {
             int sock = ::socket(AF_INET, SOCK_STREAM, 0);
             if (sock < 0) { idle_running_.store(false); return; }

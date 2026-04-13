@@ -23,6 +23,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 namespace hermes::state {
@@ -313,6 +316,29 @@ void ProcessRegistry::kill(const std::string& id) {
         if (::waitpid(pid, nullptr, WNOHANG) == 0) {
             ::kill(pid, SIGKILL);
             ::waitpid(pid, nullptr, 0);
+        }
+        lk.lock();
+    }
+#else
+    // Windows: no graceful SIGTERM equivalent for arbitrary child processes —
+    // TerminateProcess is the canonical way to force-exit by PID.  We still
+    // give the process a brief grace window in case cooperative shutdown was
+    // initiated elsewhere (e.g. via a console ctrl event above this layer).
+    // TODO(win): verify on Windows CI — specifically that OpenProcess with
+    // PROCESS_TERMINATE succeeds for children spawned via CreateProcess in
+    // local.cpp, and that the 2s grace window matches POSIX semantics.
+    if (s.pid) {
+        DWORD pid = static_cast<DWORD>(*s.pid);
+        lk.unlock();
+        HANDLE h = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        if (h != nullptr) {
+            // Grace period: if the process exits on its own, skip Terminate.
+            DWORD wait = ::WaitForSingleObject(h, 2000);
+            if (wait == WAIT_TIMEOUT) {
+                ::TerminateProcess(h, 1);
+                ::WaitForSingleObject(h, 5000);
+            }
+            ::CloseHandle(h);
         }
         lk.lock();
     }
