@@ -19,16 +19,22 @@ TEST(AcpAdapterTest, CapabilitiesReturnsJson) {
     EXPECT_EQ(caps["listen_port"], 9999);
     EXPECT_TRUE(caps.contains("capabilities"));
     EXPECT_TRUE(caps["capabilities"]["chat"].get<bool>());
+    EXPECT_TRUE(caps.contains("auth_methods"));
+    EXPECT_TRUE(caps["auth_methods"].is_array());
+    EXPECT_GE(caps["auth_methods"].size(), 2u);
 }
 
-TEST(AcpAdapterTest, HandleRequestStub) {
-    AcpAdapter adapter(AcpConfig{});
+TEST(AcpAdapterTest, HandleRequestUnauthenticatedIsRejected) {
+    // No env token forced -> calls without auth must be rejected.
+    AcpConfig cfg;
+    cfg.forced_env_token = "";  // explicit empty to ignore real env
+    AcpAdapter adapter(cfg);
 
     nlohmann::json request = {{"method", "some_action"}};
     auto result = adapter.handle_request(request);
 
-    EXPECT_EQ(result["status"], "not_implemented");
-    EXPECT_EQ(result["method"], "some_action");
+    EXPECT_EQ(result["status"], "error");
+    EXPECT_EQ(result["error"], "unauthenticated");
 }
 
 TEST(AcpAdapterTest, HandleRequestCapabilities) {
