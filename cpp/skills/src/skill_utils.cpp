@@ -3,6 +3,7 @@
 #include "hermes/core/path.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -37,6 +38,40 @@ std::vector<fs::path> get_all_skills_dirs() {
     auto user_dir = home / "installed-skills";
     if (fs::is_directory(user_dir, ec)) {
         dirs.push_back(std::move(user_dir));
+    }
+
+    // Fallback search paths for built-in skills shipped alongside the
+    // hermes_cpp binary. These cover three common layouts:
+    //   1. System install: /usr/share/hermes/{skills,optional-skills}
+    //   2. Local install:  /usr/local/share/hermes/{skills,optional-skills}
+    //   3. Dev checkout / custom path via HERMES_SKILLS_SEARCH_PATH
+    //      (colon-separated list of directories).
+    auto add_if_dir = [&](const fs::path& p) {
+        std::error_code lec;
+        if (!fs::is_directory(p, lec)) return;
+        for (const auto& existing : dirs) {
+            std::error_code eq_ec;
+            if (fs::equivalent(existing, p, eq_ec)) return;
+        }
+        dirs.push_back(p);
+    };
+
+    if (const char* extra_env = std::getenv("HERMES_SKILLS_SEARCH_PATH")) {
+        std::string s(extra_env);
+        std::string::size_type start = 0;
+        while (start <= s.size()) {
+            auto sep = s.find(':', start);
+            std::string piece = s.substr(start, sep - start);
+            if (!piece.empty()) add_if_dir(fs::path(piece));
+            if (sep == std::string::npos) break;
+            start = sep + 1;
+        }
+    }
+
+    for (const char* prefix :
+         {"/usr/share/hermes", "/usr/local/share/hermes"}) {
+        add_if_dir(fs::path(prefix) / "skills");
+        add_if_dir(fs::path(prefix) / "optional-skills");
     }
 
     return dirs;

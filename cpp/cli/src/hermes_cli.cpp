@@ -1,10 +1,17 @@
 #include "hermes/cli/hermes_cli.hpp"
 
+#include "hermes/auth/qwen_client.hpp"
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
 #include "hermes/config/loader.hpp"
+#include "hermes/llm/llm_client.hpp"
+#include "hermes/llm/message.hpp"
+#include "hermes/llm/openai_client.hpp"
 #include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
+
+#include <cstdlib>
+#include <memory>
 
 #include <algorithm>
 #include <iomanip>
@@ -80,9 +87,95 @@ void HermesCLI::run() {
     }
 }
 
+namespace {
+
+// Build an LlmClient based on config_["provider"].  Returns nullptr if no
+// provider is configured / credentials missing.
+std::unique_ptr<hermes::llm::LlmClient> make_client(const nlohmann::json& cfg) {
+    auto* transport = hermes::llm::get_default_transport();
+    std::string provider;
+    if (cfg.contains("provider") && cfg["provider"].is_string()) {
+        provider = cfg["provider"].get<std::string>();
+    }
+
+    if (provider == "qwen") {
+        return std::make_unique<hermes::auth::QwenClient>(transport);
+    }
+
+    // Generic OpenAI-compatible: provider == "openai" / "openrouter" / etc.
+    std::string base_url = "https://api.openai.com/v1";
+    if (cfg.contains("base_url") && cfg["base_url"].is_string() &&
+        !cfg["base_url"].get<std::string>().empty()) {
+        base_url = cfg["base_url"].get<std::string>();
+    }
+    std::string api_key;
+    if (auto* k = std::getenv("OPENAI_API_KEY")) api_key = k;
+    if (api_key.empty() && cfg.contains("provider_api_key") &&
+        cfg["provider_api_key"].is_string()) {
+        api_key = cfg["provider_api_key"].get<std::string>();
+    }
+    if (api_key.empty() && provider != "qwen") return nullptr;
+    return std::make_unique<hermes::llm::OpenAIClient>(transport, api_key, base_url);
+}
+
+}  // namespace
+
 std::string HermesCLI::query(const std::string& message) {
-    // Agent integration is configured at startup via set_agent().
-    return "[agent not configured — call set_agent() at startup] " + message;
+    auto client = make_client(config_);
+    if (!client) {
+        return "[no provider configured — run `hermes login` or set "
+               "OPENAI_API_KEY] " + message;
+    }
+
+    std::string model = "qwen3-coder-plus";
+    if (config_.contains("model") && config_["model"].is_string()) {
+        model = config_["model"].get<std::string>();
+    }
+
+    // Convert lightweight history_ (vector<json>) → llm::Message list.
+    std::vector<hermes::llm::Message> messages;
+    for (const auto& h : history_) {
+        if (!h.is_object()) continue;
+        auto role = h.value("role", "user");
+        auto content = h.value("content", "");
+        hermes::llm::Message m;
+        m.role = (role == "assistant") ? hermes::llm::Role::Assistant
+                : (role == "system")    ? hermes::llm::Role::System
+                : (role == "tool")      ? hermes::llm::Role::Tool
+                                         : hermes::llm::Role::User;
+        m.content_text = content;
+        messages.push_back(std::move(m));
+    }
+    hermes::llm::Message user_msg;
+    user_msg.role = hermes::llm::Role::User;
+    user_msg.content_text = message;
+    messages.push_back(user_msg);
+
+    hermes::llm::CompletionRequest req;
+    req.model = model;
+    req.messages = std::move(messages);
+    req.temperature = temperature_;
+
+    try {
+        auto resp = client->complete(req);
+        const auto& msg = resp.assistant_message;
+        std::string text = msg.content_text;
+        if (text.empty() && !msg.content_blocks.empty()) {
+            for (const auto& b : msg.content_blocks) {
+                if (b.type == "text") text += b.text;
+            }
+        }
+
+        // Persist the turn into history_ + token counters.
+        history_.push_back({{"role", "user"}, {"content", message}});
+        history_.push_back({{"role", "assistant"}, {"content", text}});
+        total_input_tokens_ += resp.usage.input_tokens;
+        total_output_tokens_ += resp.usage.output_tokens;
+
+        return text.empty() ? "[empty response]" : text;
+    } catch (const std::exception& e) {
+        return std::string("[error] ") + e.what();
+    }
 }
 
 bool HermesCLI::process_command(const std::string& input) {

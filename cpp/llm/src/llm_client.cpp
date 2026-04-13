@@ -148,6 +148,13 @@ public:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  // longer for streaming
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+        // Force HTTP/1.1 — some SSE endpoints (notably portal.qwen.ai) close
+        // the HTTP/2 stream prematurely from libcurl, surfacing as
+        // "Failure when receiving data from the peer".
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                         (long)CURL_HTTP_VERSION_1_1);
+        // No buffering of the response — flush each chunk to the callback.
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 1024L);
 
         // Proxy support.
         const char* proxy = std::getenv("HTTPS_PROXY");
@@ -187,6 +194,9 @@ public:
             on_chunk(ctx.line_buffer);
         }
 
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
         curl_slist_free_all(header_list);
         curl_easy_cleanup(curl);
 
@@ -194,6 +204,14 @@ public:
             throw std::runtime_error(
                 std::string("curl streaming request failed: ") +
                 curl_easy_strerror(res));
+        }
+        if (http_code >= 400) {
+            // Non-2xx for a streaming endpoint usually means the body holds
+            // an error payload that was forwarded through on_chunk; surface
+            // the status so callers can react.
+            throw std::runtime_error(
+                "HTTP " + std::to_string(http_code) +
+                " on streaming endpoint (body echoed via callback)");
         }
     }
 

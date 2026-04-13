@@ -224,6 +224,7 @@ CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
         {"Authorization", "Bearer " + api_key_},
         {"Content-Type", "application/json"},
     };
+    for (const auto& [k, v] : extra_headers_) headers[k] = v;
 
     if (req.stream) {
         body["stream"] = true;
