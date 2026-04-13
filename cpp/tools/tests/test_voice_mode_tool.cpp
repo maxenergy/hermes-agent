@@ -1,3 +1,4 @@
+#include "hermes/tools/ffmpeg.hpp"
 #include "hermes/tools/registry.hpp"
 #include "hermes/tools/transcription_tool.hpp"
 #include "hermes/tools/voice_mode_tool.hpp"
@@ -226,6 +227,183 @@ TEST_F(VoiceModeToolTest, UnknownActionErrors) {
     ASSERT_TRUE(parsed.contains("error"));
     EXPECT_NE(parsed["error"].get<std::string>().find("unknown"),
               std::string::npos);
+}
+
+// --- Streaming pipeline tests ------------------------------------------
+
+class VoiceStreamingTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        ToolRegistry::instance().clear();
+        VoiceSession::instance().reset();
+        set_recorder_factory_for_testing(
+            [] { return std::make_unique<MockRecorder>(); });
+        // Provide a fake transcription backend that echoes a static text
+        // for each segment request, with a counter suffix so we can tell
+        // segments apart.
+        segment_count_ = 0;
+        set_transcription_backend_for_testing(
+            [this](const TranscriptionRequest& req) {
+                TranscriptionResult r;
+                r.ok = true;
+                r.text = "segment" + std::to_string(++segment_count_);
+                r.language = req.language.empty() ? "en" : req.language;
+                r.backend = "mock";
+                return r;
+            });
+        // Fake ffmpeg: silencedetect returns a single silence between
+        // 1.0s and 1.6s; the trim slices succeed silently.
+        hermes::tools::ffmpeg::set_ffmpeg_binary_for_testing(
+            "/usr/bin/ffmpeg-fake");
+        hermes::tools::ffmpeg::set_ffprobe_binary_for_testing(
+            "/usr/bin/ffprobe-fake");
+        hermes::tools::ffmpeg::set_command_runner_for_testing(
+            [](const hermes::tools::ffmpeg::CommandInvocation& inv)
+                -> hermes::tools::ffmpeg::CommandOutcome {
+                hermes::tools::ffmpeg::CommandOutcome o;
+                o.exit_code = 0;
+                // silencedetect invocation has the `silencedetect=` arg.
+                for (const auto& a : inv.argv) {
+                    if (a.find("silencedetect=") != std::string::npos) {
+                        o.stderr_text =
+                            "[silencedetect @ 0x1] silence_start: 1.0\n"
+                            "[silencedetect @ 0x1] silence_end: 1.6 | "
+                            "silence_duration: 0.6\n";
+                        return o;
+                    }
+                }
+                // Slice commands — touch the output file so the caller
+                // sees it exists.
+                if (!inv.argv.empty()) {
+                    const auto& out_path = inv.argv.back();
+                    std::ofstream ofs(out_path, std::ios::binary);
+                    ofs << "RIFFfake";
+                }
+                return o;
+            });
+
+        set_voice_responder_for_testing(
+            [this](const std::string& transcript, const std::string&) {
+                responder_calls_.push_back(transcript);
+                return "reply:" + transcript;
+            });
+        set_voice_speaker_for_testing(
+            [this](const std::string& text, const std::string&,
+                   std::string&) {
+                speaker_calls_.push_back(text);
+                return "/tmp/hermes_tts_out_" +
+                       std::to_string(speaker_calls_.size()) + ".mp3";
+            });
+        set_voice_playback_for_testing(
+            [this](const std::string& path) {
+                playback_calls_.push_back(path);
+                return true;
+            });
+        register_transcription_tools();
+        register_voice_tools();
+    }
+    void TearDown() override {
+        ToolRegistry::instance().clear();
+        VoiceSession::instance().reset();
+        set_recorder_factory_for_testing({});
+        set_transcription_backend_for_testing({});
+        set_voice_responder_for_testing({});
+        set_voice_speaker_for_testing({});
+        set_voice_playback_for_testing({});
+        hermes::tools::ffmpeg::set_ffmpeg_binary_for_testing({});
+        hermes::tools::ffmpeg::set_ffprobe_binary_for_testing({});
+        hermes::tools::ffmpeg::set_command_runner_for_testing({});
+    }
+
+    int segment_count_ = 0;
+    std::vector<std::string> responder_calls_;
+    std::vector<std::string> speaker_calls_;
+    std::vector<std::string> playback_calls_;
+};
+
+TEST_F(VoiceStreamingTest, RequiresAudioPath) {
+    auto result = ToolRegistry::instance().dispatch(
+        "voice_mode", {{"action", "streaming"}}, {});
+    auto parsed = nlohmann::json::parse(result);
+    ASSERT_TRUE(parsed.contains("error"));
+    EXPECT_NE(parsed["error"].get<std::string>().find("requires audio_path"),
+              std::string::npos);
+}
+
+TEST_F(VoiceStreamingTest, RunsFullPipelineOverTwoSegments) {
+    StreamingPipelineConfig cfg;
+    cfg.audio_path = "/tmp/hermes_test_input.wav";
+    cfg.speak_response = true;
+    cfg.playback_response = true;
+    auto res = run_streaming_pipeline(cfg);
+    EXPECT_TRUE(res.ok);
+
+    // One silence splits two segments → 2 transcriptions, 2 responses,
+    // 2 TTS, 2 playbacks, plus partials + final + done events.
+    int finals = 0, responses = 0, speaking = 0, done = 0;
+    for (const auto& ev : res.events) {
+        if (ev.kind == "final") ++finals;
+        else if (ev.kind == "response") ++responses;
+        else if (ev.kind == "speaking") ++speaking;
+        else if (ev.kind == "done") ++done;
+    }
+    EXPECT_EQ(finals, 2);
+    EXPECT_EQ(responses, 2);
+    EXPECT_EQ(speaking, 2);
+    EXPECT_EQ(done, 1);
+    EXPECT_EQ(responder_calls_.size(), 2u);
+    EXPECT_EQ(responder_calls_[0], "segment1");
+    EXPECT_EQ(responder_calls_[1], "segment2");
+    EXPECT_EQ(speaker_calls_.size(), 2u);
+    EXPECT_EQ(speaker_calls_[0], "reply:segment1");
+    EXPECT_EQ(playback_calls_.size(), 2u);
+}
+
+TEST_F(VoiceStreamingTest, SkipsResponseWhenNoResponder) {
+    set_voice_responder_for_testing({});
+    StreamingPipelineConfig cfg;
+    cfg.audio_path = "/tmp/hermes_test_input.wav";
+    auto res = run_streaming_pipeline(cfg);
+    EXPECT_TRUE(res.ok);
+    int finals = 0, responses = 0;
+    for (const auto& ev : res.events) {
+        if (ev.kind == "final") ++finals;
+        if (ev.kind == "response") ++responses;
+    }
+    EXPECT_EQ(finals, 2);
+    EXPECT_EQ(responses, 0);
+    EXPECT_TRUE(speaker_calls_.empty());
+}
+
+TEST_F(VoiceStreamingTest, SkipsPlaybackWhenFlagOff) {
+    StreamingPipelineConfig cfg;
+    cfg.audio_path = "/tmp/hermes_test_input.wav";
+    cfg.speak_response = true;
+    cfg.playback_response = false;
+    auto res = run_streaming_pipeline(cfg);
+    EXPECT_TRUE(res.ok);
+    EXPECT_FALSE(speaker_calls_.empty());
+    EXPECT_TRUE(playback_calls_.empty());
+}
+
+TEST_F(VoiceStreamingTest, ToolActionDispatches) {
+    auto result = ToolRegistry::instance().dispatch(
+        "voice_mode",
+        {{"action", "streaming"},
+         {"audio_path", "/tmp/hermes_test_input.wav"},
+         {"speak_response", true},
+         {"playback_response", false},
+         {"language", "en"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    ASSERT_TRUE(parsed.value("ok", false)) << parsed.dump();
+    ASSERT_TRUE(parsed.contains("events"));
+    auto events = parsed["events"];
+    bool saw_done = false;
+    for (const auto& ev : events) {
+        if (ev.value("kind", std::string{}) == "done") saw_done = true;
+    }
+    EXPECT_TRUE(saw_done);
 }
 
 TEST_F(VoiceModeToolTest, StopWhileRecordingCleansUp) {

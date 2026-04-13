@@ -2,6 +2,7 @@
 
 #include "hermes/tools/voice_mode_tool.hpp"
 
+#include "hermes/tools/ffmpeg.hpp"
 #include "hermes/tools/registry.hpp"
 #include "hermes/tools/transcription_tool.hpp"
 
@@ -405,6 +406,207 @@ std::string VoiceSession::state_string(VoiceState s) {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming pipeline — ffmpeg silencedetect → segment → transcribe →
+// respond → TTS → playback.  Injection hooks live at namespace scope so
+// tests can swap them for stubs.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct StreamingHooks {
+    VoiceResponder responder;
+    VoiceSpeaker speaker;
+    VoicePlayback playback;
+};
+
+std::mutex& hooks_mutex() {
+    static std::mutex m;
+    return m;
+}
+StreamingHooks& hooks_slot() {
+    static StreamingHooks h;
+    return h;
+}
+
+StreamingHooks get_hooks() {
+    std::lock_guard<std::mutex> lk(hooks_mutex());
+    return hooks_slot();
+}
+
+// Default playback: try aplay (Linux), afplay (macOS), ffplay (cross).
+bool default_playback(const std::string& audio_path) {
+    hermes::environments::LocalEnvironment env;
+    hermes::environments::ExecuteOptions opts;
+    opts.timeout = std::chrono::seconds(60);
+    auto try_bin = [&](const std::string& bin, const std::string& args) {
+        auto check = env.execute("command -v " + bin + " 2>/dev/null", opts);
+        if (check.exit_code != 0) return false;
+        std::string cmd = bin + " " + args + " '" + audio_path + "' >/dev/null 2>&1";
+        auto r = env.execute(cmd, opts);
+        return r.exit_code == 0;
+    };
+    if (try_bin("aplay", "-q")) return true;
+    if (try_bin("afplay", "")) return true;
+    if (try_bin("ffplay", "-nodisp -autoexit -loglevel error")) return true;
+    return false;
+}
+
+}  // namespace
+
+void set_voice_responder_for_testing(VoiceResponder responder) {
+    std::lock_guard<std::mutex> lk(hooks_mutex());
+    hooks_slot().responder = std::move(responder);
+}
+void set_voice_speaker_for_testing(VoiceSpeaker speaker) {
+    std::lock_guard<std::mutex> lk(hooks_mutex());
+    hooks_slot().speaker = std::move(speaker);
+}
+void set_voice_playback_for_testing(VoicePlayback playback) {
+    std::lock_guard<std::mutex> lk(hooks_mutex());
+    hooks_slot().playback = std::move(playback);
+}
+
+StreamingPipelineResult run_streaming_pipeline(
+    const StreamingPipelineConfig& cfg) {
+    StreamingPipelineResult out;
+    auto now = [] { return std::chrono::steady_clock::now(); };
+
+    auto push_event = [&](const std::string& kind, const std::string& text,
+                          const std::string& lang = "") {
+        out.events.push_back(VoiceEvent{kind, text, lang, now()});
+    };
+
+    if (cfg.audio_path.empty()) {
+        out.error = "audio_path required for streaming pipeline";
+        push_event("error", out.error);
+        return out;
+    }
+
+    // 1) Silence detection -> segment boundaries.
+    ffmpeg::SilenceDetectOptions sil_opts;
+    sil_opts.input_path = cfg.audio_path;
+    sil_opts.noise_db = cfg.silence_noise_db;
+    sil_opts.min_silence_seconds = cfg.silence_min_seconds;
+
+    std::vector<ffmpeg::SilenceRegion> regions;
+    auto sil = ffmpeg::detect_silence(sil_opts, regions);
+    if (!sil.ok) {
+        // Treat the entire file as one segment rather than aborting.
+        regions.clear();
+    }
+
+    // Segments are the inverse of silence regions — cover [0,duration]
+    // minus the silence intervals.  We don't need absolute duration —
+    // the final segment ends "at EOF" which ffmpeg handles via -t
+    // omitted / trim filter with `end` set to a large number.
+    struct Segment {
+        double start = 0.0;
+        double end = 0.0;  // 0.0 = open (EOF)
+    };
+    std::vector<Segment> segments;
+    double cursor = 0.0;
+    for (const auto& reg : regions) {
+        if (reg.start_seconds - cursor > cfg.min_segment_seconds) {
+            segments.push_back({cursor, reg.start_seconds});
+        }
+        cursor = reg.end_seconds;
+    }
+    // Tail segment from last silence to EOF.
+    segments.push_back({cursor, 0.0});
+
+    if (segments.empty()) {
+        // Fallback: the whole file.
+        segments.push_back({0.0, 0.0});
+    }
+
+    auto hooks = get_hooks();
+
+    // 2) For each segment, slice via ffmpeg to a temp WAV and dispatch
+    // to transcribe_audio.  Emit `partial` on slice, `final` on text.
+    auto tmpdir = std::filesystem::temp_directory_path();
+    for (std::size_t idx = 0; idx < segments.size(); ++idx) {
+        const auto& seg = segments[idx];
+        auto seg_path = tmpdir /
+            ("hermes_voice_seg_" + std::to_string(::getpid()) + "_" +
+             std::to_string(idx) + ".wav");
+
+        std::vector<std::string> argv = {
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-i", cfg.audio_path,
+            "-ss", std::to_string(seg.start),
+        };
+        if (seg.end > 0.0 && seg.end > seg.start) {
+            argv.push_back("-to");
+            argv.push_back(std::to_string(seg.end));
+        }
+        argv.insert(argv.end(),
+                    {"-ar", "16000", "-ac", "1",
+                     "-c:a", "pcm_s16le", "-f", "wav",
+                     seg_path.string()});
+        auto slice = ffmpeg::run_ffmpeg(argv);
+        if (!slice.ok) {
+            push_event("error",
+                       "failed to slice segment " + std::to_string(idx) +
+                           ": " + slice.error);
+            continue;
+        }
+        push_event("partial", "segment " + std::to_string(idx) + " ready");
+
+        nlohmann::json args{{"audio_path", seg_path.string()}};
+        if (!cfg.language.empty()) args["language"] = cfg.language;
+        if (!cfg.model.empty()) args["model_size"] = cfg.model;
+        auto result_json =
+            ToolRegistry::instance().dispatch("transcribe_audio", args, {});
+        auto parsed = nlohmann::json::parse(result_json, nullptr, false);
+        std::error_code ec;
+        std::filesystem::remove(seg_path, ec);
+
+        if (parsed.is_discarded() || parsed.contains("error")) {
+            push_event("error",
+                       parsed.is_discarded()
+                           ? std::string("transcription returned invalid JSON")
+                           : parsed.value("error",
+                                          std::string("transcription failed")));
+            continue;
+        }
+        std::string text = parsed.value("text", std::string{});
+        std::string lang = parsed.value("language", std::string{});
+        if (text.empty()) continue;
+        push_event("final", text, lang);
+
+        // 3) Responder.
+        if (!hooks.responder) continue;
+        std::string response = hooks.responder(text, lang);
+        if (response.empty()) continue;
+        push_event("response", response, lang);
+
+        // 4) TTS + playback.
+        if (!cfg.speak_response) continue;
+        if (!hooks.speaker) continue;
+        std::string tts_err;
+        std::string audio_out = hooks.speaker(response, cfg.tts_voice, tts_err);
+        if (audio_out.empty()) {
+            push_event("error",
+                       "tts failed: " +
+                           (tts_err.empty() ? "no output" : tts_err));
+            continue;
+        }
+        push_event("speaking", audio_out);
+
+        if (cfg.playback_response) {
+            auto play = hooks.playback ? hooks.playback : &default_playback;
+            if (!play(audio_out)) {
+                push_event("error", "playback failed for " + audio_out);
+            }
+        }
+    }
+
+    push_event("done", "streaming pipeline finished");
+    out.ok = true;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Tool handler
 // ---------------------------------------------------------------------------
 
@@ -471,8 +673,41 @@ std::string handle_voice_mode(const nlohmann::json& args,
         return tool_result({{"events", events_to_json(events)}});
     }
 
-    return tool_error("unknown voice_mode action '" + action +
-                      "' — expected start|stop|status|record|transcribe|events");
+    if (action == "streaming" || action == "stream") {
+        StreamingPipelineConfig cfg;
+        cfg.audio_path = args.value("audio_path", std::string{});
+        // If not given, fall back to the last session recording.
+        if (cfg.audio_path.empty()) {
+            auto status = session.status();
+            cfg.audio_path = status.value("last_recording", std::string{});
+        }
+        if (cfg.audio_path.empty()) {
+            return tool_error(
+                "streaming mode requires audio_path or a prior recording");
+        }
+        cfg.language = args.value("language", std::string{});
+        cfg.model = args.value("model_size", std::string{});
+        if (cfg.model.empty()) cfg.model = args.value("model", std::string{});
+        cfg.tts_voice = args.value("tts_voice", std::string{});
+        cfg.tts_provider = args.value("tts_provider", std::string{});
+        cfg.silence_noise_db =
+            args.value("silence_noise_db", cfg.silence_noise_db);
+        cfg.silence_min_seconds =
+            args.value("silence_min_seconds", cfg.silence_min_seconds);
+        cfg.speak_response = args.value("speak_response", true);
+        cfg.playback_response = args.value("playback_response", false);
+
+        auto result = run_streaming_pipeline(cfg);
+        nlohmann::json out;
+        out["ok"] = result.ok;
+        out["events"] = events_to_json(result.events);
+        if (!result.error.empty()) out["error"] = result.error;
+        return tool_result(out);
+    }
+
+    return tool_error(
+        "unknown voice_mode action '" + action +
+        "' — expected start|stop|status|record|transcribe|events|streaming");
 }
 
 }  // namespace
@@ -497,11 +732,14 @@ void register_voice_tools() {
            {{"type", "string"},
             {"enum", nlohmann::json::array({"start", "stop", "status",
                                             "record", "transcribe",
-                                            "events"})},
+                                            "events", "streaming",
+                                            "stream"})},
             {"description",
              "start|stop session; record begins capture; transcribe "
              "finishes capture and returns text; events drains pending "
-             "partial/final/error events"}}},
+             "partial/final/response/speaking/done/error events; "
+             "streaming runs the full STT→LLM→TTS pipeline on an "
+             "audio_path (or the last recording)"}}},
           {"config",
            {{"type", "object"},
             {"description",

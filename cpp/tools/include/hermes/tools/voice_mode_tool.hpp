@@ -62,16 +62,76 @@ using RecorderFactory = std::function<std::unique_ptr<AudioRecorder>()>;
 // std::function to restore the default.
 void set_recorder_factory_for_testing(RecorderFactory factory);
 
-// Events emitted during a capture session.  The Python reference
-// implementation also emits `partial` events as audio streams in; our
-// CLI backends don't support streaming, so we only ever emit one
-// `final` event per transcription.
+// Events emitted during a capture session.  Possible kinds:
+//   "partial"  — interim transcript for the current segment (streaming)
+//   "final"    — finalised transcript for a segment
+//   "response" — LLM response text to a final transcript
+//   "speaking" — TTS started for a response
+//   "done"     — streaming session finished
+//   "error"    — something failed
 struct VoiceEvent {
-    std::string kind;          // "partial" | "final" | "error"
+    std::string kind;
     std::string text;
     std::string language;
     std::chrono::steady_clock::time_point ts;
 };
+
+// ---- Streaming pipeline injection hooks --------------------------------
+//
+// The streaming voice mode is a pipeline:
+//   audio file -> ffmpeg silence detect -> segments ->
+//     (each) transcribe_audio -> responder -> tts -> playback
+//
+// We expose the responder + speaker + playback via injectable
+// std::function hooks.  Tests set all three to simple stubs; production
+// wires them to the AIAgent + TTS tool + aplay/afplay/ffplay.
+
+// Called once per final transcript to get the agent's response.
+using VoiceResponder =
+    std::function<std::string(const std::string& transcript,
+                              const std::string& language)>;
+
+// Called once per response to synthesize audio.  Return the output
+// audio file path, or empty string on failure.
+using VoiceSpeaker =
+    std::function<std::string(const std::string& text,
+                              const std::string& voice,
+                              std::string& error)>;
+
+// Called once per synthesised audio file to play it back.  Return true
+// on success.
+using VoicePlayback =
+    std::function<bool(const std::string& audio_path)>;
+
+void set_voice_responder_for_testing(VoiceResponder responder);
+void set_voice_speaker_for_testing(VoiceSpeaker speaker);
+void set_voice_playback_for_testing(VoicePlayback playback);
+
+// Runs the full streaming pipeline synchronously against an already-
+// recorded audio file.  Used by the `mode=streaming` + `source=file`
+// code path (and directly from tests — the live mic + stdin-driven
+// streaming loop is not unit-testable).
+struct StreamingPipelineConfig {
+    std::string audio_path;
+    std::string language;
+    std::string model;        // STT model name
+    std::string tts_voice;
+    std::string tts_provider;
+    double silence_noise_db = -30.0;
+    double silence_min_seconds = 0.5;
+    double min_segment_seconds = 0.25;
+    bool speak_response = true;
+    bool playback_response = false;   // off by default outside of CLI
+};
+
+struct StreamingPipelineResult {
+    bool ok = false;
+    std::string error;
+    std::vector<VoiceEvent> events;
+};
+
+StreamingPipelineResult run_streaming_pipeline(
+    const StreamingPipelineConfig& cfg);
 
 // Thread-safe voice session state machine.  The session owns a single
 // AudioRecorder for its lifetime (recreated on reset()).
