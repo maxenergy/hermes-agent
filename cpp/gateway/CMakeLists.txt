@@ -18,6 +18,15 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# Boost.Beast (WebSocket) — required for Discord gateway + Slack Socket Mode.
+# Header-only; we pull in Boost::beast via find_package(Boost COMPONENTS system).
+find_package(Boost QUIET COMPONENTS system)
+if(Boost_FOUND)
+    message(STATUS "hermes::gateway — boost found (${Boost_VERSION}); WebSocket realtime enabled")
+else()
+    message(STATUS "hermes::gateway — boost NOT found; WebSocket realtime will fall back to mock only")
+endif()
+
 find_package(OpenSSL QUIET)
 if(NOT OpenSSL_FOUND)
     message(STATUS "hermes::gateway — OpenSSL NOT found; SHA256 hashing will fail at link time")
@@ -53,9 +62,12 @@ add_library(hermes_gateway STATIC
     src/sticker_cache.cpp
     src/restart.cpp
     platforms/telegram.cpp
+    platforms/websocket_transport.cpp
     platforms/discord.cpp
+    platforms/discord_gateway.cpp
     platforms/opus_codec.cpp
     platforms/slack.cpp
+    platforms/slack_socket_mode.cpp
     platforms/whatsapp.cpp
     platforms/signal.cpp
     platforms/matrix.cpp
@@ -100,6 +112,11 @@ target_link_libraries(hermes_gateway
 if(OpenSSL_FOUND)
     target_link_libraries(hermes_gateway PUBLIC OpenSSL::Crypto OpenSSL::SSL)
     target_compile_definitions(hermes_gateway PRIVATE HERMES_HAVE_OPENSSL=1)
+endif()
+
+if(Boost_FOUND)
+    target_link_libraries(hermes_gateway PUBLIC Boost::boost Boost::system)
+    target_compile_definitions(hermes_gateway PUBLIC HERMES_GATEWAY_HAS_BEAST=1)
 endif()
 
 if(OPUS_FOUND)
