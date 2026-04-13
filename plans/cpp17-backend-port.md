@@ -348,7 +348,7 @@
 - [x] `fork+exec` + `bash -c` + `poll()` I/O (2026-04-12, dc91ac71)
 - [x] env 过滤 (2026-04-12, dc91ac71)
 - [x] PTY 支持(forkpty,test_pty.cpp 覆盖) (2026-04-12, dc91ac71)
-- [ ] Windows(当前 `#ifdef _WIN32` → throw)
+- [x] Windows(ConPTY + WSL fallback;email IDLE Winsock2) (2026-04-13, 03ac9465, 99afa8cd)
 
 ### 7.3 DockerEnvironment
 - [x] `build_docker_args()`:--cap-drop=ALL / --no-new-privileges / --pids-limit (2026-04-12, dc91ac71)
@@ -420,8 +420,8 @@
 ### 8.3 Web 工具(`web_tools`)
 - [x] `web_search`:Exa API 后端(HttpTransport 注入) (2026-04-12, dcf1f2a8)
 - [x] `web_extract`:Firecrawl API 后端 (2026-04-12, dcf1f2a8)
-- [ ] 多后端切换(Parallel / Tavily)
-- [ ] 缓存的 API 客户端
+- [x] 多后端切换(Parallel / Tavily) (2026-04-13, 3a6c5ceb)
+- [x] 缓存的 API 客户端(TTL cache) (2026-04-13, 3a6c5ceb)
 
 ### 8.4 浏览器工具(BrowserBackend 抽象 + FakeBrowserBackend)
 - [x] `browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` (2026-04-12, 00d98010)
@@ -429,7 +429,7 @@
 - [x] `browser_get_images` / `browser_vision` / `browser_console` (2026-04-12, 00d98010)
 - [x] `BrowserBackend` 抽象接口 + `FakeBrowserBackend` (2026-04-12, 00d98010)
 - [x] CDP 实际驱动 Chromium 后端 (2026-04-12, 24476082)
-- [ ] CamoFox 隐身浏览器
+- [x] CamoFox 隐身浏览器 — `cpp/tools/src/browser_camofox.cpp` (2026-04-13, a2052008)
 
 ### 8.5 视觉工具
 - [x] `vision_analyze_tool`:URL 下载 + base64 + vision LLM (2026-04-12, dcf1f2a8)
@@ -438,7 +438,7 @@
 ### 8.6 代码执行
 - [x] `execute_code`:写临时文件 + `hermes_tools.py` 7 函数 stub + LocalEnvironment 执行 (2026-04-12, 764eedaa)
 - [x] 300s 超时,50KB stdout 截断 (2026-04-12, 764eedaa)
-- [ ] UDS RPC(当前用文件 + 子进程)
+- [ ] UDS RPC(当前用文件 + 子进程) *— deferred: subprocess 模式工作良好,UDS 优化非关键路径*
 
 ### 8.7 内存工具
 - [x] `memory`:add / read / replace / remove(backed by MemoryStore) (2026-04-12, 54162168)
@@ -456,26 +456,26 @@
 ### 8.10 跨平台消息工具
 - [x] `send_message`:通过 GatewayRunner 路由到所有 18 个适配器(`send_message_tool.cpp`) (2026-04-12, 29936e3c)
 - [x] action: send / list (2026-04-12, 29936e3c)
-- [ ] 文件附件支持
+- [x] 文件附件支持(attachment_path schema field) (2026-04-12, 29936e3c)
 - [x] target 格式:`platform:chat_id:thread_id`(`parse_target`) (2026-04-12, 29936e3c)
-- [ ] per-platform channel / contact 缓存
+- [x] per-platform channel / contact 缓存 — `cpp/gateway/src/channel_cache.cpp` (2026-04-13, 42296bda)
 
 ### 8.11 图像生成
 - [x] `image_generate`:OpenAI DALL-E API(HttpTransport 注入) (2026-04-12, dcf1f2a8)
-- [ ] Flux / Ideogram 后端
-- [ ] 缓存模型列表
+- [x] Flux / Ideogram 后端 (2026-04-13, 747824b6)
+- [x] 缓存模型列表 (2026-04-13, 747824b6)
 
 ### 8.12 TTS 工具
 - [x] `text_to_speech`:edge-tts CLI 路径实现 (2026-04-12, dcf1f2a8)
 - [x] ElevenLabs / OpenAI / MiniMax HTTP 后端 (2026-04-12, 29936e3c)
-- [ ] ffmpeg 编码
+- [ ] ffmpeg 编码 *— deferred: TTS 后端直接返回 mp3/wav,ffmpeg 后处理非必需*
 
 ### 8.13 转录工具
 - [x] `transcribe_audio`:文件校验 + 扩展名检查 + "install faster-whisper" stub (2026-04-12, 1b30417a)
 
 ### 8.14 语音模式
 - [x] `voice_mode`:VoiceSession 状态机(Inactive/Listening/Processing/Speaking) + start/stop/status (2026-04-12, 1b30417a)
-- [ ] STT + 流式 LLM + TTS 实际管线
+- [x] STT + 流式 LLM + TTS 实际管线(push-to-talk capture + transcribe pipeline + mock-backend 测试) (2026-04-13, 9aee1912, 68a835a9)
 
 ### 8.15 技能工具
 - [x] `skills_list`:扫描 `$HERMES_HOME/skills` 目录 (2026-04-12, 54162168)
@@ -507,7 +507,7 @@
 - [x] `McpClientManager`:load_config 解析 JSON(stdio/HTTP transport + sampling 配置) (2026-04-12, 764eedaa)
 - [x] `register_server_tools`:注册 stub 工具 (2026-04-12, 764eedaa)
 - [x] 实际 MCP 协议传输(stdio) (2026-04-12, c8116835)
-- [ ] 重连 / Sampling / 动态发现 / OAuth
+- [x] 重连 / Sampling / 动态发现 / OAuth — `mcp_oauth.cpp` + reconnect/sampling/discovery wiring + tests (2026-04-13, 7a970c1c, 6d010893, a2052008)
 
 ---
 
