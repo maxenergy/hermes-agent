@@ -6,6 +6,7 @@
 #include "hermes/auth/qwen_oauth.hpp"
 #include "hermes/cli/claw_migrate.hpp"
 #include "hermes/cli/hermes_cli.hpp"
+#include "hermes/cli/rl_commands.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/cron/jobs.hpp"
@@ -73,6 +74,7 @@ void print_global_help() {
               << "  webhook     Install/list/remove webhook endpoints (writes webhooks.json)\n"
               << "  runtime     Switch terminal backend (list | select <name>)\n"
               << "  memory      Configure memory backend (Honcho)\n"
+              << "  rl          RL training / eval CLI — rl train|eval|list-environments\n"
               << "\n"
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
@@ -1840,6 +1842,13 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "login") {
         return cmd_login(argc, argv);
+    }
+    if (sub == "rl") {
+        std::vector<std::string> rl_argv;
+        for (int i = 2; i < argc; ++i) {
+            rl_argv.emplace_back(argv[i]);
+        }
+        return hermes::cli::rl::dispatch_rl_command(rl_argv);
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";

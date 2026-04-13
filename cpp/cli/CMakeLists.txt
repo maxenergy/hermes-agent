@@ -42,6 +42,7 @@ add_library(hermes_cli_lib STATIC
     src/hook_discovery.cpp
     src/ftxui_editor.cpp
     src/curses_ui.cpp
+    src/rl_commands.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
@@ -80,6 +81,7 @@ target_link_libraries(hermes_cli_lib
         hermes::profile
         hermes::auth
         hermes::agent
+        hermes::batch
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::gateway
