@@ -188,3 +188,202 @@ TEST_F(ProcessRegistryTest, MarkExitedMovesToFinished) {
     EXPECT_EQ(reg.list_running().size(), 0u);
     EXPECT_EQ(reg.list_finished().size(), 1u);
 }
+
+// ---------------------------------------------------------------------------
+// spawn_local() tests — real fork/exec integration.
+// These tests run actual /bin/true, /bin/false, /bin/echo, /bin/sleep so they
+// require a POSIX environment.  Skipped automatically on Windows builds.
+// ---------------------------------------------------------------------------
+#ifndef _WIN32
+
+namespace {
+// Poll until `pred()` returns true or `timeout` elapses.  Returns the
+// result of the last call to `pred()`.
+template <typename Pred>
+bool wait_until(Pred pred, std::chrono::milliseconds timeout,
+                std::chrono::milliseconds step =
+                    std::chrono::milliseconds(20)) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(step);
+    }
+    return pred();
+}
+}  // namespace
+
+TEST_F(ProcessRegistryTest, SpawnLocalTrueExitsZero) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/true";
+    auto id = reg.spawn_local(opts);
+    ASSERT_FALSE(id.empty());
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    ASSERT_TRUE(s->exit_code.has_value());
+    EXPECT_EQ(*s->exit_code, 0);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalFalseExitsOne) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/false";
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    ASSERT_TRUE(s->exit_code.has_value());
+    EXPECT_EQ(*s->exit_code, 1);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalEchoCapturesStdout) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/echo hello-spawn-local";
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    EXPECT_EQ(*s->exit_code, 0);
+    EXPECT_NE(s->output_buffer.find("hello-spawn-local"), std::string::npos);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalSleepTimesOut) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/sleep 5";
+    opts.timeout = std::chrono::seconds(1);
+    auto start = std::chrono::steady_clock::now();
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(5000)));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    ASSERT_TRUE(s->exit_code.has_value());
+    EXPECT_EQ(*s->exit_code, 124);  // timeout sentinel
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(elapsed)
+                  .count(),
+              5);  // killed well before sleep would have finished
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalEnvVarsPassThrough) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/sh -c 'printf %s \"$HERMES_SPAWN_TEST\"'";
+    opts.env_vars = {{"HERMES_SPAWN_TEST", "marker-value-12345"}};
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    EXPECT_EQ(*s->exit_code, 0);
+    EXPECT_NE(s->output_buffer.find("marker-value-12345"),
+              std::string::npos);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalCwdIsHonored) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/sh -c pwd";
+    opts.cwd = dir_;  // the test's scratch directory
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    EXPECT_EQ(*s->exit_code, 0);
+    // pwd may resolve symlinks differently on macOS (/private/tmp vs /tmp);
+    // check for the last path component which stays stable.
+    auto leaf = dir_.filename().string();
+    EXPECT_NE(s->output_buffer.find(leaf), std::string::npos);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalKillViaRegistry) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/sleep 30";
+    auto id = reg.spawn_local(opts);
+
+    // Give the child a moment to actually be running.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto before = reg.get(id);
+    ASSERT_TRUE(before);
+    ASSERT_EQ(before->state, hermes::state::ProcessState::Running);
+
+    reg.kill(id);
+
+    // kill() itself does the SIGTERM + 2s wait + SIGKILL, so by the time
+    // it returns the process is gone.  But our waiter thread may still
+    // be mid-waitpid — that's fine, the session is already in finished.
+    auto s = reg.get(id);
+    ASSERT_TRUE(s);
+    EXPECT_EQ(s->state, hermes::state::ProcessState::Killed);
+}
+
+TEST_F(ProcessRegistryTest, SpawnLocalWatchPatternFires) {
+    ProcessRegistry reg(cp_);
+    hermes::state::SpawnOptions opts;
+    opts.command = "/bin/sh -c 'echo info; echo ERROR: boom; echo done'";
+    opts.watch_patterns = {"ERROR:"};
+    auto id = reg.spawn_local(opts);
+
+    ASSERT_TRUE(wait_until(
+        [&]() {
+            auto s = reg.get(id);
+            return s && s->state == hermes::state::ProcessState::Exited;
+        },
+        std::chrono::milliseconds(3000)));
+
+    auto notes = reg.drain_notifications();
+    bool hit = false;
+    for (const auto& n : notes) {
+        if (n.pattern == "ERROR:" &&
+            n.line.find("boom") != std::string::npos) {
+            hit = true;
+        }
+    }
+    EXPECT_TRUE(hit);
+}
+
+#endif  // !_WIN32
