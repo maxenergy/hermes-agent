@@ -42,6 +42,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_slack_subcommand_router.cpp
     test_channel_cache.cpp
     test_gateway_polish.cpp
+    test_status_introspection.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

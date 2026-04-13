@@ -13,6 +13,21 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# yaml-cpp is needed by hook_discovery.cpp.  hermes::config keeps yaml-cpp
+# PRIVATE, so we re-resolve it here.
+if(NOT TARGET yaml-cpp::yaml-cpp)
+    find_package(yaml-cpp CONFIG QUIET)
+    if(NOT yaml-cpp_FOUND)
+        FetchContent_Declare(
+            yaml-cpp
+            URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/0.8.0.tar.gz
+        )
+        set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(yaml-cpp)
+    endif()
+endif()
+
 # ----- Static library --------------------------------------------------------
 
 add_library(hermes_cli_lib STATIC
@@ -24,6 +39,7 @@ add_library(hermes_cli_lib STATIC
     src/hermes_cli.cpp
     src/main_entry.cpp
     src/claw_migrate.cpp
+    src/hook_discovery.cpp
 )
 
 target_include_directories(hermes_cli_lib
@@ -47,6 +63,7 @@ target_link_libraries(hermes_cli_lib
     PRIVATE
         hermes::gateway
         hermes_warnings
+        yaml-cpp::yaml-cpp
 )
 
 add_library(hermes::cli ALIAS hermes_cli_lib)
