@@ -1,0 +1,85 @@
+{
+  "name": "hermes-agent",
+  "displayName": "Hermes Agent",
+  "description": "Hermes Agent integration for VS Code via the Agent Client Protocol (ACP).",
+  "version": "0.1.0",
+  "publisher": "hermes-agent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NousResearch/hermes-agent"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "hermes",
+    "acp",
+    "agent",
+    "ai",
+    "llm"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hermes.start",
+        "title": "Hermes: Start Agent"
+      },
+      {
+        "command": "hermes.stop",
+        "title": "Hermes: Stop Agent"
+      },
+      {
+        "command": "hermes.authenticate",
+        "title": "Hermes: Authenticate"
+      }
+    ],
+    "configuration": {
+      "title": "Hermes",
+      "properties": {
+        "hermes.executable": {
+          "type": "string",
+          "default": "hermes",
+          "description": "Path to the `hermes` binary (must be on PATH or an absolute path)."
+        },
+        "hermes.acpArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["acp"],
+          "description": "Arguments passed to the hermes binary to start ACP mode."
+        },
+        "hermes.authMethod": {
+          "type": "string",
+          "enum": ["api-key", "oauth"],
+          "default": "api-key",
+          "description": "ACP authentication method to use on session start."
+        },
+        "hermes.apiKeyEnvVar": {
+          "type": "string",
+          "default": "ANTHROPIC_API_KEY",
+          "description": "Name of the environment variable holding the API key (used when authMethod=api-key)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {}
+}

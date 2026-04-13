@@ -1,0 +1,34 @@
+# Hermes Agent — Zed Agent Client Protocol integration.
+#
+# Drop this snippet into ~/.config/zed/settings.json under "agent_servers"
+# (Zed reads TOML-style agent configs from its settings — see the Zed
+# docs for the exact placement; this file is provided as a reference).
+#
+# Zed speaks ACP natively, so it only needs to know how to start the
+# hermes binary. Hermes handles initialize / authenticate / sessions.
+
+[agents.hermes]
+# Absolute path or `hermes` if the binary is on PATH.
+command = "hermes"
+args = ["acp"]
+
+# Environment forwarded into the child process. Zed substitutes ${env:FOO}
+# for the user's environment variable FOO. ANTHROPIC_API_KEY is what the
+# ACP adapter reads by default (see cpp/acp/src/acp_adapter.cpp :: probe_env_token).
+[agents.hermes.env]
+ANTHROPIC_API_KEY = "${env:ANTHROPIC_API_KEY}"
+OPENAI_API_KEY    = "${env:OPENAI_API_KEY}"
+OPENROUTER_API_KEY = "${env:OPENROUTER_API_KEY}"
+
+# Preferred auth method when Zed calls `authenticate`. Hermes advertises
+# `api-key` and `oauth`; pick whichever matches your workflow.
+[agents.hermes.auth]
+method = "api-key"
+
+# Capabilities Zed should expect from this agent. These mirror the JSON
+# returned by hermes' `capabilities` RPC.
+[agents.hermes.capabilities]
+chat         = true
+code_actions = true
+diagnostics  = true
+completions  = true

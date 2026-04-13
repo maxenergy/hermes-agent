@@ -1,0 +1,59 @@
+<!--
+  Hermes Agent — JetBrains plugin descriptor (scaffolding).
+
+  Not yet wired to a full IntelliJ platform build; this file ships as a
+  reference plugin.xml so that a later Gradle-based plugin can pick it up
+  verbatim.
+
+  TODO(cpp port):
+    - flesh out build.gradle.kts + settings.gradle.kts
+    - add tool window UI (HermesToolWindowFactory)
+    - wire HermesAgentService to project lifecycle
+    - support stream/notification messages from hermes acp
+-->
+<idea-plugin>
+  <id>com.hermes.agent</id>
+  <name>Hermes Agent</name>
+  <version>0.1.0</version>
+  <vendor url="https://github.com/NousResearch/hermes-agent">Nous Research</vendor>
+
+  <description><![CDATA[
+    Integrate Hermes Agent with JetBrains IDEs via the Agent Client
+    Protocol (ACP). Spawns <code>hermes acp</code> as a child process and
+    exposes chat / code-actions / diagnostics inside a tool window.
+  ]]></description>
+
+  <idea-version since-build="232" until-build="252.*"/>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <applicationService
+        serviceImplementation="com.hermes.agent.HermesAgentService"/>
+
+    <toolWindow
+        id="Hermes"
+        secondary="true"
+        anchor="right"
+        factoryClass="com.hermes.agent.HermesToolWindowFactory"/>
+
+    <notificationGroup
+        id="Hermes"
+        displayType="BALLOON"/>
+  </extensions>
+
+  <actions>
+    <action id="Hermes.Start"
+            class="com.hermes.agent.StartAction"
+            text="Start Hermes Agent"
+            description="Spawn the hermes acp child process and authenticate.">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+    <action id="Hermes.Stop"
+            class="com.hermes.agent.StopAction"
+            text="Stop Hermes Agent"
+            description="Kill the hermes acp child process.">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>
