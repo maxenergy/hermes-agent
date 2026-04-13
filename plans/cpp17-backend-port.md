@@ -131,7 +131,7 @@
 - [x] `feed_output` + `drain_notifications` 通知队列 (2026-04-12, 4318321b)
 - [x] JSON checkpoint 文件 + restore + 孤儿检测 (2026-04-12, 4318321b)
 - [x] `spawn_local()` 实际 POSIX fork/exec 接入(cwd/env/timeout/streaming/pgid kill)
-- [ ] `spawn_via_env()` 远程环境转发
+- [x] `spawn_via_env()` 远程环境转发 (2026-04-13, 41e00306)
 
 ### 2.3 内存与轨迹存储
 - [x] `memory/MEMORY.md` + `USER.md` 持久化,`§` 段落分隔 (2026-04-12, 4318321b)
@@ -354,17 +354,17 @@
 - [x] `build_docker_args()`:--cap-drop=ALL / --no-new-privileges / --pids-limit (2026-04-12, dc91ac71)
 - [x] --cpus / --memory / tmpfs / bind mounts (2026-04-12, dc91ac71)
 - [x] env 过滤 (2026-04-12, dc91ac71)
-- [ ] 镜像 pull + tag 解析
-- [ ] volume 自动清理
+- [x] 镜像 pull + tag 解析 (2026-04-13, eb825b94)
+- [x] volume 自动清理 (2026-04-13, eb825b94)
 
 ### 7.4 SSHEnvironment
 - [x] `build_ssh_argv()`:ControlMaster + ControlPersist 10m + socket path (2026-04-12, dc91ac71)
 - [x] `MarkerCwdTracker` 远程 CWD (2026-04-12, dc91ac71)
 - [x] cleanup = `ssh -O exit` (2026-04-12, dc91ac71)
 - [x] `FileSyncManager`:mtime+size cache + `quoted_rm_command` 安全删除 (2026-04-12, dc91ac71)
-- [ ] dotfile 上传 + 同步(完整路径)
-- [ ] CWD in-band marker 解析
-- [ ] SCP 文件同步
+- [x] dotfile 上传 + 同步(完整路径) (2026-04-13, 41e00306)
+- [x] CWD in-band marker 解析 (2026-04-13, b6b059bc)
+- [x] SCP 文件同步 (2026-04-13, 41e00306)
 
 ### 7.5 ModalEnvironment(原生 SDK 等价)
 - [x] Modal Sandbox.create + Sandbox.exec 的 HTTP REST 调用(C++ 没有 Modal SDK,需自行实现 REST 客户端) (2026-04-13, batch12)
@@ -396,7 +396,7 @@
 ### 7.9 FileSyncManager
 - [x] mtime + size 变更跟踪 (2026-04-12, dc91ac71)
 - [x] 删除传播(`quoted_rm_command` 安全引用) (2026-04-12, dc91ac71)
-- [ ] dotfile 上传到远程(完整路径同步)
+- [x] dotfile 上传到远程(完整路径同步) (2026-04-13, 41e00306)
 
 ---
 
