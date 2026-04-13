@@ -1,5 +1,6 @@
 #include "hermes/cli/main_entry.hpp"
 
+#include "hermes/cli/doctor.hpp"
 #include "hermes/auth/copilot_oauth.hpp"
 #include "hermes/auth/credentials.hpp"
 #include "hermes/auth/nous_subscription.hpp"
@@ -79,33 +80,9 @@ void print_global_help() {
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
 
-// ANSI color helpers.
-const char* green() { return "\033[32m"; }
-const char* red()   { return "\033[31m"; }
+// ANSI color helpers (used by cmd_tools; doctor renders its own colors).
 const char* dim()   { return "\033[2m"; }
 const char* reset() { return "\033[0m"; }
-
-std::string pass_label() { return std::string(green()) + "[PASS]" + reset(); }
-std::string fail_label() { return std::string(red()) + "[FAIL]" + reset(); }
-
-bool check_file_exists(const fs::path& path) {
-    return fs::exists(path);
-}
-
-bool check_which(const std::string& cmd) {
-    std::string full = "which " + cmd + " > /dev/null 2>&1";
-    return std::system(full.c_str()) == 0;
-}
-
-bool check_sqlite_fts5() {
-    // We have SQLite linked (build dependency); FTS5 is available if the
-    // library was compiled with it.  A quick probe: try to open an in-memory
-    // DB and create a virtual table.  For simplicity, we shell out to sqlite3.
-    int rc = std::system(
-        "sqlite3 ':memory:' 'CREATE VIRTUAL TABLE t USING fts5(a);' "
-        "2>/dev/null");
-    return rc == 0;
-}
 
 }  // namespace
 
@@ -115,46 +92,17 @@ int cmd_version() {
 }
 
 int cmd_doctor() {
-    std::cout << "Running diagnostics...\n\n";
-
-    auto home = hermes::core::path::get_hermes_home();
-    auto config_file = home / "config.yaml";
-
-    struct Check {
-        std::string label;
-        bool passed;
-    };
-
-    std::vector<Check> checks;
-
-    // 1. Config file
-    checks.push_back({"Config file (" + config_file.string() + ")",
-                       check_file_exists(config_file)});
-
-    // 2. SQLite FTS5
-    checks.push_back({"SQLite FTS5 extension", check_sqlite_fts5()});
-
-    // 3. curl available
-    checks.push_back({"curl available", check_which("curl")});
-
-    // 4. Docker available
-    checks.push_back({"Docker available", check_which("docker")});
-
-    // 5. SSH available
-    checks.push_back({"SSH available", check_which("ssh")});
-
-    // Print results as a table.
-    int passed = 0;
-    int failed = 0;
-    for (const auto& c : checks) {
-        std::string status = c.passed ? pass_label() : fail_label();
-        std::cout << "  " << status << "  " << c.label << "\n";
-        if (c.passed) ++passed; else ++failed;
-    }
-
-    std::cout << "\n" << passed << " passed, " << failed << " failed, "
-              << checks.size() << " total.\n";
-    return (failed > 0) ? 1 : 0;
+    // Legacy-compat entry point — runs the full diagnostic suite from
+    // hermes::cli::doctor with default options.
+    doctor::Options opts;
+#ifdef _WIN32
+    opts.color = _isatty(_fileno(stdout)) != 0;
+#else
+    opts.color = ::isatty(fileno(stdout)) != 0;
+#endif
+    auto report = doctor::run_all(opts);
+    doctor::render(report, opts);
+    return report.exit_code();
 }
 
 int cmd_status() {
@@ -1774,7 +1722,7 @@ int main_entry(int argc, char* argv[]) {
         return 0;
     }
     if (sub == "doctor") {
-        return cmd_doctor();
+        return doctor::run(argc, argv);
     }
     if (sub == "status") {
         return cmd_status();

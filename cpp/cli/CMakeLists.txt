@@ -38,6 +38,7 @@ add_library(hermes_cli_lib STATIC
     src/colors.cpp
     src/hermes_cli.cpp
     src/main_entry.cpp
+    src/doctor.cpp
     src/claw_migrate.cpp
     src/hook_discovery.cpp
     src/ftxui_editor.cpp
@@ -72,6 +73,8 @@ target_include_directories(hermes_cli_lib
 
 target_compile_features(hermes_cli_lib PUBLIC cxx_std_17)
 
+find_package(SQLite3 REQUIRED)
+
 target_link_libraries(hermes_cli_lib
     PUBLIC
         hermes::core
@@ -87,8 +90,10 @@ target_link_libraries(hermes_cli_lib
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::gateway
+        hermes::state
         hermes_warnings
         yaml-cpp::yaml-cpp
+        SQLite::SQLite3
 )
 
 add_library(hermes::cli ALIAS hermes_cli_lib)
