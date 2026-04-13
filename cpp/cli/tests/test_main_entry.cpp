@@ -22,7 +22,7 @@ std::string capture_stdout(Fn fn) {
 TEST(MainEntry, VersionPrintsString) {
     auto out = capture_stdout([] { cmd_version(); });
     EXPECT_NE(out.find("hermes-cpp"), std::string::npos);
-    EXPECT_NE(out.find("0.0.1"), std::string::npos);
+    EXPECT_NE(out.find("0.1.0"), std::string::npos);
 }
 
 TEST(MainEntry, DoctorDoesNotCrash) {

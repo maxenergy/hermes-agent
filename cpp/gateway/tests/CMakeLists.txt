@@ -34,6 +34,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_slack_threads.cpp
     test_discord_threads.cpp
     test_discord_voice.cpp
+    test_matrix_e2ee.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

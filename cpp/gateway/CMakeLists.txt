@@ -59,6 +59,7 @@ add_library(hermes_gateway STATIC
     platforms/whatsapp.cpp
     platforms/signal.cpp
     platforms/matrix.cpp
+    platforms/olm_session.cpp
     platforms/mattermost.cpp
     platforms/email.cpp
     platforms/sms.cpp
@@ -108,6 +109,19 @@ if(OPUS_FOUND)
     message(STATUS "hermes/gateway: opus found — Discord voice enabled")
 else()
     message(STATUS "hermes/gateway: opus NOT found — Discord voice disabled")
+endif()
+
+# ----- libolm (optional) — Matrix E2EE ----------------------------------
+find_path(OLM_INCLUDE_DIR olm/olm.h)
+find_library(OLM_LIBRARY olm)
+if(OLM_INCLUDE_DIR AND OLM_LIBRARY)
+    set(OLM_FOUND TRUE)
+    target_compile_definitions(hermes_gateway PUBLIC HERMES_GATEWAY_HAS_OLM)
+    target_include_directories(hermes_gateway PRIVATE ${OLM_INCLUDE_DIR})
+    target_link_libraries(hermes_gateway PRIVATE ${OLM_LIBRARY})
+    message(STATUS "hermes/gateway: olm found — Matrix E2EE enabled")
+else()
+    message(STATUS "hermes/gateway: olm NOT found — Matrix E2EE disabled (install libolm-dev to enable)")
 endif()
 
 add_library(hermes::gateway ALIAS hermes_gateway)

@@ -3,6 +3,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <system_error>
+
+#include <hermes/core/path.hpp>
+
 namespace hermes::gateway::platforms {
 
 MatrixAdapter::MatrixAdapter(Config cfg) : cfg_(std::move(cfg)) {}
@@ -13,6 +20,13 @@ MatrixAdapter::MatrixAdapter(Config cfg, hermes::llm::HttpTransport* transport)
 hermes::llm::HttpTransport* MatrixAdapter::get_transport() {
     if (transport_) return transport_;
     return hermes::llm::get_default_transport();
+}
+
+std::string MatrixAdapter::olm_pickle_path() const {
+    std::error_code ec;
+    auto dir = hermes::core::path::get_hermes_home() / "matrix";
+    std::filesystem::create_directories(dir, ec);
+    return (dir / "olm_account.pickle").string();
 }
 
 bool MatrixAdapter::connect() {
@@ -26,6 +40,8 @@ bool MatrixAdapter::connect() {
     // If we have an access_token, use it directly.
     if (!cfg_.access_token.empty()) {
         access_token_ = cfg_.access_token;
+        // Best-effort E2EE setup — failures are non-fatal.
+        (void)setup_e2ee();
         return true;
     }
 
@@ -46,6 +62,10 @@ bool MatrixAdapter::connect() {
         auto body = nlohmann::json::parse(resp.body);
         if (!body.contains("access_token")) return false;
         access_token_ = body["access_token"].get<std::string>();
+        if (body.contains("device_id") && cfg_.device_id.empty()) {
+            cfg_.device_id = body["device_id"].get<std::string>();
+        }
+        (void)setup_e2ee();
         return true;
     } catch (...) {
         return false;
@@ -105,6 +125,107 @@ void MatrixAdapter::send_typing(const std::string& chat_id) {
     } catch (...) {
         // Best-effort.
     }
+}
+
+// -----------------------------------------------------------------------
+// E2EE
+// -----------------------------------------------------------------------
+
+bool MatrixAdapter::setup_e2ee() {
+#ifndef HERMES_GATEWAY_HAS_OLM
+    // Compile-time opt-in: no-op when libolm is not available.
+    return true;
+#else
+    if (!olm_account_.available()) return true;
+
+    // Try to load an existing pickled account; if not present, keep the
+    // freshly-generated one.
+    std::string path = olm_pickle_path();
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+        std::stringstream ss;
+        ss << in.rdbuf();
+        auto pickled = ss.str();
+        if (!pickled.empty()) {
+            (void)olm_account_.unpickle(pickled, cfg_.pickle_passphrase);
+        }
+    } else {
+        // Persist the freshly-generated account.
+        auto pickled = olm_account_.pickle(cfg_.pickle_passphrase);
+        if (!pickled.empty()) {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (out) out.write(pickled.data(), static_cast<std::streamsize>(pickled.size()));
+        }
+    }
+
+    // Generate some one-time keys and upload identity + device keys. We
+    // best-effort POST to /keys/upload; failure does not break the adapter.
+    (void)olm_account_.generate_one_time_keys(50);
+
+    auto* transport = get_transport();
+    if (transport && !access_token_.empty()) {
+        try {
+            nlohmann::json payload = {
+                {"device_keys", nlohmann::json::parse(
+                     olm_account_.identity_keys_json().empty()
+                         ? std::string("{}")
+                         : olm_account_.identity_keys_json())},
+                {"one_time_keys", nlohmann::json::parse(
+                     olm_account_.one_time_keys_json().empty()
+                         ? std::string("{}")
+                         : olm_account_.one_time_keys_json())}
+            };
+            auto resp = transport->post_json(
+                cfg_.homeserver + "/_matrix/client/r0/keys/upload",
+                {{"Authorization", "Bearer " + access_token_},
+                 {"Content-Type", "application/json"}},
+                payload.dump());
+            if (resp.status_code >= 200 && resp.status_code < 300) {
+                olm_account_.mark_keys_as_published();
+            }
+        } catch (...) {
+            // Best-effort.
+        }
+    }
+    return true;
+#endif
+}
+
+bool MatrixAdapter::encrypt_room_message(const std::string& room_id,
+                                          const std::string& plaintext,
+                                          std::string& out_ciphertext) {
+#ifndef HERMES_GATEWAY_HAS_OLM
+    (void)room_id;
+    out_ciphertext = plaintext;
+    return true;
+#else
+    auto it = megolm_out_.find(room_id);
+    if (it == megolm_out_.end() || !it->second.available()) {
+        // No session yet — fall back to plaintext.
+        out_ciphertext = plaintext;
+        return true;
+    }
+    auto ct = it->second.encrypt(plaintext);
+    if (ct.empty()) return false;
+    out_ciphertext = std::move(ct);
+    return true;
+#endif
+}
+
+std::optional<std::string> MatrixAdapter::decrypt_room_message(
+    const std::string& room_id, const std::string& ciphertext) {
+#ifndef HERMES_GATEWAY_HAS_OLM
+    (void)room_id;
+    return ciphertext;
+#else
+    auto room_it = megolm_in_.find(room_id);
+    if (room_it == megolm_in_.end()) return ciphertext;  // no session → pass-through
+    for (auto& [sid, session] : room_it->second) {
+        auto pt = session.decrypt(ciphertext);
+        if (pt.has_value()) return pt;
+    }
+    return std::nullopt;
+#endif
 }
 
 }  // namespace hermes::gateway::platforms
