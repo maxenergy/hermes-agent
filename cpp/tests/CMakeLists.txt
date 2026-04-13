@@ -79,3 +79,6 @@ target_link_libraries(hermes_benchmarks
 gtest_discover_tests(hermes_benchmarks
     DISCOVERY_MODE PRE_TEST
 )
+
+# --- Joint / end-to-end integration tests --------------------------------
+add_subdirectory(joint)
