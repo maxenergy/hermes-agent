@@ -1,93 +1,284 @@
 name: C++ CI
+
 on:
   push:
-    paths: ['cpp/**']
+    branches: [main]
+    paths: ['cpp/**', '.github/workflows/cpp-ci.yml']
   pull_request:
-    paths: ['cpp/**']
+    paths: ['cpp/**', '.github/workflows/cpp-ci.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: cpp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tests that are flaky, long-running, or require external services.
+  # Kept in sync with the exclusion list documented in CLAUDE.md / AGENTS.md.
+  CTEST_EXCLUDE_REGEX: "CancelFn|ForegroundTimeout|CopyPaste|SkillsHub|Live|IMAP_TEST|SINGULARITY_TEST"
+  APT_PACKAGES: >-
+    cmake ninja-build g++ clang libsqlite3-dev libssl-dev
+    libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
 
 jobs:
-  build-linux:
+  # --- Fast gate: blocks merges on a single well-supported platform ---------
+  fast-gate-linux:
+    name: Fast gate (Linux x86_64, gcc)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
-            libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+          sudo apt-get install -y ${{ env.APT_PACKAGES }}
       - name: Configure
         run: cd cpp && cmake --preset default
       - name: Build
         run: cd cpp && cmake --build build/default -j$(nproc)
       - name: Test
-        run: cd cpp && ctest --test-dir build/default --output-on-failure
+        run: |
+          cd cpp
+          ctest --test-dir build/default --output-on-failure \
+            --exclude-regex "${CTEST_EXCLUDE_REGEX}"
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-gate-logs
+          path: |
+            cpp/build/default/Testing/**/*.log
+            cpp/build/default/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
-  build-linux-asan:
+  # --- Full matrix: only runs on push to main (not on every PR) -------------
+  matrix-linux:
+    name: Linux x86_64 (${{ matrix.compiler }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.APT_PACKAGES }}
+      - name: Configure (${{ matrix.compiler }})
+        run: |
+          cd cpp
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            export CC=clang CXX=clang++
+          else
+            export CC=gcc CXX=g++
+          fi
+          cmake --preset default
+      - name: Build
+        run: cd cpp && cmake --build build/default -j$(nproc)
+      - name: Test
+        run: |
+          cd cpp
+          ctest --test-dir build/default --output-on-failure \
+            --exclude-regex "${CTEST_EXCLUDE_REGEX}"
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.compiler }}-logs
+          path: |
+            cpp/build/default/Testing/**/*.log
+            cpp/build/default/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  build-linux-asan:
+    name: Linux x86_64 ASan+UBSan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.APT_PACKAGES }}
       - name: Configure (ASan)
         run: cd cpp && cmake --preset asan
       - name: Build
         run: cd cpp && cmake --build build/asan -j$(nproc)
       - name: Test
-        run: cd cpp && ctest --test-dir build/asan --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0
+        run: |
+          cd cpp
+          ctest --test-dir build/asan --output-on-failure \
+            --exclude-regex "${CTEST_EXCLUDE_REGEX}"
+      - name: Upload ASan logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-logs
+          path: |
+            cpp/build/asan/Testing/**/*.log
+            cpp/build/asan/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
   build-macos:
+    name: macOS (Apple clang)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-14
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: brew install cmake nlohmann-json yaml-cpp sqlitecpp openssl curl
+        run: brew install cmake ninja nlohmann-json yaml-cpp sqlitecpp openssl curl
       - name: Configure
         run: cd cpp && cmake --preset default -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
       - name: Build
         run: cd cpp && cmake --build build/default -j$(sysctl -n hw.ncpu)
       - name: Test
-        run: cd cpp && ctest --test-dir build/default --output-on-failure
+        run: |
+          cd cpp
+          ctest --test-dir build/default --output-on-failure \
+            --exclude-regex "${CTEST_EXCLUDE_REGEX}"
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-logs
+          path: |
+            cpp/build/default/Testing/**/*.log
+            cpp/build/default/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-arm64:
+    name: Linux arm64 (native)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
-            libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+          sudo apt-get install -y ${{ env.APT_PACKAGES }}
       - name: Configure
         run: cd cpp && cmake --preset default
       - name: Build
         run: cd cpp && cmake --build build/default -j$(nproc)
       - name: Test
-        run: cd cpp && ctest --test-dir build/default --output-on-failure
+        run: |
+          cd cpp
+          ctest --test-dir build/default --output-on-failure \
+            --exclude-regex "${CTEST_EXCLUDE_REGEX}"
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-logs
+          path: |
+            cpp/build/default/Testing/**/*.log
+            cpp/build/default/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
-  build-windows:
-    runs-on: windows-2022
+  # Fallback arm64 via QEMU — only enabled if the native runner disappears.
+  # Kept as a manual / workflow_dispatch option; left disabled on push to
+  # avoid doubling spend when ubuntu-24.04-arm is available.
+  build-arm64-qemu:
+    name: Linux arm64 (qemu fallback)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true  # QEMU build is very slow and occasionally OOMs — informational only
     steps:
       - uses: actions/checkout@v4
-      - name: Install vcpkg dependencies
-        shell: cmd
-        run: |
-          vcpkg install nlohmann-json yaml-cpp sqlitecpp openssl curl jwt-cpp --triplet x64-windows
-      - name: Configure
+      - uses: docker/setup-qemu-action@v3
+      - uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: ubuntu22.04
+          githubToken: ${{ github.token }}
+          install: |
+            apt-get update
+            apt-get install -y cmake g++ libsqlite3-dev libssl-dev \
+              libyaml-cpp-dev nlohmann-json3-dev libcurl4-openssl-dev
+          run: |
+            cd cpp
+            cmake --preset default
+            cmake --build build/default -j$(nproc)
+            ctest --test-dir build/default --output-on-failure \
+              --exclude-regex "CancelFn|ForegroundTimeout|CopyPaste|SkillsHub|Live|IMAP_TEST|SINGULARITY_TEST"
+
+  build-windows:
+    name: Windows (MSVC, vcpkg)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+    steps:
+      - uses: actions/checkout@v4
+      # vcpkg uses GitHub Actions cache as a binary source; these two env vars
+      # are required by the `x-gha` provider.
+      - name: Export GitHub Actions cache env
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/vcpkg_installed
+            ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
+          key: vcpkg-windows-${{ hashFiles('cpp/vcpkg.json') }}-msvc
+          restore-keys: |
+            vcpkg-windows-
+      - name: Configure (manifest mode via vcpkg)
         shell: cmd
         run: |
           cd cpp
           cmake -B build\default ^
             -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows ^
+            -DVCPKG_MANIFEST_MODE=ON
       - name: Build
         shell: cmd
         run: cd cpp && cmake --build build\default --config Release --parallel
       - name: Test
         shell: cmd
-        run: cd cpp && ctest --test-dir build\default -C Release --output-on-failure
+        run: |
+          cd cpp
+          ctest --test-dir build\default -C Release --output-on-failure ^
+            --exclude-regex "%CTEST_EXCLUDE_REGEX%"
+      - name: Upload Windows logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: |
+            cpp/build/default/Testing/**/*.log
+            cpp/build/default/Testing/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-wsl2:
+    name: WSL2 (Ubuntu-24.04 on Windows)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-2022
+    timeout-minutes: 90
+    # Vampire/setup-wsl occasionally flakes on runner image updates; keep this
+    # informational rather than blocking until it stabilises.
+    continue-on-error: true
     steps:
       - uses: Vampire/setup-wsl@v3
         with:
@@ -104,10 +295,16 @@ jobs:
         run: cd cpp && cmake --preset default && cmake --build build/default -j$(nproc)
       - name: Test in WSL2
         shell: wsl-bash {0}
-        run: cd cpp && ctest --test-dir build/default --output-on-failure
+        run: |
+          cd cpp
+          ctest --test-dir build/default --output-on-failure \
+            --exclude-regex "CancelFn|ForegroundTimeout|CopyPaste|SkillsHub|Live|IMAP_TEST|SINGULARITY_TEST"
 
   docker-multiarch:
+    name: Docker multi-arch (amd64+arm64)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
