@@ -4,6 +4,7 @@
 #include "hermes/plugins/plugin.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -30,6 +31,16 @@ public:
     bool load(const std::string& name);
     bool unload(const std::string& name);
 
+    /// Callback invoked once after any batch of plugins finishes registering
+    /// (end of `discover()`, end of a successful `load()`, and after
+    /// `unload()` completes).  Intended to wire into
+    /// `hermes::cli::rebuild_lookups()` so downstream command / tool
+    /// lookup caches are refreshed in a single place.  No-op if unset.
+    using RebuildLookupsFn = std::function<void()>;
+    void set_rebuild_lookups_cb(RebuildLookupsFn cb) {
+        rebuild_lookups_cb_ = std::move(cb);
+    }
+
     /// Enable / disable (logical toggle — does not load/unload).
     void enable(const std::string& name);
     void disable(const std::string& name);
@@ -48,6 +59,14 @@ private:
     };
 
     std::map<std::string, LoadedPlugin> plugins_;
+
+    RebuildLookupsFn rebuild_lookups_cb_;
+
+    /// Fire the registered rebuild callback, if any.  Safe to call when
+    /// no callback has been set.
+    void fire_rebuild_lookups() {
+        if (rebuild_lookups_cb_) rebuild_lookups_cb_();
+    }
 
     /// Attempt to dlopen the library at @p path and extract the factory.
     /// Returns nullptr on failure.

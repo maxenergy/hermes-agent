@@ -31,6 +31,13 @@ public:
 
     /// Register hooks (placeholder — pass an opaque pointer or registry later).
     virtual void register_hooks(/* hermes::gateway::HookRegistry& hooks */) {}
+
+    /// Register plugin-contributed slash commands via
+    /// `hermes::cli::register_plugin_command()`.  Called by the
+    /// `PluginManager` immediately after `on_load()`; the manager then
+    /// invokes `hermes::cli::rebuild_lookups()` to refresh derived views
+    /// (COMMANDS flat map, GATEWAY_KNOWN_COMMANDS, etc.).
+    virtual void register_commands() {}
 };
 
 // Factory function type aliases for clarity.

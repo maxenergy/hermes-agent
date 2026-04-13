@@ -17,12 +17,14 @@ include(GoogleTest)
 
 set(HERMES_PLUGINS_TEST_SOURCES
     test_plugin_manager.cpp
+    test_rebuild_lookups.cpp
 )
 
 add_executable(hermes_plugins_tests ${HERMES_PLUGINS_TEST_SOURCES})
 target_link_libraries(hermes_plugins_tests
     PRIVATE
         hermes::plugins
+        hermes::cli
         hermes::core
         GTest::gtest_main
         hermes_warnings

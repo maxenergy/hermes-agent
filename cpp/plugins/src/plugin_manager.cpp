@@ -69,6 +69,7 @@ void PluginManager::discover() {
 
     const std::string ext = lib_extension();
 
+    bool any_loaded = false;
     for (const auto& entry : std::filesystem::directory_iterator(dir_)) {
         if (!entry.is_regular_file()) continue;
         if (entry.path().extension().string() != ext) continue;
@@ -78,6 +79,7 @@ void PluginManager::discover() {
         if (!inst) continue;
 
         inst->on_load();
+        inst->register_commands();
 
         LoadedPlugin lp;
         lp.info.name    = inst->name();
@@ -88,7 +90,11 @@ void PluginManager::discover() {
         lp.instance     = inst;
 
         plugins_[lp.info.name] = lp;
+        any_loaded = true;
     }
+
+    // Rebuild lookup caches once for the whole batch.
+    if (any_loaded) fire_rebuild_lookups();
 }
 
 bool PluginManager::load(const std::string& name) {
@@ -104,6 +110,7 @@ bool PluginManager::load(const std::string& name) {
     if (!inst) return false;
 
     inst->on_load();
+    inst->register_commands();
 
     LoadedPlugin lp;
     lp.info.name    = inst->name();
@@ -114,6 +121,7 @@ bool PluginManager::load(const std::string& name) {
     lp.instance     = inst;
 
     plugins_[name] = lp;
+    fire_rebuild_lookups();
     return true;
 }
 
@@ -142,6 +150,7 @@ bool PluginManager::unload(const std::string& name) {
     }
 
     plugins_.erase(it);
+    fire_rebuild_lookups();
     return true;
 }
 

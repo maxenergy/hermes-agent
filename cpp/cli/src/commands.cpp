@@ -1,8 +1,80 @@
 #include "hermes/cli/commands.hpp"
 
 #include <algorithm>
+#include <mutex>
 
 namespace hermes::cli {
+
+// ---------------------------------------------------------------------
+// Plugin command registry + derived lookup caches.
+//
+// The static `command_registry()` stays immutable; plugin contributions
+// live here and are serialised under `g_plugins_mu`.  Cached derived
+// views (flat map, by-category, gateway known set) are rebuilt by
+// `rebuild_lookups()` whenever the plugin list mutates.
+// ---------------------------------------------------------------------
+
+namespace {
+
+std::mutex& plugins_mu() {
+    static std::mutex m;
+    return m;
+}
+
+std::vector<CommandDef>& plugin_commands_storage() {
+    static std::vector<CommandDef> v;
+    return v;
+}
+
+struct DerivedCaches {
+    std::map<std::string, CommandDef> flat;
+    std::map<std::string, std::vector<CommandDef>> by_category;
+    std::unordered_set<std::string> gateway_known;
+    bool primed = false;
+};
+
+DerivedCaches& caches() {
+    static DerivedCaches c;
+    return c;
+}
+
+// Walk the baseline + plugin lists; populate `DerivedCaches`.  Caller
+// must hold `plugins_mu()`.
+void rebuild_caches_locked() {
+    DerivedCaches fresh;
+    auto visit = [&](const CommandDef& cmd) {
+        fresh.flat[cmd.name] = cmd;
+        for (const auto& alias : cmd.aliases) {
+            fresh.flat[alias] = cmd;
+        }
+        fresh.by_category[cmd.category].push_back(cmd);
+        if (!cmd.cli_only) {
+            fresh.gateway_known.insert(cmd.name);
+            for (const auto& alias : cmd.aliases) {
+                fresh.gateway_known.insert(alias);
+            }
+        }
+    };
+    for (const auto& cmd : command_registry()) {
+        visit(cmd);
+    }
+    for (const auto& cmd : plugin_commands_storage()) {
+        visit(cmd);
+    }
+    fresh.primed = true;
+    caches() = std::move(fresh);
+}
+
+// Ensure caches are primed the first time they are read.  Cheap fast
+// path once populated.
+void ensure_primed() {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    if (!caches().primed) {
+        rebuild_caches_locked();
+    }
+}
+
+}  // namespace
 
 namespace {
 
@@ -78,57 +150,133 @@ std::optional<CommandDef> resolve_command(std::string_view name) {
             if (alias == name) return cmd;
         }
     }
+    // Also search plugin-contributed commands.
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for (const auto& cmd : plugin_commands_storage()) {
+        if (cmd.name == name) return cmd;
+        for (const auto& alias : cmd.aliases) {
+            if (alias == name) return cmd;
+        }
+    }
     return std::nullopt;
 }
 
+// ---------------------------------------------------------------------
+// Plugin command registration API.
+// ---------------------------------------------------------------------
+
+bool register_plugin_command(CommandDef cmd) {
+    if (cmd.name.empty()) return false;
+
+    // Reject shadowing a baseline command (by canonical name).
+    for (const auto& existing : command_registry()) {
+        if (existing.name == cmd.name) return false;
+    }
+
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for (const auto& existing : plugin_commands_storage()) {
+        if (existing.name == cmd.name) return false;
+    }
+    plugin_commands_storage().push_back(std::move(cmd));
+    rebuild_caches_locked();
+    return true;
+}
+
+std::size_t unregister_plugin_command(std::string_view name) {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    auto& store = plugin_commands_storage();
+    const auto before = store.size();
+    store.erase(std::remove_if(store.begin(), store.end(),
+                               [&](const CommandDef& c) { return c.name == name; }),
+                store.end());
+    const auto removed = before - store.size();
+    if (removed > 0) {
+        rebuild_caches_locked();
+    }
+    return removed;
+}
+
+void clear_plugin_commands() {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    if (plugin_commands_storage().empty()) return;
+    plugin_commands_storage().clear();
+    rebuild_caches_locked();
+}
+
+void rebuild_lookups() {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    rebuild_caches_locked();
+}
+
+const std::unordered_set<std::string>& gateway_known_commands() {
+    ensure_primed();
+    return caches().gateway_known;
+}
+
+namespace {
+
+// Helper: walk baseline + plugin commands under the plugins mutex.
+template <typename Fn>
+void for_each_command_locked(Fn&& fn) {
+    for (const auto& cmd : command_registry()) fn(cmd);
+    for (const auto& cmd : plugin_commands_storage()) fn(cmd);
+}
+
+}  // namespace
+
 std::map<std::string, CommandDef> commands_flat() {
     std::map<std::string, CommandDef> out;
-    for (const auto& cmd : command_registry()) {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for_each_command_locked([&](const CommandDef& cmd) {
         out[cmd.name] = cmd;
         for (const auto& alias : cmd.aliases) {
             out[alias] = cmd;
         }
-    }
+    });
     return out;
 }
 
 std::map<std::string, std::vector<CommandDef>> commands_by_category() {
     std::map<std::string, std::vector<CommandDef>> out;
-    for (const auto& cmd : command_registry()) {
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for_each_command_locked([&](const CommandDef& cmd) {
         out[cmd.category].push_back(cmd);
-    }
+    });
     return out;
 }
 
 std::vector<std::string> gateway_help_lines() {
     std::vector<std::string> lines;
-    for (const auto& cmd : command_registry()) {
-        if (cmd.cli_only) continue;
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for_each_command_locked([&](const CommandDef& cmd) {
+        if (cmd.cli_only) return;
         std::string line = "/" + cmd.name;
         if (!cmd.args_hint.empty()) {
             line += " " + cmd.args_hint;
         }
         line += " — " + cmd.description;
         lines.push_back(std::move(line));
-    }
+    });
     return lines;
 }
 
 std::vector<std::pair<std::string, std::string>> telegram_bot_commands() {
     std::vector<std::pair<std::string, std::string>> out;
-    for (const auto& cmd : command_registry()) {
-        if (cmd.cli_only) continue;
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for_each_command_locked([&](const CommandDef& cmd) {
+        if (cmd.cli_only) return;
         out.emplace_back(cmd.name, cmd.description);
-    }
+    });
     return out;
 }
 
 std::map<std::string, std::string> slack_subcommand_map() {
     std::map<std::string, std::string> out;
-    for (const auto& cmd : command_registry()) {
-        if (cmd.cli_only) continue;
+    std::lock_guard<std::mutex> lock(plugins_mu());
+    for_each_command_locked([&](const CommandDef& cmd) {
+        if (cmd.cli_only) return;
         out[cmd.name] = cmd.description;
-    }
+    });
     return out;
 }
 
