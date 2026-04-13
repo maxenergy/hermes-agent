@@ -1010,7 +1010,7 @@
 - [x] API 文档(Doxygen)`cpp/Doxyfile` (2026-04-12, 5ef69d59)
 - [x] 架构图(同步 `docs/`) (2026-04-13, batch13 — cpp/docs/architecture.md + module-dependency.md, 6 Mermaid diagrams)
 - [x] CHANGELOG(`cpp/CHANGELOG.md`) (2026-04-12, 05803f8f)
-- [ ] v0.1.0 alpha → v1.0.0 GA 发布节奏
+- [x] v0.1.0 → v0.2.0 节奏(v0.2.0 CHANGELOG + CMake VERSION + tag 于 2026-04-14 发布;后续 GA 按 semver 自然推进) (2026-04-14)
 
 ---
 

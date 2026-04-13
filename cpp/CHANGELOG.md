@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.2.0] - 2026-04-14
+
+### Added
+- **Qwen Code OAuth provider**: device-code + PKCE S256; shares
+  `~/.qwen/oauth_creds.json` with qwen-code CLI. `QwenClient` synthesises
+  all 9 portal.qwen.ai fingerprint fields (UA / coder-model alias /
+  content blocks / placeholder tools / metadata / vl_high_resolution_images /
+  system msg / HTTP/1.1 / stream=true).
+- **MCP client completion**: auto-reconnect with jittered exp backoff,
+  `sampling/createMessage` routed through LlmClient (gated by
+  `allow_sampling` + optional approver), `notifications/tools/list_changed`
+  dynamic rediscovery, OAuth initiator on 401.
+- **Discord + Slack WebSocket gateway drivers** via Boost.Beast —
+  Discord v10 (Hello/Identify/Heartbeat/Resume/Dispatch), Slack Socket
+  Mode + legacy RTM.
+- **Gateway polish**: media cache (content-addressed, 429/5xx retry,
+  SSRF guard), exponential-backoff reconnect with fatal/retryable
+  classification, Telegram `setMyCommands`, Slack `/hermes` subcommand
+  router + thread-aware reply gating, per-platform channel cache, scoped
+  locks on WhatsApp / Signal / Matrix.
+- **WhatsApp pairing** (phone+code), disappearing messages, group v2
+  (LID + legacy JID). **Signal** expiration, safety-number verify, group
+  normalisation.
+- **Voice subsystem**: whisper.cpp CLI integration, `voice_mode`
+  streaming STT→LLM→TTS pipeline with VAD segment boundaries.
+- **Environments**: `spawn_via_env()` remote forwarding, Docker image
+  digest pinning + anon-volume cleanup, `DotfileManager`, OSC 7 CWD
+  parser, `ScpCopier`, real POSIX `spawn_local()` with timeout/kill.
+- **LLM infrastructure**: `CredentialPool` (TTL + refresher),
+  `resolve_runtime_provider()` (8 providers), `codex_models`,
+  `model_switch` hot-swap with tokenizer invalidation + tier-down.
+- **Web search**: Tavily, Parallel.ai, Brave, Google CSE backends + TTL
+  cache. **Image gen**: Flux (BFL + Replicate fallback), Ideogram v2/v3,
+  generic Replicate, `list_image_models` cache.
+- **RL + batch**: HF SFT schema, SWE-task runner, env-aware batch
+  dispatch, `hermes rl train|eval|list-environments` CLI, 30-min
+  checkpoint watchdog.
+- **ACP auth** (api-key + oauth, per-session token map),
+  VS Code / Zed / JetBrains editor integration scaffolds,
+  `FtxuiEditor` + `curses_ui` (no `\033[K`).
+- **Agent layer**: `context_references`, `compression_feedback`,
+  `async_bridge`, `insights` module.
+- **Config**: v1→v6 per-version migration, `--profile/-p` argv
+  pre-parse, dynamic plugin `rebuild_lookups()` + derived
+  `gateway_known_commands()`.
+- **CLI long-tail**: `hermes auth` multi-provider, `hermes webhook
+  {install,list,remove}`, `hermes dump {sessions,config}` with
+  `--since`/`--output`/redaction, `hermes providers {list,test}`,
+  `hermes runtime {list,select}`.
+- **Hooks + process introspection**: YAML `hook_discovery` with
+  subprocess exec, `looks_like_gateway_process` +
+  `get_process_start_time()` cross-platform.
+- **Infra**: UDS JSON-RPC 2.0 server/client, `/update` prompt (24h
+  throttle + CI/TTY skip), ffmpeg subprocess wrapper.
+- **Skills**: 78 builtin SKILL.md copied from Python tree, 3-level
+  discovery. **CI**: fast-gate + full cross-platform matrix + vcpkg
+  binary cache. **Packaging**: Termux, WSL2 README, multi-arch Docker
+  smoke test.
+- **Joint integration tests**: 23 cross-module tests.
+- **8 missing tool modules**: `checkpoint_manager`, `mcp_oauth`,
+  `tirith_security`, `skills_sync`, `browser_camofox`, neutts TTS,
+  `tool_backend_helpers`, `debug_helpers`.
+
+### Changed
+- Project version 0.1.0 → 0.2.0.
+- Spinner replaces `\033[K` with `last_visible_len_`-tracked space
+  padding (Python prompt_toolkit invariant).
+- libcurl pinned to HTTP/1.1 (HTTP/2 aborts on portal.qwen.ai).
+- `McpStdioTransport` uses recursive mutex + persistent read buffer +
+  SIGPIPE ignore.
+- `ProcessRegistry::kill()` + email IMAP IDLE now work on Windows
+  (Winsock2, OpenProcess/TerminateProcess).
+
+### Metrics
+- 1381/1381 tests passing (up from 887).
+- Plan: only WSL2 host-matrix run + release cadence remain unchecked
+  (both non-code).
+
 ## [0.1.0] - 2026-04-13
 
 ### Added
