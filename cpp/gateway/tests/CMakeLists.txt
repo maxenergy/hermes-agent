@@ -34,6 +34,8 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_slack_threads.cpp
     test_discord_threads.cpp
     test_discord_voice.cpp
+    test_discord_gateway.cpp
+    test_slack_socket_mode.cpp
     test_matrix_e2ee.cpp
 )
 
