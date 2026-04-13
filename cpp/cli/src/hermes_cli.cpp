@@ -2,6 +2,7 @@
 
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
+#include "hermes/config/loader.hpp"
 #include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
 
@@ -14,8 +15,13 @@
 namespace hermes::cli {
 
 HermesCLI::HermesCLI() {
-    // Lightweight construction — no agent or session created yet.
-    // Phase 13 focuses on command dispatch; agent integration is Phase 14+.
+    // Load persisted user config so /status, /model, /personality and friends
+    // reflect what's on disk instead of an empty default.
+    try {
+        config_ = hermes::config::load_cli_config();
+    } catch (...) {
+        config_ = nlohmann::json::object();
+    }
 }
 
 HermesCLI::~HermesCLI() = default;
@@ -252,8 +258,19 @@ void HermesCLI::handle_status() {
     std::cout << "Session: " << (session_id_.empty() ? "(none)" : session_id_) << "\n"
               << "History length: " << history_.size() << "\n"
               << "Model: "
-              << (config_.contains("model") ? config_["model"].get<std::string>()
-                                            : "anthropic/claude-opus-4-6")
+              << ((config_.contains("model") && config_["model"].is_string())
+                      ? config_["model"].get<std::string>()
+                      : std::string("anthropic/claude-opus-4-6"))
+              << "\n"
+              << "Provider: "
+              << ((config_.contains("provider") && config_["provider"].is_string())
+                      ? config_["provider"].get<std::string>()
+                      : std::string("(default)"))
+              << "\n"
+              << "Base URL: "
+              << ((config_.contains("base_url") && config_["base_url"].is_string())
+                      ? config_["base_url"].get<std::string>()
+                      : std::string("(default)"))
               << "\n"
               << "Verbose: " << (verbose_ ? "on" : "off") << "\n"
               << "Yolo: " << (yolo_ ? "on" : "off") << "\n"

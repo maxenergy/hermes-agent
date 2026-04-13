@@ -41,6 +41,7 @@ target_link_libraries(hermes_cli_lib
         hermes::skills
         hermes::cron
         hermes::profile
+        hermes::auth
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::gateway

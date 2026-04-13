@@ -33,6 +33,8 @@ int cmd_memory(int argc, char* argv[]);
 int cmd_dump(int argc, char* argv[]);
 int cmd_webhook(int argc, char* argv[]);
 int cmd_runtime(int argc, char* argv[]);
+int cmd_auth(int argc, char* argv[]);
+int cmd_login(int argc, char* argv[]);
 
 // Version string constant.
 inline constexpr const char* kVersionString = "hermes-cpp 0.1.0";

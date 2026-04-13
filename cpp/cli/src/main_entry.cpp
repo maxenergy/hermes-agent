@@ -1,5 +1,6 @@
 #include "hermes/cli/main_entry.hpp"
 
+#include "hermes/auth/qwen_oauth.hpp"
 #include "hermes/cli/claw_migrate.hpp"
 #include "hermes/cli/hermes_cli.hpp"
 #include "hermes/config/loader.hpp"
@@ -60,6 +61,13 @@ void print_global_help() {
               << "  claw        OpenClaw migration tool\n"
               << "  update      Update Hermes\n"
               << "  uninstall   Remove Hermes\n"
+              << "  login       Log in to a provider (default: qwen)\n"
+              << "  auth        Manage provider auth (qwen login/status/logout/refresh)\n"
+              << "  providers   List configured providers + key status\n"
+              << "  dump        Export sessions/config/memory as JSON\n"
+              << "  webhook     Generate webhook signature secrets\n"
+              << "  runtime     Switch terminal backend\n"
+              << "  memory      Configure memory backend (Honcho)\n"
               << "\n"
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
@@ -663,7 +671,10 @@ int cmd_model_switch(int argc, char* argv[]) {
     }
     std::string new_model = argv[3];
     auto cfg = load_config_json();
-    std::string old_model = cfg.value("model", "(unset)");
+    std::string old_model = "(unset)";
+    if (cfg.contains("model") && cfg["model"].is_string()) {
+        old_model = cfg["model"].get<std::string>();
+    }
     cfg["model"] = new_model;
     if (!save_config_json(cfg)) return 1;
     std::cout << "Switched model: " << old_model << " → " << new_model << "\n";
@@ -855,6 +866,131 @@ int cmd_runtime(int argc, char* argv[]) {
     return 0;
 }
 
+// --------------------------------------------------------------------------
+// hermes auth — provider authentication (qwen / copilot / nous).
+// --------------------------------------------------------------------------
+
+namespace {
+int qwen_login() {
+    hermes::auth::QwenCredentialStore store;
+    hermes::auth::QwenOAuth oauth;
+    auto creds = oauth.interactive_login(store);
+    if (!creds) return 1;
+
+    // Bonus: also point the default model at qwen3-coder-plus and provider
+    // at qwen so the CLI uses the new credentials without manual config.
+    auto cfg = load_config_json();
+    cfg["provider"] = "qwen";
+    if (!cfg.contains("model") || cfg["model"].is_null() ||
+        cfg.value("model", "").empty() ||
+        cfg.value("model", "").find("qwen") == std::string::npos) {
+        cfg["model"] = "qwen3-coder-plus";
+    }
+    set_dot_path(cfg, "base_url", hermes::auth::qwen_api_base_url(*creds));
+    save_config_json(cfg);
+
+    std::cout << "Qwen provider configured.\n"
+              << "  model:    " << cfg.value("model", "qwen3-coder-plus") << "\n"
+              << "  base_url: " << hermes::auth::qwen_api_base_url(*creds) << "\n";
+    return 0;
+}
+
+int qwen_status() {
+    hermes::auth::QwenCredentialStore store;
+    auto creds = store.load();
+    if (creds.empty()) {
+        std::cout << "Qwen: not logged in.\n"
+                  << "Run `hermes auth qwen login` to authenticate.\n";
+        return 1;
+    }
+    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+                   .count();
+    std::cout << "Qwen credentials at " << store.path() << ":\n"
+              << "  resource_url: "
+              << (creds.resource_url.empty() ? "(default DashScope)"
+                                              : creds.resource_url) << "\n"
+              << "  api_base:     " << hermes::auth::qwen_api_base_url(creds) << "\n"
+              << "  expires_in:   "
+              << ((creds.expiry_date_ms - now) / 1000) << " seconds\n"
+              << "  refresh_token: "
+              << (creds.refresh_token.empty() ? "(missing)" : "present") << "\n";
+    return 0;
+}
+
+int qwen_logout() {
+    hermes::auth::QwenCredentialStore store;
+    if (store.clear()) {
+        std::cout << "Qwen credentials cleared.\n";
+        return 0;
+    }
+    std::cerr << "No credentials to clear.\n";
+    return 1;
+}
+
+int qwen_refresh() {
+    hermes::auth::QwenCredentialStore store;
+    auto current = store.load();
+    if (current.empty()) {
+        std::cerr << "Not logged in.\n";
+        return 1;
+    }
+    hermes::auth::QwenOAuth oauth;
+    auto refreshed = oauth.refresh(current);
+    if (!refreshed) {
+        std::cerr << "Refresh failed (token revoked?). Run `hermes auth qwen "
+                     "login` again.\n";
+        store.clear();
+        return 1;
+    }
+    store.save(*refreshed);
+    std::cout << "Token refreshed. New expiry in "
+              << ((refreshed->expiry_date_ms -
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                       .count()) / 1000)
+              << " seconds.\n";
+    return 0;
+}
+}  // namespace
+
+int cmd_auth(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr <<
+            "Usage: hermes auth <provider> <action>\n\n"
+            "Providers:\n"
+            "  qwen   — Qwen Code OAuth (login | status | logout | refresh)\n"
+            "\nExamples:\n"
+            "  hermes auth qwen login\n"
+            "  hermes auth qwen status\n"
+            "  hermes auth qwen logout\n"
+            "  hermes auth qwen refresh\n";
+        return 1;
+    }
+    std::string provider = argv[2];
+    std::string action = argc > 3 ? argv[3] : "status";
+
+    if (provider == "qwen") {
+        if (action == "login")   return qwen_login();
+        if (action == "status")  return qwen_status();
+        if (action == "logout")  return qwen_logout();
+        if (action == "refresh") return qwen_refresh();
+        std::cerr << "Unknown qwen action: " << action << "\n";
+        return 1;
+    }
+    std::cerr << "Unknown provider: " << provider << "\n";
+    return 1;
+}
+
+int cmd_login(int argc, char* argv[]) {
+    // `hermes login [provider]` — shorthand for `hermes auth <provider> login`.
+    std::string provider = argc > 2 ? argv[2] : "qwen";
+    if (provider == "qwen") return qwen_login();
+    std::cerr << "Unknown provider for login: " << provider << "\n"
+              << "Use `hermes auth <provider> login` instead.\n";
+    return 1;
+}
+
 int cmd_claw(int argc, char* argv[]) {
     if (argc <= 2 || std::string(argv[2]) != "migrate") {
         std::cout << "Usage: hermes claw migrate [--dry-run] [--overwrite] "
@@ -1025,6 +1161,12 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "runtime") {
         return cmd_runtime(argc, argv);
+    }
+    if (sub == "auth") {
+        return cmd_auth(argc, argv);
+    }
+    if (sub == "login") {
+        return cmd_login(argc, argv);
     }
 
     std::cerr << "Unknown subcommand: " << sub << "\n";
