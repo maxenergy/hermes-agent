@@ -230,7 +230,7 @@ std::optional<json> McpStdioTransport::read_message(std::chrono::seconds timeout
 json McpStdioTransport::send_request(const std::string& method,
                                      const json& params,
                                      std::chrono::seconds timeout) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     int id = next_id_++;
     json msg;
     msg["jsonrpc"] = "2.0";
@@ -313,7 +313,7 @@ bool McpStdioTransport::handle_inbound_(const json& msg) {
 }
 
 int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     int processed = 0;
     auto deadline = std::chrono::steady_clock::now() + budget;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -331,7 +331,7 @@ int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
 
 void McpStdioTransport::send_notification(const std::string& method,
                                           const json& params) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     json msg;
     msg["jsonrpc"] = "2.0";
     msg["method"] = method;
@@ -571,7 +571,7 @@ std::optional<json> McpStdioTransport::read_message(std::chrono::seconds timeout
 json McpStdioTransport::send_request(const std::string& method,
                                      const json& params,
                                      std::chrono::seconds timeout) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
 
     int id = next_id_++;
     json msg;
@@ -687,22 +687,25 @@ bool McpStdioTransport::handle_inbound_(const json& msg) {
 }
 
 int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
-    std::lock_guard<std::mutex> lock(mu_);
     int processed = 0;
     auto deadline = std::chrono::steady_clock::now() + budget;
     while (std::chrono::steady_clock::now() < deadline) {
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0) break;
-        // Use a 0-timeout (non-blocking-ish) read: cap at remaining.
         auto secs = std::chrono::seconds((remaining.count() + 999) / 1000);
-        auto m = read_message(secs);
+        // Hold the lock only while reading — release before dispatching,
+        // because the handler may call back into the transport.
+        std::optional<json> m;
+        {
+            std::lock_guard<std::recursive_mutex> lock(mu_);
+            m = read_message(secs);
+        }
         if (!m.has_value()) break;
         if (m->contains("method")) {
             handle_inbound_(*m);
             ++processed;
         } else {
-            // Stray response — drop.
             ++processed;
         }
     }
@@ -711,7 +714,7 @@ int McpStdioTransport::pump_messages(std::chrono::milliseconds budget) {
 
 void McpStdioTransport::send_notification(const std::string& method,
                                           const json& params) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
 
     json msg;
     msg["jsonrpc"] = "2.0";

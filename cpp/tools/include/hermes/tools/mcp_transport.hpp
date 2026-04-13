@@ -6,7 +6,7 @@
 
 #include <chrono>
 #include <functional>
-#include <mutex>
+#include <mutex>          // IWYU: recursive_mutex
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -113,7 +113,10 @@ private:
     int stdin_fd_ = -1;   // write to child's stdin
     int stdout_fd_ = -1;  // read from child's stdout
     int next_id_ = 1;
-    std::mutex mu_;
+    // Recursive so nested send_request/list_tools calls made from within
+    // an inbound-handler callback (e.g. sampling → call_tool echo, or
+    // list_changed → list_tools refresh) don't deadlock.
+    std::recursive_mutex mu_;
     InboundHandler inbound_handler_;
     // Pending partial read buffer (for read_message across fragments).
     std::string read_buf_;
