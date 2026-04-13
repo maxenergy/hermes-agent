@@ -8,10 +8,12 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace hermes::state {
@@ -60,6 +62,32 @@ struct WatchNotification {
     bool synthetic = false;  // true for the overload-kill notification
 };
 
+// Options for ProcessRegistry::spawn_local.
+//
+// Mirrors Python `process_registry.spawn_local()` semantics.  Empty fields
+// take sensible defaults (cwd = current directory, env = inherit caller's
+// environment, command run via `/bin/sh -c <command>` so shell features
+// like pipes / redirection / expansion keep working).
+struct SpawnOptions {
+    std::string command;
+    std::filesystem::path cwd;  // empty = current working directory
+    std::string task_id;
+    std::string session_key;
+    std::vector<std::string> watch_patterns;
+
+    // When non-empty, these KEY=VALUE pairs are merged onto the caller's
+    // environment (caller values win for keys in env_vars).
+    std::unordered_map<std::string, std::string> env_vars;
+
+    // Hard deadline after which the child is SIGTERM'd (and then SIGKILL'd
+    // if it doesn't exit within 2 seconds).  Zero = no timeout.
+    std::chrono::seconds timeout{0};
+
+    // Shell to invoke command under.  Defaults to "/bin/sh" which is
+    // guaranteed present on POSIX systems.
+    std::string shell = "/bin/sh";
+};
+
 class ProcessRegistry {
 public:
     ProcessRegistry();
@@ -72,6 +100,23 @@ public:
     // Record an already-spawned process. Callers pass a fully-populated
     // ProcessSession with a pid (or none for test scenarios).
     std::string register_process(ProcessSession session);
+
+    // Spawn a child process locally via fork/exec under `opts.shell -c`,
+    // register the resulting session as Running, and start a background
+    // reader thread that pipes the child's stdout+stderr into the
+    // registry's rolling output buffer (via feed_output()).
+    //
+    // Returns the session id.  The child runs in its own process group
+    // so kill() can signal the whole group.  When opts.timeout is
+    // non-zero a watchdog thread enforces it: on timeout the session is
+    // marked Killed with exit_code = 124.
+    //
+    // On fork/exec failure the session is marked Exited with
+    // exit_code = -1 before the id is returned.
+    //
+    // POSIX-only.  Not implemented on Windows (the Windows agent will
+    // fill that in separately).
+    std::string spawn_local(const SpawnOptions& opts);
 
     std::optional<ProcessSession> get(const std::string& id) const;
     std::vector<ProcessSession> list_running() const;

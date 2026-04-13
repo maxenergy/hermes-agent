@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <deque>
 #include <fstream>
@@ -19,10 +20,13 @@
 
 #ifndef _WIN32
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char** environ;
 #else
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -259,6 +263,292 @@ std::string ProcessRegistry::register_process(ProcessSession session) {
     impl_->running[id] = std::move(session);
     return id;
 }
+
+// -------------------------------------------------------------------------
+// spawn_local — real POSIX fork/exec integration.
+//
+// Equivalent to Python `process_registry.spawn_local()`: forks a child
+// that runs `<shell> -c <command>` with pipes connected to stdout/stderr,
+// registers the ProcessSession as Running, and spins up two background
+// threads:
+//
+//   * reader thread: drains stdout+stderr pipes via poll() and pushes
+//     chunks into feed_output() so watch_patterns fire live.
+//   * waiter thread: waitpid()s the child, marks exited/killed with the
+//     real exit code, reaps the zombie.  Optionally enforces timeout.
+//
+// The child is placed in its own process group (setsid) so kill() can
+// signal everything it spawned — matching the Python reference's
+// os.setsid + os.killpg() pattern.
+//
+// We deliberately use raw POSIX here rather than boost::process: the
+// hermes_state library does not otherwise link Boost, and our feature
+// surface (cwd / env / timeout / streaming / pgid kill) is a direct
+// fit for fork/exec.  local.cpp uses the same pattern for foreground
+// execution; spawn_local is the background analogue.
+// -------------------------------------------------------------------------
+#ifndef _WIN32
+namespace {
+
+// Build a merged envp suitable for execve().  When `extra` is empty the
+// child simply inherits the parent environment via environ.
+std::vector<std::string>
+build_env_strings(const std::unordered_map<std::string, std::string>& extra) {
+    std::unordered_map<std::string, std::string> merged;
+    for (char** e = environ; e && *e; ++e) {
+        std::string kv = *e;
+        auto eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        merged[kv.substr(0, eq)] = kv.substr(eq + 1);
+    }
+    for (const auto& [k, v] : extra) {
+        merged[k] = v;
+    }
+    std::vector<std::string> out;
+    out.reserve(merged.size());
+    for (const auto& [k, v] : merged) {
+        out.push_back(k + "=" + v);
+    }
+    return out;
+}
+
+void set_nonblock(int fd) {
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+}  // namespace
+
+std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
+    // Create pipes BEFORE the session so we can fail fast.
+    int out_pipe[2] = {-1, -1};
+    int err_pipe[2] = {-1, -1};
+    if (::pipe(out_pipe) != 0 || ::pipe(err_pipe) != 0) {
+        if (out_pipe[0] >= 0) ::close(out_pipe[0]);
+        if (out_pipe[1] >= 0) ::close(out_pipe[1]);
+        if (err_pipe[0] >= 0) ::close(err_pipe[0]);
+        if (err_pipe[1] >= 0) ::close(err_pipe[1]);
+        // Register a session that already failed so the caller has
+        // something to reference.
+        ProcessSession failed;
+        failed.id = make_id();
+        failed.command = opts.command;
+        failed.task_id = opts.task_id;
+        failed.session_key = opts.session_key;
+        failed.cwd = opts.cwd.empty() ? std::filesystem::current_path()
+                                      : opts.cwd;
+        failed.watch_patterns = opts.watch_patterns;
+        failed.started_at = std::chrono::system_clock::now();
+        failed.updated_at = failed.started_at;
+        failed.ended_at = failed.started_at;
+        failed.state = ProcessState::Exited;
+        failed.exit_code = -1;
+        std::string id = failed.id;
+        {
+            std::lock_guard<std::mutex> lk(impl_->mtx);
+            impl_->finished[id] = std::move(failed);
+        }
+        return id;
+    }
+
+    // Resolve cwd / shell.
+    std::filesystem::path resolved_cwd = opts.cwd.empty()
+        ? std::filesystem::current_path()
+        : opts.cwd;
+    std::string shell = opts.shell.empty() ? "/bin/sh" : opts.shell;
+
+    // Compose envp up front (heap) so the child can execve it.
+    std::vector<std::string> env_storage = build_env_strings(opts.env_vars);
+    std::vector<char*> envp;
+    envp.reserve(env_storage.size() + 1);
+    for (auto& s : env_storage) envp.push_back(s.data());
+    envp.push_back(nullptr);
+
+    // Build argv.  The child runs `<shell> -c <command>` so shell
+    // features (pipes, expansions, backgrounding) keep working.
+    std::string shell_copy = shell;
+    std::string flag = "-c";
+    std::string cmd_copy = opts.command;
+    std::vector<char*> argv{shell_copy.data(), flag.data(),
+                            cmd_copy.data(), nullptr};
+
+    pid_t child = ::fork();
+    if (child < 0) {
+        ::close(out_pipe[0]); ::close(out_pipe[1]);
+        ::close(err_pipe[0]); ::close(err_pipe[1]);
+        ProcessSession failed;
+        failed.id = make_id();
+        failed.command = opts.command;
+        failed.cwd = resolved_cwd;
+        failed.started_at = std::chrono::system_clock::now();
+        failed.updated_at = failed.started_at;
+        failed.ended_at = failed.started_at;
+        failed.state = ProcessState::Exited;
+        failed.exit_code = -1;
+        std::string id = failed.id;
+        {
+            std::lock_guard<std::mutex> lk(impl_->mtx);
+            impl_->finished[id] = std::move(failed);
+        }
+        return id;
+    }
+
+    if (child == 0) {
+        // ---- Child ----
+        // New process group so the parent can signal the whole tree.
+        ::setsid();
+
+        ::close(out_pipe[0]);
+        ::close(err_pipe[0]);
+        ::dup2(out_pipe[1], STDOUT_FILENO);
+        ::dup2(err_pipe[1], STDERR_FILENO);
+        ::close(out_pipe[1]);
+        ::close(err_pipe[1]);
+
+        if (!resolved_cwd.empty()) {
+            if (::chdir(resolved_cwd.string().c_str()) != 0) {
+                _exit(127);
+            }
+        }
+
+        ::execve(shell.c_str(), argv.data(), envp.data());
+        _exit(127);  // execve failed
+    }
+
+    // ---- Parent ----
+    ::close(out_pipe[1]);
+    ::close(err_pipe[1]);
+    set_nonblock(out_pipe[0]);
+    set_nonblock(err_pipe[0]);
+
+    ProcessSession session;
+    session.id = make_id();
+    session.command = opts.command;
+    session.task_id = opts.task_id;
+    session.session_key = opts.session_key;
+    session.watch_patterns = opts.watch_patterns;
+    session.cwd = resolved_cwd;
+    session.pid = static_cast<int>(child);
+    session.pid_scope = PidScope::Host;
+    session.started_at = std::chrono::system_clock::now();
+    session.updated_at = session.started_at;
+    session.state = ProcessState::Running;
+
+    std::string id = session.id;
+    {
+        std::lock_guard<std::mutex> lk(impl_->mtx);
+        impl_->running[id] = std::move(session);
+    }
+
+    // Reader thread: poll stdout/stderr pipes until both EOF, feeding
+    // chunks into the registry.  Detached so it cleans up independently.
+    ProcessRegistry* self = this;
+    int out_fd = out_pipe[0];
+    int err_fd = err_pipe[0];
+    std::thread([self, id, out_fd, err_fd]() {
+        struct pollfd fds[2];
+        fds[0].fd = out_fd; fds[0].events = POLLIN;
+        fds[1].fd = err_fd; fds[1].events = POLLIN;
+        int open_fds = 2;
+        while (open_fds > 0) {
+            int ret = ::poll(fds, 2, 100);
+            if (ret > 0) {
+                for (int i = 0; i < 2; ++i) {
+                    if (fds[i].fd < 0) continue;
+                    if (fds[i].revents & (POLLIN | POLLHUP)) {
+                        char buf[4096];
+                        ssize_t n = ::read(fds[i].fd, buf, sizeof(buf));
+                        if (n > 0) {
+                            self->feed_output(id,
+                                std::string_view(buf,
+                                    static_cast<std::size_t>(n)));
+                        } else if (n == 0) {
+                            ::close(fds[i].fd);
+                            fds[i].fd = -1;
+                            --open_fds;
+                        }
+                    }
+                    if (fds[i].revents & (POLLERR | POLLNVAL)) {
+                        if (fds[i].fd >= 0) ::close(fds[i].fd);
+                        fds[i].fd = -1;
+                        --open_fds;
+                    }
+                }
+            }
+        }
+    }).detach();
+
+    // Waiter thread: waitpid() + timeout enforcement.  Writes the final
+    // exit code into the session, reaps the zombie.
+    std::chrono::seconds timeout = opts.timeout;
+    std::thread([self, id, child, timeout]() {
+        auto start = std::chrono::steady_clock::now();
+        bool killed_for_timeout = false;
+        while (true) {
+            int status = 0;
+            pid_t r = ::waitpid(child, &status, WNOHANG);
+            if (r == child) {
+                int exit_code;
+                if (WIFEXITED(status)) {
+                    exit_code = WEXITSTATUS(status);
+                } else if (WIFSIGNALED(status)) {
+                    exit_code = 128 + WTERMSIG(status);
+                } else {
+                    exit_code = -1;
+                }
+                if (killed_for_timeout) {
+                    // Match Python reference: timeout → exit_code 124.
+                    self->mark_exited(id, 124);
+                } else {
+                    self->mark_exited(id, exit_code);
+                }
+                return;
+            }
+            if (r < 0 && errno != EINTR) {
+                // Child vanished (shouldn't happen — we hold the parent
+                // role); treat as exited with -1 so the session doesn't
+                // leak.
+                self->mark_exited(id, -1);
+                return;
+            }
+            if (timeout.count() > 0 && !killed_for_timeout &&
+                (std::chrono::steady_clock::now() - start) >= timeout) {
+                killed_for_timeout = true;
+                // SIGTERM the whole group; escalate after 2s.
+                ::killpg(child, SIGTERM);
+                std::thread([child]() {
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+                    // Best-effort escalation.  If the child already
+                    // exited waitpid will reap it and this is a no-op.
+                    ::killpg(child, SIGKILL);
+                }).detach();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }).detach();
+
+    return id;
+}
+#else   // _WIN32
+std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
+    // The Windows agent owns this path — see cpp/environments/src/local.cpp
+    // for the CreateProcess/ConPTY template.
+    ProcessSession failed;
+    failed.id = make_id();
+    failed.command = opts.command;
+    failed.started_at = std::chrono::system_clock::now();
+    failed.updated_at = failed.started_at;
+    failed.ended_at = failed.started_at;
+    failed.state = ProcessState::Exited;
+    failed.exit_code = -1;
+    std::string id = failed.id;
+    {
+        std::lock_guard<std::mutex> lk(impl_->mtx);
+        impl_->finished[id] = std::move(failed);
+    }
+    return id;
+}
+#endif  // _WIN32
 
 std::optional<ProcessSession> ProcessRegistry::get(
     const std::string& id) const {
