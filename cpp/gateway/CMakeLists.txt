@@ -61,6 +61,7 @@ add_library(hermes_gateway STATIC
     src/message_mirror.cpp
     src/sticker_cache.cpp
     src/restart.cpp
+    src/media_cache.cpp
     platforms/telegram.cpp
     platforms/websocket_transport.cpp
     platforms/discord.cpp
