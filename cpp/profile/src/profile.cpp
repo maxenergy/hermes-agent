@@ -49,6 +49,60 @@ fs::path get_profiles_root() {
     return hermes::core::path::get_profiles_root();
 }
 
+std::optional<std::string> preparse_profile_argv(int& argc, char* argv[]) {
+    if (argc < 2 || argv == nullptr) return std::nullopt;
+
+    // Scan argv[1..argc-1] for the first matching token.  We deliberately
+    // do not cross a `--` sentinel — everything after `--` is the user's
+    // prompt / subcommand args.
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view tok = argv[i];
+        if (tok == "--") {
+            break;
+        }
+
+        // --profile=NAME
+        static constexpr std::string_view kEqPrefix = "--profile=";
+        if (tok.size() > kEqPrefix.size() &&
+            tok.substr(0, kEqPrefix.size()) == kEqPrefix) {
+            std::string name(tok.substr(kEqPrefix.size()));
+            // Shift the single token out.
+            for (int j = i; j + 1 < argc; ++j) {
+                argv[j] = argv[j + 1];
+            }
+            --argc;
+            argv[argc] = nullptr;
+            if (name.empty()) return std::nullopt;
+            return name;
+        }
+
+        // --profile NAME  or  -p NAME  — need the following token.
+        const bool is_long = (tok == "--profile");
+        const bool is_short = (tok == "-p");
+        if (is_long || is_short) {
+            if (i + 1 >= argc) {
+                // Dangling flag with no value — leave untouched.
+                return std::nullopt;
+            }
+            std::string name(argv[i + 1]);
+            if (name.empty()) {
+                return std::nullopt;
+            }
+            // Shift two tokens out.
+            for (int j = i; j + 2 < argc; ++j) {
+                argv[j] = argv[j + 2];
+            }
+            argc -= 2;
+            argv[argc] = nullptr;
+            if (argc + 1 >= 0) {
+                argv[argc + 1] = nullptr;
+            }
+            return name;
+        }
+    }
+    return std::nullopt;
+}
+
 void apply_profile_override(std::optional<std::string> profile_name) {
     if (!profile_name.has_value() || profile_name->empty()) {
         return;

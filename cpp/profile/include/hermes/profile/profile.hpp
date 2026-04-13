@@ -28,6 +28,26 @@ namespace hermes::profile {
 //   if it does not yet exist.
 void apply_profile_override(std::optional<std::string> profile_name);
 
+// Scan @p argv for an early `--profile=NAME` / `--profile NAME` / `-p NAME`
+// pair and return the name (if any).  The matched tokens are *removed*
+// from argv by shifting remaining arguments left and decrementing argc
+// in place, so downstream subcommand parsers see a clean slice.
+//
+// Matches Python `_apply_profile_override()` in `hermes_cli/main.py`:
+// must run in `main()` BEFORE any module-level code reads HERMES_HOME
+// or touches the config pipeline.  Returns `std::nullopt` if no profile
+// flag is present.
+//
+// Accepted forms (first match wins):
+//   --profile=NAME
+//   --profile NAME
+//   -p NAME
+//
+// Not accepted (passed through unchanged):
+//   -pNAME           (ambiguous with other short flags)
+//   --profile        (no value — treated as absent)
+std::optional<std::string> preparse_profile_argv(int& argc, char* argv[]);
+
 // Returns the HOME-anchored profiles root (see invariant above).
 std::filesystem::path get_profiles_root();
 
