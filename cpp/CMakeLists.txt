@@ -68,3 +68,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/../optional-skills)
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/../optional-skills
             DESTINATION share/hermes)
 endif()
+# Self-contained copy of the built-in skill collection shipped with the
+# C++ binary. Installed to share/hermes/builtins so the skill index can
+# discover it even when the Python repo tree is absent (e.g. Termux,
+# container, Windows).
+if(EXISTS ${CMAKE_SOURCE_DIR}/skills/builtins)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/builtins/
+            DESTINATION share/hermes/builtins
+            FILES_MATCHING PATTERN "SKILL.md")
+endif()

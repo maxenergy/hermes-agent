@@ -72,6 +72,27 @@ std::vector<fs::path> get_all_skills_dirs() {
          {"/usr/share/hermes", "/usr/local/share/hermes"}) {
         add_if_dir(fs::path(prefix) / "skills");
         add_if_dir(fs::path(prefix) / "optional-skills");
+        // Self-contained built-in skill collection shipped alongside the
+        // C++ binary — the same SKILL.md files as the Python skills/ tree,
+        // copied at build time for distributions where the Python repo is
+        // absent (Termux, container-only, Windows).
+        add_if_dir(fs::path(prefix) / "builtins");
+    }
+
+    // Termux install prefix — resolved at runtime from $PREFIX so that
+    // builtins also ship under $PREFIX/share/hermes on Android.
+    if (const char* termux_prefix = std::getenv("PREFIX")) {
+        fs::path tp(termux_prefix);
+        add_if_dir(tp / "share" / "hermes" / "skills");
+        add_if_dir(tp / "share" / "hermes" / "optional-skills");
+        add_if_dir(tp / "share" / "hermes" / "builtins");
+    }
+
+    // HERMES_BUILTINS_DIR — explicit override, used by the builtins-parity
+    // test to point the skill index at cpp/skills/builtins/ in a dev
+    // checkout without requiring `make install`.
+    if (const char* builtins_env = std::getenv("HERMES_BUILTINS_DIR")) {
+        add_if_dir(fs::path(builtins_env));
     }
 
     return dirs;
@@ -226,9 +247,12 @@ std::vector<SkillMetadata> iter_skill_index() {
         result.push_back(std::move(sm));
     };
 
-    // Walk up to 2 levels — Python hermes-agent's skills/ uses either the
-    // flat layout (skills/<name>/SKILL.md) or the category layout
-    // (skills/<category>/<name>/SKILL.md).  We discover both.
+    // Walk up to 3 levels — Python hermes-agent's skills/ uses any of:
+    //   * flat layout:            skills/<name>/SKILL.md
+    //   * category layout:        skills/<category>/<name>/SKILL.md
+    //   * nested-category layout: skills/<category>/<subcat>/<name>/SKILL.md
+    //                             (e.g. mlops/inference/vllm/SKILL.md).
+    // Each layout is discovered by peeking for SKILL.md at the leaf.
     for (const auto& dir : get_all_skills_dirs()) {
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
@@ -240,11 +264,23 @@ std::vector<SkillMetadata> iter_skill_index() {
                 load_skill(sub, sub_name);
                 continue;
             }
-            // Layout B: skills/<category>/<name>/SKILL.md
+            // Layout B or C: skills/<category>/...
             for (const auto& sub_entry : fs::directory_iterator(sub, ec)) {
                 if (!sub_entry.is_directory(ec)) continue;
-                load_skill(sub_entry.path(),
-                           sub_name + "/" + sub_entry.path().filename().string());
+                auto leaf = sub_entry.path();
+                std::string leaf_name = leaf.filename().string();
+                // Layout B: skills/<category>/<name>/SKILL.md
+                if (fs::is_regular_file(leaf / "SKILL.md", ec)) {
+                    load_skill(leaf, sub_name + "/" + leaf_name);
+                    continue;
+                }
+                // Layout C: skills/<category>/<subcat>/<name>/SKILL.md
+                for (const auto& leaf_entry : fs::directory_iterator(leaf, ec)) {
+                    if (!leaf_entry.is_directory(ec)) continue;
+                    load_skill(leaf_entry.path(),
+                               sub_name + "/" + leaf_name + "/" +
+                               leaf_entry.path().filename().string());
+                }
             }
         }
     }
