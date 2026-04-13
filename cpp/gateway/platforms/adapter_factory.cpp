@@ -61,6 +61,7 @@ std::unique_ptr<BasePlatformAdapter> create_adapter(Platform p,
             WhatsAppAdapter::Config wc;
             wc.session_dir = extra_str(cfg, "session_dir");
             wc.phone = extra_str(cfg, "phone");
+            wc.bridge_url = extra_str(cfg, "bridge_url");
             return std::make_unique<WhatsAppAdapter>(std::move(wc));
         }
         case Platform::Signal: {
