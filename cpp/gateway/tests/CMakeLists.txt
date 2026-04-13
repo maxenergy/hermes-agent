@@ -33,6 +33,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_telegram_reactions.cpp
     test_slack_threads.cpp
     test_discord_threads.cpp
+    test_discord_voice.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

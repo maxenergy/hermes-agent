@@ -23,6 +23,21 @@ if(NOT OpenSSL_FOUND)
     message(STATUS "hermes::gateway — OpenSSL NOT found; SHA256 hashing will fail at link time")
 endif()
 
+# ----- libopus (Phase 14 — Discord voice) --------------------------------
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(OPUS QUIET opus)
+endif()
+if(NOT OPUS_FOUND)
+    # Fallback: direct link
+    find_library(OPUS_LIBRARIES opus)
+    find_path(OPUS_INCLUDE_DIRS opus/opus.h)
+    if(OPUS_LIBRARIES AND OPUS_INCLUDE_DIRS)
+        set(OPUS_FOUND TRUE)
+    endif()
+endif()
+
 # ----- Library -----------------------------------------------------------
 
 add_library(hermes_gateway STATIC
@@ -39,6 +54,7 @@ add_library(hermes_gateway STATIC
     src/restart.cpp
     platforms/telegram.cpp
     platforms/discord.cpp
+    platforms/opus_codec.cpp
     platforms/slack.cpp
     platforms/whatsapp.cpp
     platforms/signal.cpp
@@ -83,6 +99,15 @@ target_link_libraries(hermes_gateway
 if(OpenSSL_FOUND)
     target_link_libraries(hermes_gateway PUBLIC OpenSSL::Crypto OpenSSL::SSL)
     target_compile_definitions(hermes_gateway PRIVATE HERMES_HAVE_OPENSSL=1)
+endif()
+
+if(OPUS_FOUND)
+    target_compile_definitions(hermes_gateway PUBLIC HERMES_GATEWAY_HAS_OPUS)
+    target_include_directories(hermes_gateway PRIVATE ${OPUS_INCLUDE_DIRS})
+    target_link_libraries(hermes_gateway PRIVATE ${OPUS_LIBRARIES})
+    message(STATUS "hermes/gateway: opus found — Discord voice enabled")
+else()
+    message(STATUS "hermes/gateway: opus NOT found — Discord voice disabled")
 endif()
 
 add_library(hermes::gateway ALIAS hermes_gateway)
