@@ -8,14 +8,17 @@
 >
 > **范围说明**:Python 源仓库共 56 个工具文件、21 个平台适配器、~50 个 hermes_cli 子模块、~28 个 agent/ 子模块。本计划逐项列出,**不漏任何一个**。
 
-> ### ✅ 实现状态:阶段 0-20 全部完成(2026-04-12)
+> ### ✅ 实现状态:阶段 0-20 全部完成(2026-04-12,联合测试 2026-04-13)
 >
-> **728 测试绿 / 382 源文件 / 38,594 LOC / 32 commits / 21 个 cpp/ 子目录**
+> **952 测试绿(929 单元 + 23 联合)/ 388+ 源文件 / ~40k LOC**
 >
 > 所有阶段的核心功能已实现并合入 main 分支。复选框更新状态:
 > - **阶段 0-8**:逐条勾选完毕(见下方各小节)
 > - **阶段 9-10**:逐条勾选完毕
 > - **阶段 11-20**:逐条勾选完毕(batch 9-10 补勾)
+> - **最后批次**(2026-04-13):checkpoint_manager / mcp_oauth / tirith_security /
+>   skills_sync / browser_camofox / neutts / tool_backend_helpers / debug_helpers
+>   (commit `a2052008`) + 23 joint integration tests(commit `1634f3d1`)
 >
 > **每个 commit 的精确范围见底部"进度追踪小节"。**
 >
@@ -24,6 +27,7 @@
 > - 平台适配器:WebSocket 长连接(Discord/Slack)待接入
 > - OAuth / Honcho:stub
 > - Windows:所有环境后端 `#ifdef _WIN32` → throw
+> - CI 流水线:Linux x86_64 单跑,多平台矩阵待补
 
 ---
 
@@ -363,31 +367,31 @@
 - [ ] SCP 文件同步
 
 ### 7.5 ModalEnvironment(原生 SDK 等价)
-- [ ] Modal Sandbox.create + Sandbox.exec 的 HTTP REST 调用(C++ 没有 Modal SDK,需自行实现 REST 客户端)
-- [ ] 快照持久化:`~/.hermes/modal_snapshots.json` 按 task_id
-- [ ] 异步执行:Modal 请求调度到后台事件循环
-- [ ] 镜像规格解析:registry refs → Modal image 对象,Ubuntu/Debian add_python 支持
-- [ ] 网络超时:30s connect / 120s per command
+- [x] Modal Sandbox.create + Sandbox.exec 的 HTTP REST 调用(C++ 没有 Modal SDK,需自行实现 REST 客户端) (2026-04-13, batch12)
+- [x] 快照持久化:`~/.hermes/modal_snapshots.json` 按 task_id (2026-04-13, batch12)
+- [x] 异步执行:Modal 请求调度到后台事件循环 (2026-04-13, batch12)
+- [x] 镜像规格解析:registry refs → Modal image 对象,Ubuntu/Debian add_python 支持 (2026-04-13, batch12)
+- [x] 网络超时:30s connect / 120s per command (2026-04-13, batch12)
 
 ### 7.6 ManagedModalEnvironment
-- [ ] Gateway-backed Modal(Nous 订阅者经 tool-gateway)
-- [ ] 通过 HTTP REST API 而非直接 SDK
-- [ ] 持久文件系统:跨会话停止/恢复(task_id 索引)
-- [ ] 超时:1s connect / 5s poll / 5s cancel(graceful)
+- [x] Gateway-backed Modal(Nous 订阅者经 tool-gateway) (2026-04-13, batch12)
+- [x] 通过 HTTP REST API 而非直接 SDK (2026-04-13, batch12)
+- [x] 持久文件系统:跨会话停止/恢复(task_id 索引) (2026-04-13, batch12)
+- [x] 超时:1s connect / 5s poll / 5s cancel(graceful) (2026-04-13, batch12)
 
 ### 7.7 SingularityEnvironment
-- [ ] Apptainer/Singularity CLI 自动检测
-- [ ] 安全:`--containall` / `--no-home` / 能力下放
-- [ ] overlay 目录:可写 overlay 跨会话保留
-- [ ] 快照持久化:`~/.hermes/singularity_snapshots.json`
-- [ ] SIF 镜像缓存
+- [x] Apptainer/Singularity CLI 自动检测 (2026-04-13, batch12)
+- [x] 安全:`--containall` / `--no-home` / 能力下放 (2026-04-13, batch12)
+- [x] overlay 目录:可写 overlay 跨会话保留 (2026-04-13, batch12)
+- [x] 快照持久化:`~/.hermes/singularity_snapshots.json` (2026-04-13, batch12)
+- [x] SIF 镜像缓存 (2026-04-13, batch12)
 
 ### 7.8 DaytonaEnvironment
-- [ ] Daytona REST API(C++ 自实现 SDK)
-- [ ] 持久 sandbox(stop/resume,task_id 索引)
-- [ ] 资源限制:CPU / memory(GiB) / disk(GiB,最大 10)
-- [ ] spawn-per-call 通过线程包装阻塞 SDK 调用
-- [ ] 超时 + cancel_fn
+- [x] Daytona REST API(C++ 自实现 SDK) (2026-04-13, batch12)
+- [x] 持久 sandbox(stop/resume,task_id 索引) (2026-04-13, batch12)
+- [x] 资源限制:CPU / memory(GiB) / disk(GiB,最大 10) (2026-04-13, batch12)
+- [x] spawn-per-call 通过线程包装阻塞 SDK 调用 (2026-04-13, batch12)
+- [x] 超时 + cancel_fn (2026-04-13, batch12)
 
 ### 7.9 FileSyncManager
 - [x] mtime + size 变更跟踪 (2026-04-12, dc91ac71)
@@ -523,8 +527,8 @@
 - [x] 内置 prompts:`/plan` / `/debug` / `/web-research` (2026-04-12, c13ced3f)
 
 ### 9.3 完整技能集合迁移
-- [ ] `skills/` 目录内置 skill 文件复制(数百个)
-- [ ] `optional-skills/` 同上
+- [x] `skills/` 目录内置 skill 文件复制(数百个) (2026-04-13, batch13 — CMake install DIRECTORY hook + HERMES_SKILLS_SEARCH_PATH fallback)
+- [x] `optional-skills/` 同上 (2026-04-13, batch13)
 - [x] 注入前 prompt injection 扫描(复用 PromptBuilder::is_injection_safe) (2026-04-12, b060cee1)
 
 ### 9.4 Skills Hub
@@ -802,8 +806,8 @@
 - [x] `hermes` 子命令路由:chat / gateway / setup / logout / status / cron / doctor / honcho / version / update / uninstall / acp / profiles / sessions / model / tools / skills / claw / pairing / dump / config / logs / plugins / mcp (2026-04-12, 370adb86)
 - [ ] `--profile/-p` 在任何模块导入前生效
 - [x] TTY 检查(`isatty(STDIN_FILENO)` pipe 模式) (2026-04-12, 370adb86)
-- [ ] **claw migrate**:OpenClaw 兼容层(SOUL.md / MEMORY.md / USER.md / skills / 命令 allowlist / 消息设置 / API keys / TTS assets / AGENTS.md 导入)
-- [ ] `claw migrate --dry-run` / `--preset user-data` / `--overwrite`
+- [x] **claw migrate**:OpenClaw 兼容层(SOUL.md / MEMORY.md / USER.md / skills / 命令 allowlist / 消息设置 / API keys / TTS assets / AGENTS.md 导入) (2026-04-12, batch11 — cpp/cli/src/claw_migrate.cpp)
+- [x] `claw migrate --dry-run` / `--preset user-data` / `--overwrite` (2026-04-12, batch11)
 
 ### 13.4 子命令实现(`hermes_cli/`)
 - [x] `setup.py`:交互式 wizard(model / provider / terminal / skills / API key 输入掩码 / 模型发现 / 网关设置) (2026-04-12, e64c81cc)
@@ -1004,7 +1008,7 @@
 - [x] `CONTRIBUTING.md`(C++ 版本) (2026-04-12, 05803f8f)
 - [ ] `CLAUDE.md` / `AGENTS.md` 同步更新
 - [x] API 文档(Doxygen)`cpp/Doxyfile` (2026-04-12, 5ef69d59)
-- [ ] 架构图(同步 `docs/`)
+- [x] 架构图(同步 `docs/`) (2026-04-13, batch13 — cpp/docs/architecture.md + module-dependency.md, 6 Mermaid diagrams)
 - [x] CHANGELOG(`cpp/CHANGELOG.md`) (2026-04-12, 05803f8f)
 - [ ] v0.1.0 alpha → v1.0.0 GA 发布节奏
 
