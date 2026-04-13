@@ -50,7 +50,10 @@ add_library(hermes_tools STATIC
     src/simple_ws.cpp
     src/cdp_backend.cpp
     src/browser_backend.cpp
+    src/browser_camofox.cpp
     src/browser_tool.cpp
+    src/debug_helpers.cpp
+    src/tool_backend_helpers.cpp
     src/transcription_tool.cpp
     src/voice_mode_tool.cpp
     src/rl_training_tool.cpp

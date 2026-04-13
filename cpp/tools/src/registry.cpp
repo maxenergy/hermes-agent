@@ -1,9 +1,11 @@
 #include "hermes/tools/registry.hpp"
 
 #include "hermes/tools/budget_config.hpp"
+#include "hermes/tools/debug_helpers.hpp"
 #include "hermes/tools/tool_result.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <set>
@@ -103,13 +105,28 @@ std::string ToolRegistry::dispatch(const std::string& name,
     }
 
     // 4. Run the handler under try/catch.
+    const bool debug_on = hermes::tools::debug::tool_call_logging_enabled();
+    const auto t_start = debug_on ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
     std::string result;
     try {
         result = entry.handler(args, ctx);
     } catch (const std::exception& e) {
-        return make_error(std::string("handler exception: ") + e.what());
+        auto err = make_error(std::string("handler exception: ") + e.what());
+        if (debug_on) {
+            auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_start);
+            hermes::tools::debug::log_tool_call(name, args, err.substr(0, 500), dur);
+        }
+        return err;
     } catch (...) {
-        return make_error("handler exception: unknown");
+        auto err = make_error("handler exception: unknown");
+        if (debug_on) {
+            auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_start);
+            hermes::tools::debug::log_tool_call(name, args, err.substr(0, 500), dur);
+        }
+        return err;
     }
 
     // 5. Empty / null → {"ok": true}
@@ -138,7 +155,13 @@ std::string ToolRegistry::dispatch(const std::string& name,
     const std::size_t cap =
         entry.max_result_size_chars > 0 ? entry.max_result_size_chars
                                         : DEFAULT_RESULT_SIZE_CHARS;
-    return truncate_result(result, cap);
+    auto truncated = truncate_result(result, cap);
+    if (debug_on) {
+        auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_start);
+        hermes::tools::debug::log_tool_call(name, args, truncated.substr(0, 500), dur);
+    }
+    return truncated;
 }
 
 std::vector<hermes::llm::ToolSchema> ToolRegistry::get_definitions(

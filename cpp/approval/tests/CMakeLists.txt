@@ -9,6 +9,7 @@ add_executable(hermes_approval_tests
     test_skills_guard.cpp
     test_osv_check.cpp
     test_mcp_credential_strip.cpp
+    test_tirith_security.cpp
 )
 
 target_link_libraries(hermes_approval_tests

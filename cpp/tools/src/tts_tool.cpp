@@ -1,6 +1,8 @@
 #include "hermes/tools/tts_tool.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include <unistd.h>
+
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -160,6 +162,54 @@ std::string handle_tts(const nlohmann::json& args,
         return tool_result(result);
     }
 
+    if (provider == "neutts") {
+        // NeuTTS is a local neural TTS CLI.  Shell out when the binary is
+        // installed; otherwise tell the caller how to get it.
+        auto resolve = [](const std::string& bin) {
+            if (bin.find('/') != std::string::npos) {
+                return ::access(bin.c_str(), X_OK) == 0;
+            }
+            const char* path_env = ::getenv("PATH");
+            if (!path_env) return false;
+            std::string p;
+            for (const char* c = path_env; *c; ++c) {
+                if (*c == ':') {
+                    if (!p.empty() && ::access((p + "/" + bin).c_str(), X_OK) == 0) return true;
+                    p.clear();
+                } else {
+                    p.push_back(*c);
+                }
+            }
+            return !p.empty() && ::access((p + "/" + bin).c_str(), X_OK) == 0;
+        };
+        if (!resolve("neutts")) {
+            return tool_error(
+                "neutts binary not found on PATH — "
+                "install with 'pip install neutts' or 'uv tool install neutts'");
+        }
+        auto tmpdir = std::filesystem::temp_directory_path();
+        auto output_path =
+            tmpdir / ("hermes_tts_" +
+                      (ctx.task_id.empty() ? std::string("out") : ctx.task_id) +
+                      ".wav");
+        std::ostringstream cmd;
+        cmd << "neutts --text " << shell_escape(text)
+            << " --voice " << shell_escape(voice)
+            << " --output " << shell_escape(output_path.string())
+            << " 2>&1";
+        int rc = std::system(cmd.str().c_str());
+        if (rc != 0) {
+            return tool_error(
+                "neutts failed",
+                {{"exit_code", rc}, {"command", cmd.str()}});
+        }
+        nlohmann::json result;
+        result["audio_path"] = output_path.string();
+        result["format"] = "wav";
+        result["provider"] = "neutts";
+        return tool_result(result);
+    }
+
     return tool_error("Unknown TTS provider: " + provider);
 }
 
@@ -184,7 +234,7 @@ void register_tts_tools() {
           {"provider",
            {{"type", "string"},
             {"enum",
-             nlohmann::json::array({"edge", "elevenlabs", "openai"})},
+             nlohmann::json::array({"edge", "elevenlabs", "openai", "neutts"})},
             {"description",
              "TTS provider (default edge)"}}}}},
         {"required", nlohmann::json::array({"text"})}};

@@ -4,6 +4,7 @@ set(HERMES_SKILLS_TEST_SOURCES
     test_skill_utils.cpp
     test_skill_commands.cpp
     test_skills_hub.cpp
+    test_skills_sync.cpp
 )
 
 add_executable(hermes_skills_tests ${HERMES_SKILLS_TEST_SOURCES})

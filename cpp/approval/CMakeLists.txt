@@ -26,6 +26,7 @@ add_library(hermes_approval STATIC
     src/skills_guard.cpp
     src/osv_check.cpp
     src/mcp_credential_strip.cpp
+    src/tirith_security.cpp
 )
 
 target_include_directories(hermes_approval

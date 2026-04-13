@@ -53,6 +53,21 @@ TEST_F(TtsToolTest, ElevenLabsProviderMissingKeyReturnsError) {
               std::string::npos);
 }
 
+TEST_F(TtsToolTest, NeuttsMissingBinaryReturnsError) {
+    // Guard PATH so neutts can't be found.
+    std::string old_path = std::getenv("PATH") ? std::getenv("PATH") : "";
+    setenv("PATH", "/nonexistent-path-xyz", 1);
+    auto result = ToolRegistry::instance().dispatch(
+        "text_to_speech",
+        {{"text", "hello"}, {"provider", "neutts"}},
+        {});
+    auto parsed = nlohmann::json::parse(result);
+    EXPECT_TRUE(parsed.contains("error"));
+    EXPECT_NE(parsed["error"].get<std::string>().find("neutts"),
+              std::string::npos);
+    setenv("PATH", old_path.c_str(), 1);
+}
+
 TEST_F(TtsToolTest, UnknownProviderReturnsError) {
     auto result = ToolRegistry::instance().dispatch(
         "text_to_speech",

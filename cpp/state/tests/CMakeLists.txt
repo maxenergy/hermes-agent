@@ -25,6 +25,7 @@ set(HERMES_STATE_TEST_SOURCES
     test_memory_store.cpp
     test_memory_cache.cpp
     test_trajectory.cpp
+    test_checkpoint_manager.cpp
 )
 
 add_executable(hermes_state_tests ${HERMES_STATE_TEST_SOURCES})

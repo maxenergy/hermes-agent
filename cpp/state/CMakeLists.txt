@@ -51,6 +51,7 @@ add_library(hermes_state STATIC
     src/process_registry.cpp
     src/memory_store.cpp
     src/trajectory.cpp
+    src/checkpoint_manager.cpp
 )
 
 target_include_directories(hermes_state
