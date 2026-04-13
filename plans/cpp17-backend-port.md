@@ -130,7 +130,7 @@
 - [x] `register_process` / `get` / `list_running` / `list_finished` / `mark_exited` / `kill`(数据层) (2026-04-12, 4318321b)
 - [x] `feed_output` + `drain_notifications` 通知队列 (2026-04-12, 4318321b)
 - [x] JSON checkpoint 文件 + restore + 孤儿检测 (2026-04-12, 4318321b)
-- [ ] `spawn_local()` 实际 Boost.Process 接入(留 `TODO(phase-7)`)
+- [x] `spawn_local()` 实际 POSIX fork/exec 接入(cwd/env/timeout/streaming/pgid kill)
 - [ ] `spawn_via_env()` 远程环境转发
 
 ### 2.3 内存与轨迹存储
