@@ -572,7 +572,7 @@
 
 ### 11.2 消息处理管线 `_handle_message()`
 - [x] 用户授权检查(allowlist + pairing store + DM 行为) (2026-04-12, 0513a3f8)
-- [ ] `/update` prompt 拦截
+- [ ] `/update` prompt 拦截 *— deferred: gateway dispatch 已支持 update;CLI 端 prompt-time 拦截非阻塞需求*
 - [x] 卡死 agent 驱逐(evict_stale_agents) (2026-04-12, 9994cd51)
 - [x] 运行中 agent 中断(特例:`/stop` / `/new` / `/reset` / `/background` / `/approve` / `/deny` / 照片) (2026-04-12, 9994cd51)
 - [x] 命令分发 vs 普通消息路由 (2026-04-12, 0513a3f8)
@@ -594,7 +594,7 @@
 - [x] 事件常量:`gateway:startup` / `session:start/end/reset` / `agent:start/step/end` / `command:*` (2026-04-12, 0513a3f8)
 - [x] `HookRegistry`:register + emit,精确匹配 + 通配符匹配(`command:*`) (2026-04-12, 0513a3f8)
 - [x] `emit()` 永不阻塞(异常捕获仅记日志) (2026-04-12, 0513a3f8)
-- [ ] hook 发现:`~/.hermes/hooks/` + `HOOK.yaml`(Phase 17 plugin system 部分覆盖)
+- [x] hook 发现:`~/.hermes/hooks/` + `HOOK.yaml` — `cpp/cli/src/hook_discovery.cpp` (2026-04-13, 12ad04e3)
 - [x] 内置 hook:`boot_md` —— `register_boot_md_hook` (2026-04-12, 0513a3f8)
 
 ### 11.5 SessionStore(`gateway/session`)
@@ -607,7 +607,7 @@
 
 ### 11.6 Status & Lock(`gateway/status`)
 - [x] PID 检测:`{HERMES_HOME}/gateway.pid`,JSON 含 pid / kind / argv / start_time (2026-04-12, 0513a3f8)
-- [ ] `_looks_like_gateway_process()`:cmdline 校验避免误判
+- [x] `_looks_like_gateway_process()`:cmdline 校验避免误判 — cross-platform process introspection (2026-04-13, 12ad04e3)
 - [x] **scoped locks**:`acquire_scoped_lock(scope, identity, metadata)` / `release_scoped_lock()` (2026-04-12, 0513a3f8)
 - [x] lock 目录:`$XDG_STATE_HOME/hermes/gateway-locks/` 或 `HERMES_GATEWAY_LOCK_DIR` (2026-04-12, 0513a3f8)
 - [x] lock 文件名:`{scope}-{sha256(identity)[:16]}.lock` (2026-04-12, 0513a3f8)
@@ -617,7 +617,7 @@
 - [x] 跟踪:gateway_state(starting/running/fatal/stopping)/ exit_reason / restart_requested (2026-04-12, 0513a3f8)
 - [x] per-platform status:state / error_code / error_message (2026-04-12, 0513a3f8)
 - [x] `terminate_pid(pid, force)` 平台感知 (2026-04-12, 0513a3f8)
-- [ ] `_get_process_start_time()` 跨平台(`/proc/{pid}/stat` field 22 / Windows 任务调度器)
+- [x] `_get_process_start_time()` 跨平台(`/proc/{pid}/stat` field 22 / Windows 任务调度器) (2026-04-13, 12ad04e3)
 
 ### 11.7 Pairing(`gateway/pairing`)
 - [x] 32 字符无歧义字母表(去掉 0/O/1/I) (2026-04-12, 0513a3f8)
@@ -654,10 +654,10 @@
 ### 12.1 BasePlatformAdapter
 - [x] 通用接口:`connect()` / `disconnect()` / `send()` / `send_typing()` / `send_image/voice/document/video()` / `edit_message()` / `set_message_handler()` (2026-04-12, 356cedb1)
 - [x] `MessageEvent`:text / message_type(TEXT/PHOTO/VIDEO/AUDIO/VOICE/DOCUMENT/STICKER) / source / media_urls / reply_to_message_id (2026-04-12, 356cedb1)
-- [ ] 媒体缓存:`{HERMES_HOME}/cache/images/`、`/audio/`(429/5xx 重试)
-- [ ] SSRF 防护
-- [ ] 错误处理:fatal → 自动重连(retryable=true);非可重试 → 干净退出
-- [ ] 指数退避
+- [x] 媒体缓存:`{HERMES_HOME}/cache/images/`、`/audio/`(429/5xx 重试) — `media_cache.cpp` (2026-04-13, b200d3da)
+- [x] SSRF 防护 — `safe_fetch.cpp` SSRF wrapper (2026-04-13, 42296bda, b200d3da)
+- [x] 错误处理:fatal → 自动重连(retryable=true);非可重试 → 干净退出 — `_platform_reconnect_watcher` (2026-04-12, 932ddb2c)
+- [x] 指数退避(jittered_backoff in retry/reconnect paths) (2026-04-12, 932ddb2c)
 
 ### 12.2 Telegram 适配器
 - [x] long-poll(默认)+ webhook 双模式 (2026-04-12, 356cedb1)
@@ -667,27 +667,27 @@
 - [x] MarkdownV2 格式化 (2026-04-12, 356cedb1)
 - [x] reply-to 模式:first / all (2026-04-12, 356cedb1)
 - [x] GFW 备用 IP fallback (2026-04-12, 356cedb1)
-- [ ] **token scoped lock**(参考 `gateway/platforms/telegram.py` 模板)
-- [ ] BotCommand 菜单从 `telegram_bot_commands()` 生成
+- [x] **token scoped lock**(参考 `gateway/platforms/telegram.py` 模板) (2026-04-13, f0215995, 2198dc39)
+- [x] BotCommand 菜单从 `telegram_bot_commands()` 生成 (2026-04-13, 2198dc39)
 
 ### 12.3 Discord 适配器
 - [x] WebSocket gateway intent stream (2026-04-12, 29936e3c)
 - [x] 文本 / threads / 富 embed / components / reactions (2026-04-12, 29936e3c)
-- [ ] 语音频道监听:opus 解码,SSRC → user_id 映射,TTS 输出
+- [x] 语音频道监听:opus 解码,SSRC → user_id 映射,TTS 输出 — libopus encode/decode + voice callback (2026-04-13, fedf0d99, 3a643487)
 - [x] mention 解析(`<@user_id>`) (2026-04-12, 356cedb1)
 - [x] thread 创建/管理 (2026-04-12, 356cedb1)
 - [x] **不进行 PII 脱敏**(需要真实 ID) (2026-04-12, 356cedb1)
-- [ ] token scoped lock
+- [x] token scoped lock (2026-04-13, f0215995)
 
 ### 12.4 Slack 适配器
 - [x] RTM WebSocket 或 Events API + HTTP (2026-04-12, 29936e3c)
 - [x] channel + thread 区分 (2026-04-12, 29936e3c)
 - [x] @-mention 解析 (2026-04-12, 29936e3c)
 - [x] file 上传 (2026-04-12, 29936e3c)
-- [ ] thread reply 检测(thread 内不需要显式提及)
-- [ ] `/hermes` 子命令路由(从 `slack_subcommand_map()` 生成)
+- [x] thread reply 检测(thread 内不需要显式提及) (2026-04-13, 2198dc39)
+- [x] `/hermes` 子命令路由(从 `slack_subcommand_map()` 生成) — `slack_subcommand_router.cpp` (2026-04-13, 42296bda)
 - [x] HMAC 签名验证 (2026-04-12, 356cedb1)
-- [ ] token scoped lock
+- [x] token scoped lock (2026-04-13, f0215995)
 
 ### 12.5 WhatsApp 适配器
 - [x] WebSocket bridge(WaBridge / Whatsmeow) (2026-04-12, 29936e3c)
@@ -695,21 +695,21 @@
 - [x] phone number + JID/LID 别名(bridge session mapping) (2026-04-12, 356cedb1)
 - [x] media 处理 (2026-04-12, 29936e3c)
 - [x] group 成员跟踪 (2026-04-12, 29936e3c)
-- [ ] phone+code pairing 流程
+- [x] phone+code pairing 流程 (2026-04-13, d42d8a44, fa975d08)
 
 ### 12.6 Signal 适配器
 - [x] Signal-over-HTTP bridge (2026-04-12, 29936e3c)
 - [x] 文本 / reactions / group 更新 (2026-04-12, 29936e3c)
 - [x] UUID + 电话号码别名 (2026-04-12, 356cedb1)
-- [ ] disappearing messages
-- [ ] group v2 支持
+- [x] disappearing messages — ephemeral msgs (2026-04-13, d42d8a44, fa975d08)
+- [x] group v2 支持 (2026-04-13, d42d8a44, fa975d08)
 
 ### 12.7 Matrix 适配器
 - [x] Matrix client SDK(libolm 用于 E2EE) (2026-04-12, 29936e3c)
 - [x] 文本 / threads / reactions / 文件上传 (2026-04-12, 29936e3c)
 - [x] room 成员管理 + invite 处理 (2026-04-12, 29936e3c)
 - [x] HOMESERVER / USERNAME / PASSWORD (2026-04-12, 356cedb1)
-- [ ] 加密支持
+- [x] 加密支持(libolm E2EE — olm account/session + megolm group sessions, compile-time opt-in) (2026-04-13, 0ece572a)
 
 ### 12.8 Mattermost 适配器
 - [x] WebSocket RTM + HTTP (2026-04-12, 29936e3c)
