@@ -36,6 +36,8 @@ target_link_libraries(hermes_cli_tests
         hermes::core
         hermes::config
         hermes::tools
+        hermes::auth
+        hermes::llm
         nlohmann_json::nlohmann_json
         GTest::gtest_main
         hermes_warnings
