@@ -9,6 +9,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "hermes/batch/batch_runner.hpp"
+#include "hermes/environments/local.hpp"
+#include "hermes/tools/terminal_tool.hpp"
 
 namespace hermes::cli::rl {
 
@@ -215,11 +217,25 @@ static int run_loop(const RlConfig& cfg, bool eval_only) {
     bc.checkpoint_interval =
         std::chrono::seconds(std::max(1, cfg.checkpoint_interval_seconds));
 
+    // Install a terminal env factory so any ``terminal`` tool invoked
+    // mid-task is routed through the per-task environment.  Non-local
+    // backends currently fall back to LocalEnvironment — same caveat
+    // as the batch runner's make_env().
+    hermes::tools::set_terminal_env_factory(
+        [](const std::string& /*env_name*/)
+            -> std::unique_ptr<hermes::environments::BaseEnvironment> {
+            return std::make_unique<hermes::environments::LocalEnvironment>();
+        });
+
     batch::BatchRunner runner(std::move(bc));
     runner.set_progress_callback([](const batch::BatchProgress& p) {
         std::cerr << "hermes rl progress: " << p.to_json().dump() << "\n";
     });
     auto result = runner.run();
+
+    // Clear factory on exit so subsequent CLI operations see the
+    // default local terminal.
+    hermes::tools::set_terminal_env_factory({});
 
     // Emit a final summary to stdout in JSON so CI can parse it.
     nlohmann::json summary;
