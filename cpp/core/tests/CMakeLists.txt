@@ -30,6 +30,7 @@ set(HERMES_CORE_TEST_SOURCES
     test_ansi_strip.cpp
     test_fuzzy.cpp
     test_patch_parser.cpp
+    test_async_bridge.cpp
 )
 
 add_executable(hermes_core_tests ${HERMES_CORE_TEST_SOURCES})
