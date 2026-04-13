@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > A more exhaustive contributor guide lives in `AGENTS.md` — read it for skin engine details, profile internals, and the complete list of pitfalls. This file is the fast on-ramp.
 
+> **C++17 port**: a complete reimplementation lives under `cpp/` with feature
+> parity across agent loop / gateway adapters / tools / skills / MCP / RL
+> training. Build: `cmake --build cpp/build/default --parallel`; tests:
+> `ctest --test-dir cpp/build/default --exclude-regex "CancelFn|ForegroundTimeout|CopyPaste|SkillsHub|Live|IMAP_TEST|SINGULARITY_TEST"`
+> (~1380 tests). Plan + status: `plans/cpp17-backend-port.md`.
+
 ## Environment
 
 ```bash

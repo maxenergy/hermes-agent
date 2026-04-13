@@ -1006,7 +1006,7 @@
 
 - [x] `README.md`(C++ 版本) (2026-04-12, 05803f8f)
 - [x] `CONTRIBUTING.md`(C++ 版本) (2026-04-12, 05803f8f)
-- [ ] `CLAUDE.md` / `AGENTS.md` 同步更新
+- [x] `CLAUDE.md` / `AGENTS.md` 同步更新(顶部加入 C++17 port 引用块) (2026-04-14)
 - [x] API 文档(Doxygen)`cpp/Doxyfile` (2026-04-12, 5ef69d59)
 - [x] 架构图(同步 `docs/`) (2026-04-13, batch13 — cpp/docs/architecture.md + module-dependency.md, 6 Mermaid diagrams)
 - [x] CHANGELOG(`cpp/CHANGELOG.md`) (2026-04-12, 05803f8f)

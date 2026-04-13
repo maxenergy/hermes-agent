@@ -2,6 +2,13 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+> **Two implementations share this repo**: the Python agent loop (`cli.py`,
+> `run_agent.py`, `gateway/`, `tools/`, `skills/`) and a C++17 port under
+> `cpp/` with feature parity across agent / gateway / tools / skills / MCP /
+> RL training. Python is the reference; C++ mirrors its semantics. Plan +
+> status live in `plans/cpp17-backend-port.md` (currently ~1380 tests green,
+> only WSL2 host-matrix run + release-cadence items remain).
+
 ## Development Environment
 
 ```bash
