@@ -5,6 +5,8 @@
 
 #include <string>
 
+namespace hermes::llm { class HttpTransport; }
+
 namespace hermes::cli {
 
 int main_entry(int argc, char* argv[]);
@@ -35,6 +37,10 @@ int cmd_webhook(int argc, char* argv[]);
 int cmd_runtime(int argc, char* argv[]);
 int cmd_auth(int argc, char* argv[]);
 int cmd_login(int argc, char* argv[]);
+
+// Test hook — override the HTTP transport used by `cmd_providers test`.
+// Pass nullptr to restore the default (curl) transport.
+void set_providers_transport_override(hermes::llm::HttpTransport* transport);
 
 // Version string constant.
 inline constexpr const char* kVersionString = "hermes-cpp 0.1.0";
