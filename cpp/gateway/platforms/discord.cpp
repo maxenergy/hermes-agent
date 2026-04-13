@@ -164,6 +164,54 @@ std::string DiscordAdapter::format_mention(const std::string& user_id) {
     return "<@" + user_id + ">";
 }
 
+// ----- Gateway WebSocket (v10) ------------------------------------------
+
+void DiscordAdapter::configure_gateway(
+    int intents, std::unique_ptr<WebSocketTransport> transport) {
+    DiscordGateway::Config gcfg;
+    gcfg.token = cfg_.bot_token;
+    gcfg.intents = intents;
+    gateway_ = std::make_unique<DiscordGateway>(std::move(gcfg));
+    if (transport) {
+        gateway_->set_transport(std::move(transport));
+    }
+
+    // Route DISPATCH events into the adapter's message callback.
+    gateway_->set_dispatch_callback(
+        [this](const std::string& event, const nlohmann::json& data) {
+            if (event != "MESSAGE_CREATE") return;
+            if (!message_cb_) return;
+            std::string channel_id = data.value("channel_id", "");
+            std::string content = data.value("content", "");
+            std::string message_id = data.value("id", "");
+            std::string user_id;
+            if (data.contains("author") && data["author"].is_object()) {
+                user_id = data["author"].value("id", "");
+                // Skip bot-authored messages to prevent loops.
+                if (data["author"].value("bot", false)) return;
+            }
+            message_cb_(channel_id, user_id, content, message_id);
+        });
+}
+
+bool DiscordAdapter::start_gateway() {
+    if (!gateway_) configure_gateway(/*intents=*/(1 << 0) | (1 << 9) | (1 << 15));
+    // Intents: GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT (minimal chat set).
+    return gateway_ && gateway_->connect();
+}
+
+void DiscordAdapter::stop_gateway() {
+    if (gateway_) gateway_->disconnect();
+}
+
+bool DiscordAdapter::gateway_run_once() {
+    return gateway_ && gateway_->run_once();
+}
+
+bool DiscordAdapter::gateway_resume() {
+    return gateway_ && gateway_->resume();
+}
+
 // ----- Voice (Phase 14) --------------------------------------------------
 
 bool DiscordAdapter::join_voice(const std::string& channel_id) {

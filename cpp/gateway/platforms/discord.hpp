@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -12,6 +13,7 @@
 #include <hermes/gateway/gateway_runner.hpp>
 #include <hermes/llm/llm_client.hpp>
 
+#include "discord_gateway.hpp"
 #include "opus_codec.hpp"
 
 namespace hermes::gateway::platforms {
@@ -100,11 +102,47 @@ public:
     Config config() const { return cfg_; }
     bool connected() const { return connected_; }
 
+    // ----- Gateway WebSocket (v10) ------------------------------------
+    // Message callback signature: (channel_id, user_id, content, message_id).
+    using MessageCallback = std::function<void(const std::string& channel_id,
+                                               const std::string& user_id,
+                                               const std::string& content,
+                                               const std::string& message_id)>;
+
+    // Configure the gateway sub-driver. If a custom transport is supplied
+    // (e.g. a mock from tests), the adapter uses it; otherwise the driver
+    // creates a Beast WSS transport on start_gateway().
+    void configure_gateway(int intents,
+                           std::unique_ptr<WebSocketTransport> transport = nullptr);
+
+    // Open the gateway WebSocket, identify, and begin the heartbeat loop.
+    bool start_gateway();
+    void stop_gateway();
+    bool gateway_ready() const {
+        return gateway_ && gateway_->ready();
+    }
+    DiscordGateway* gateway() { return gateway_.get(); }
+
+    // Register a callback for MESSAGE_CREATE events. The adapter routes
+    // DISPATCH payloads into this callback after unwrapping the event.
+    void set_message_callback(MessageCallback cb) {
+        message_cb_ = std::move(cb);
+    }
+
+    // Drive one iteration of the gateway event loop.
+    bool gateway_run_once();
+
+    // Attempt a resume using the last stored session_id + seq.
+    bool gateway_resume();
+
 private:
     hermes::llm::HttpTransport* get_transport();
     Config cfg_;
     hermes::llm::HttpTransport* transport_ = nullptr;
     bool connected_ = false;
+
+    std::unique_ptr<DiscordGateway> gateway_;
+    MessageCallback message_cb_;
 
     OpusCodec voice_codec_;
     bool voice_connected_ = false;

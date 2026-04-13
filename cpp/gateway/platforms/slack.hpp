@@ -1,6 +1,8 @@
 // Phase 12 — Slack platform adapter.
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -8,6 +10,8 @@
 
 #include <hermes/gateway/gateway_runner.hpp>
 #include <hermes/llm/llm_client.hpp>
+
+#include "slack_socket_mode.hpp"
 
 namespace hermes::gateway::platforms {
 
@@ -52,11 +56,48 @@ public:
     Config config() const { return cfg_; }
     bool connected() const { return connected_; }
 
+    // ----- Socket Mode / RTM realtime --------------------------------
+    // Callback signature: (channel_id, user_id, text, ts).
+    using MessageCallback = std::function<void(const std::string& channel_id,
+                                               const std::string& user_id,
+                                               const std::string& text,
+                                               const std::string& ts)>;
+
+    // Configure realtime driver. If ws_url is empty, the adapter will
+    // call Slack REST to obtain it before start_realtime().
+    void configure_realtime(
+        const std::string& ws_url,
+        std::unique_ptr<WebSocketTransport> transport = nullptr);
+
+    // Open the Slack WebSocket and begin receiving events. Calls
+    // apps.connections.open (Socket Mode) or rtm.connect (RTM) if no
+    // URL was provided at configure-time.
+    bool start_realtime();
+    void stop_realtime();
+    bool realtime_open() const {
+        return socket_mode_ && socket_mode_->is_open();
+    }
+    SlackSocketMode* socket_mode() { return socket_mode_.get(); }
+
+    void set_message_callback(MessageCallback cb) {
+        message_cb_ = std::move(cb);
+    }
+
+    // Drive one poll of the WebSocket.
+    bool realtime_run_once();
+
+    // Fetch WSS URL via apps.connections.open (xapp token) or
+    // rtm.connect (xoxb token). Exposed for tests.
+    std::optional<std::string> fetch_ws_url();
+
 private:
     hermes::llm::HttpTransport* get_transport();
     Config cfg_;
     hermes::llm::HttpTransport* transport_ = nullptr;
     bool connected_ = false;
+
+    std::unique_ptr<SlackSocketMode> socket_mode_;
+    MessageCallback message_cb_;
 };
 
 }  // namespace hermes::gateway::platforms

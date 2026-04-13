@@ -180,4 +180,106 @@ std::string SlackAdapter::compute_slack_signature(
     return hex_stream.str();
 }
 
+// ----- Socket Mode / RTM realtime ---------------------------------------
+
+void SlackAdapter::configure_realtime(
+    const std::string& ws_url,
+    std::unique_ptr<WebSocketTransport> transport) {
+    SlackSocketMode::Config scfg;
+    scfg.app_token = cfg_.app_token;
+    scfg.bot_token = cfg_.bot_token;
+    scfg.ws_url = ws_url;
+    socket_mode_ = std::make_unique<SlackSocketMode>(std::move(scfg));
+    if (transport) socket_mode_->set_transport(std::move(transport));
+
+    socket_mode_->set_event_callback(
+        [this](const std::string& type, const nlohmann::json& data) {
+            // Socket Mode payload nests the event object under payload.event.
+            // RTM mode delivers the event object directly.
+            const nlohmann::json* ev = &data;
+            nlohmann::json payload_event;
+            if (data.contains("event") && data["event"].is_object()) {
+                payload_event = data["event"];
+                ev = &payload_event;
+            }
+            std::string inner_type = ev->value("type", type);
+            if (inner_type != "message") return;
+            if (!message_cb_) return;
+            // Ignore bot_message / subtype edits/deletes to avoid loops.
+            if (ev->contains("bot_id") && !ev->value("bot_id", "").empty()) return;
+            if (ev->contains("subtype")) return;
+            std::string channel = ev->value("channel", "");
+            std::string user = ev->value("user", "");
+            std::string text = ev->value("text", "");
+            std::string ts = ev->value("ts", "");
+            message_cb_(channel, user, text, ts);
+        });
+}
+
+std::optional<std::string> SlackAdapter::fetch_ws_url() {
+    auto* transport = get_transport();
+    if (!transport) return std::nullopt;
+
+    // Prefer Socket Mode when an app token is set.
+    if (!cfg_.app_token.empty()) {
+        try {
+            auto resp = transport->post_json(
+                "https://slack.com/api/apps.connections.open",
+                {{"Authorization", "Bearer " + cfg_.app_token},
+                 {"Content-Type", "application/x-www-form-urlencoded"}},
+                "");
+            if (resp.status_code != 200) return std::nullopt;
+            auto body = nlohmann::json::parse(resp.body);
+            if (!body.value("ok", false)) return std::nullopt;
+            if (body.contains("url")) return body["url"].get<std::string>();
+        } catch (...) {
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    // Legacy RTM via bot token.
+    if (!cfg_.bot_token.empty()) {
+        try {
+            auto resp = transport->post_json(
+                "https://slack.com/api/rtm.connect",
+                {{"Authorization", "Bearer " + cfg_.bot_token},
+                 {"Content-Type", "application/x-www-form-urlencoded"}},
+                "");
+            if (resp.status_code != 200) return std::nullopt;
+            auto body = nlohmann::json::parse(resp.body);
+            if (!body.value("ok", false)) return std::nullopt;
+            if (body.contains("url")) return body["url"].get<std::string>();
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+bool SlackAdapter::start_realtime() {
+    if (!socket_mode_) configure_realtime("");
+    if (!socket_mode_) return false;
+
+    // If no URL was provided at configure-time, fetch via REST.
+    auto* raw_sm = socket_mode_.get();
+    // We cannot inspect the URL via the public API; attempt a connect
+    // and fall through to fetching when it returns false.
+    if (!raw_sm->connect()) {
+        auto url = fetch_ws_url();
+        if (!url) return false;
+        raw_sm->set_websocket_url(*url);
+        if (!raw_sm->connect()) return false;
+    }
+    return true;
+}
+
+void SlackAdapter::stop_realtime() {
+    if (socket_mode_) socket_mode_->disconnect();
+}
+
+bool SlackAdapter::realtime_run_once() {
+    return socket_mode_ && socket_mode_->run_once();
+}
+
 }  // namespace hermes::gateway::platforms
