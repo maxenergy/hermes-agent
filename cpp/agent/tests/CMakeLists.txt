@@ -44,6 +44,7 @@ add_executable(hermes_agent_tests
     test_insights_format.cpp
     test_usage_pricing.cpp
     test_context_truncate.cpp
+    test_aux_provider_alias.cpp
 )
 
 target_link_libraries(hermes_agent_tests
