@@ -126,7 +126,8 @@ TEST(LlmClient, AnthropicParsesContentAndUsage) {
     req.messages = {user_msg("hello")};
     const auto out = client.complete(req);
 
-    EXPECT_EQ(out.finish_reason, "end_turn");
+    // finish_reason is now normalized to OpenAI-style canonical values.
+    EXPECT_EQ(out.finish_reason, "stop");
     ASSERT_FALSE(out.assistant_message.content_blocks.empty());
     EXPECT_EQ(out.assistant_message.content_blocks[0].text, "hello back");
     EXPECT_EQ(out.usage.input_tokens, 80);
@@ -259,7 +260,7 @@ TEST(LlmClient, AnthropicStreamingParsesTokens) {
     auto out = client.complete(req);
     ASSERT_FALSE(out.assistant_message.content_blocks.empty());
     EXPECT_EQ(out.assistant_message.content_blocks[0].text, "Hi there");
-    EXPECT_EQ(out.finish_reason, "end_turn");
+    EXPECT_EQ(out.finish_reason, "stop");
     EXPECT_EQ(out.usage.input_tokens, 25);
     EXPECT_EQ(out.usage.output_tokens, 5);
 }

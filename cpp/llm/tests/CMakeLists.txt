@@ -16,6 +16,10 @@ add_executable(hermes_llm_tests
     test_codex_models.cpp
     test_runtime_provider.cpp
     test_model_switch.cpp
+    test_anthropic_features.cpp
+    test_tokenizer.cpp
+    test_auxiliary_fallback.cpp
+    test_anthropic_depth.cpp
 )
 
 target_link_libraries(hermes_llm_tests

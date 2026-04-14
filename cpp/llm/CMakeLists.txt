@@ -58,6 +58,9 @@ add_library(hermes_llm STATIC
     src/codex_models.cpp
     src/runtime_provider.cpp
     src/model_switch.cpp
+    src/anthropic_features.cpp
+    src/tokenizer.cpp
+    src/auxiliary_fallback.cpp
 )
 
 target_include_directories(hermes_llm
