@@ -153,4 +153,142 @@ TEST_F(TerminalToolTest, ProcessKill) {
     EXPECT_EQ(status["state"], "killed");
 }
 
+// ── Helper-function coverage ─────────────────────────────────────────
+
+TEST(TerminalUtil, SafeCommandPreviewShort) {
+    EXPECT_EQ(terminal::safe_command_preview("echo hi"), "echo hi");
+    EXPECT_EQ(terminal::safe_command_preview(""), "<empty>");
+}
+
+TEST(TerminalUtil, SafeCommandPreviewTruncates) {
+    std::string long_cmd(500, 'x');
+    auto s = terminal::safe_command_preview(long_cmd, 100);
+    EXPECT_LE(s.size(), 105u);
+    EXPECT_NE(s.find("..."), std::string::npos);
+}
+
+TEST(TerminalUtil, LooksLikeEnvAssignment) {
+    EXPECT_TRUE(terminal::looks_like_env_assignment("FOO=bar"));
+    EXPECT_TRUE(terminal::looks_like_env_assignment("_X=1"));
+    EXPECT_TRUE(terminal::looks_like_env_assignment("PATH=/usr/bin"));
+    EXPECT_FALSE(terminal::looks_like_env_assignment("=bar"));
+    EXPECT_FALSE(terminal::looks_like_env_assignment("123=bar"));
+    EXPECT_FALSE(terminal::looks_like_env_assignment("echo hi"));
+    EXPECT_FALSE(terminal::looks_like_env_assignment(""));
+    EXPECT_FALSE(terminal::looks_like_env_assignment("FOO"));
+}
+
+TEST(TerminalUtil, ReadShellTokenPlain) {
+    auto [tok, end] = terminal::read_shell_token("echo hello", 0);
+    EXPECT_EQ(tok, "echo");
+    EXPECT_EQ(end, 4u);
+}
+
+TEST(TerminalUtil, ReadShellTokenQuoted) {
+    auto [tok, end] = terminal::read_shell_token("'foo bar' baz", 0);
+    EXPECT_EQ(tok, "'foo bar'");
+    EXPECT_EQ(end, 9u);
+}
+
+TEST(TerminalUtil, ReadShellTokenDoubleQuoted) {
+    auto [tok, end] = terminal::read_shell_token("\"a\\\"b\" c", 0);
+    EXPECT_EQ(tok, "\"a\\\"b\"");
+    EXPECT_EQ(end, 6u);
+}
+
+TEST(TerminalUtil, SudoRewriteBare) {
+    auto [cmd, found] =
+        terminal::rewrite_real_sudo_invocations("sudo apt-get update");
+    EXPECT_TRUE(found);
+    EXPECT_NE(cmd.find("sudo -S -p ''"), std::string::npos);
+}
+
+TEST(TerminalUtil, SudoRewriteChained) {
+    auto [cmd, found] =
+        terminal::rewrite_real_sudo_invocations(
+            "echo x && sudo apt-get update");
+    EXPECT_TRUE(found);
+    EXPECT_NE(cmd.find("sudo -S"), std::string::npos);
+}
+
+TEST(TerminalUtil, SudoMentionInStringNotRewritten) {
+    auto [cmd, found] = terminal::rewrite_real_sudo_invocations(
+        "echo 'please sudo this'");
+    EXPECT_FALSE(found);
+    EXPECT_EQ(cmd, "echo 'please sudo this'");
+}
+
+TEST(TerminalUtil, SudoNotRewrittenInComment) {
+    auto [cmd, found] = terminal::rewrite_real_sudo_invocations(
+        "# sudo is needed\necho hi");
+    EXPECT_FALSE(found);
+}
+
+TEST(TerminalUtil, InterpretExitCodeGrepNoMatch) {
+    auto note = terminal::interpret_exit_code("grep foo /tmp/file", 1);
+    ASSERT_TRUE(note.has_value());
+    EXPECT_NE(note->find("No matches"), std::string::npos);
+}
+
+TEST(TerminalUtil, InterpretExitCodeZero) {
+    EXPECT_FALSE(terminal::interpret_exit_code("grep x y", 0).has_value());
+}
+
+TEST(TerminalUtil, InterpretExitCodeDiffFilesDiffer) {
+    auto note = terminal::interpret_exit_code("diff a b", 1);
+    ASSERT_TRUE(note.has_value());
+    EXPECT_NE(note->find("differ"), std::string::npos);
+}
+
+TEST(TerminalUtil, InterpretExitCodeCurlCodes) {
+    auto n6 = terminal::interpret_exit_code("curl https://x", 6);
+    ASSERT_TRUE(n6.has_value());
+    EXPECT_NE(n6->find("resolve"), std::string::npos);
+    auto n28 = terminal::interpret_exit_code("curl https://x", 28);
+    ASSERT_TRUE(n28.has_value());
+    EXPECT_NE(n28->find("timed out"), std::string::npos);
+}
+
+TEST(TerminalUtil, InterpretExitCodePipelineUsesLast) {
+    auto note = terminal::interpret_exit_code("echo x | grep foo", 1);
+    ASSERT_TRUE(note.has_value());
+    EXPECT_NE(note->find("No matches"), std::string::npos);
+}
+
+TEST(TerminalUtil, InterpretExitCodeUnknownCommandReturnsNone) {
+    EXPECT_FALSE(terminal::interpret_exit_code("uuid-regen", 1).has_value());
+}
+
+TEST(TerminalUtil, CommandRequiresPipeStdin) {
+    EXPECT_TRUE(terminal::command_requires_pipe_stdin(
+        "gh auth login --with-token"));
+    EXPECT_TRUE(terminal::command_requires_pipe_stdin(
+        "gh   auth   login   --with-token"));
+    EXPECT_FALSE(terminal::command_requires_pipe_stdin("gh auth login"));
+    EXPECT_FALSE(terminal::command_requires_pipe_stdin("echo hi"));
+}
+
+TEST(TerminalUtil, ValidateWorkdirRejectsRelative) {
+    auto r = terminal::validate_workdir("relative/path");
+    EXPECT_FALSE(r.error.empty());
+}
+
+TEST(TerminalUtil, ValidateWorkdirAcceptsTmp) {
+    auto r = terminal::validate_workdir("/tmp");
+    EXPECT_TRUE(r.error.empty());
+    EXPECT_FALSE(r.path.empty());
+}
+
+TEST(TerminalUtil, ValidateWorkdirMissingErrors) {
+    auto r = terminal::validate_workdir("/this/does/not/exist/xyz");
+    EXPECT_FALSE(r.error.empty());
+}
+
+TEST(TerminalUtil, ClampTimeout) {
+    EXPECT_EQ(terminal::clamp_timeout(0), 1);
+    EXPECT_EQ(terminal::clamp_timeout(-10), 1);
+    EXPECT_EQ(terminal::clamp_timeout(10000), 3600);
+    EXPECT_EQ(terminal::clamp_timeout(120), 120);
+}
+
 }  // namespace

@@ -6,11 +6,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 namespace hermes::tools {
 
@@ -245,5 +249,262 @@ void register_terminal_tools() {
         reg.register_tool(std::move(entry));
     }
 }
+
+// ── Helpers (terminal::) ──────────────────────────────────────────────
+
+namespace terminal {
+
+std::string safe_command_preview(std::string_view command, std::size_t limit) {
+    if (command.empty()) return "<empty>";
+    if (command.size() <= limit) return std::string(command);
+    return std::string(command.substr(0, limit)) + "...";
+}
+
+bool looks_like_env_assignment(std::string_view token) {
+    if (token.empty()) return false;
+    if (token.front() == '=') return false;
+    auto eq = token.find('=');
+    if (eq == std::string_view::npos) return false;
+    auto name = token.substr(0, eq);
+    if (name.empty()) return false;
+    if (!(std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_')) {
+        return false;
+    }
+    for (std::size_t i = 1; i < name.size(); ++i) {
+        unsigned char c = name[i];
+        if (!std::isalnum(c) && c != '_') return false;
+    }
+    return true;
+}
+
+std::pair<std::string, std::size_t> read_shell_token(
+    std::string_view command, std::size_t start) {
+    std::size_t i = start;
+    std::size_t n = command.size();
+
+    while (i < n) {
+        char ch = command[i];
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == ';' ||
+            ch == '|' || ch == '&' || ch == '(' || ch == ')') {
+            break;
+        }
+        if (ch == '\'') {
+            ++i;
+            while (i < n && command[i] != '\'') ++i;
+            if (i < n) ++i;
+            continue;
+        }
+        if (ch == '"') {
+            ++i;
+            while (i < n) {
+                char inner = command[i];
+                if (inner == '\\' && i + 1 < n) {
+                    i += 2;
+                    continue;
+                }
+                if (inner == '"') {
+                    ++i;
+                    break;
+                }
+                ++i;
+            }
+            continue;
+        }
+        if (ch == '\\' && i + 1 < n) {
+            i += 2;
+            continue;
+        }
+        ++i;
+    }
+    return {std::string(command.substr(start, i - start)), i};
+}
+
+std::pair<std::string, bool> rewrite_real_sudo_invocations(
+    std::string_view command) {
+    std::string out;
+    std::size_t i = 0;
+    std::size_t n = command.size();
+    bool command_start = true;
+    bool found = false;
+
+    while (i < n) {
+        char ch = command[i];
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            out += ch;
+            if (ch == '\n') command_start = true;
+            ++i;
+            continue;
+        }
+        if (ch == '#' && command_start) {
+            auto nl = command.find('\n', i);
+            if (nl == std::string_view::npos) {
+                out.append(command.substr(i));
+                break;
+            }
+            out.append(command.substr(i, nl - i));
+            i = nl;
+            continue;
+        }
+        if (i + 1 < n &&
+            (command.compare(i, 2, "&&") == 0 ||
+             command.compare(i, 2, "||") == 0 ||
+             command.compare(i, 2, ";;") == 0)) {
+            out.append(command.substr(i, 2));
+            i += 2;
+            command_start = true;
+            continue;
+        }
+        if (ch == ';' || ch == '|' || ch == '&' || ch == '(') {
+            out += ch;
+            ++i;
+            command_start = true;
+            continue;
+        }
+        if (ch == ')') {
+            out += ch;
+            ++i;
+            command_start = false;
+            continue;
+        }
+
+        auto [token, next_i] = read_shell_token(command, i);
+        if (command_start && token == "sudo") {
+            out += "sudo -S -p ''";
+            found = true;
+        } else {
+            out += token;
+        }
+
+        if (command_start && looks_like_env_assignment(token)) {
+            command_start = true;
+        } else {
+            command_start = false;
+        }
+        i = next_i;
+    }
+    return {out, found};
+}
+
+std::optional<std::string> interpret_exit_code(std::string_view command,
+                                               int exit_code) {
+    if (exit_code == 0) return std::nullopt;
+
+    // Extract last segment split on shell chain/pipe operators.
+    std::string cmd(command);
+    static const std::regex re(R"(\s*(?:\|\||&&|[|;])\s*)");
+    std::sregex_token_iterator it(cmd.begin(), cmd.end(), re, -1), end;
+    std::string last;
+    for (; it != end; ++it) last = *it;
+    // trim
+    auto trim_begin = last.find_first_not_of(" \t\r\n");
+    auto trim_end = last.find_last_not_of(" \t\r\n");
+    if (trim_begin == std::string::npos) return std::nullopt;
+    last = last.substr(trim_begin, trim_end - trim_begin + 1);
+    if (last.empty()) return std::nullopt;
+
+    // First non-env token.
+    std::string base;
+    std::size_t p = 0;
+    while (p < last.size()) {
+        while (p < last.size() &&
+               std::isspace(static_cast<unsigned char>(last[p]))) {
+            ++p;
+        }
+        auto [tok, q] = read_shell_token(last, p);
+        if (tok.empty()) break;
+        if (!tok.empty() && tok.front() != '-' && looks_like_env_assignment(tok)) {
+            p = q;
+            continue;
+        }
+        // strip leading path.
+        auto slash = tok.rfind('/');
+        base = (slash == std::string::npos) ? tok : tok.substr(slash + 1);
+        break;
+    }
+    if (base.empty()) return std::nullopt;
+
+    using Map = std::unordered_map<int, std::string>;
+    static const std::unordered_map<std::string, Map> semantics = {
+        {"grep",  {{1, "No matches found (not an error)"}}},
+        {"egrep", {{1, "No matches found (not an error)"}}},
+        {"fgrep", {{1, "No matches found (not an error)"}}},
+        {"rg",    {{1, "No matches found (not an error)"}}},
+        {"ag",    {{1, "No matches found (not an error)"}}},
+        {"ack",   {{1, "No matches found (not an error)"}}},
+        {"diff",  {{1, "Files differ (expected, not an error)"}}},
+        {"colordiff", {{1, "Files differ (expected, not an error)"}}},
+        {"find",  {{1, "Some directories were inaccessible"
+                       " (partial results may still be valid)"}}},
+        {"test",  {{1, "Condition evaluated to false (expected, not an error)"}}},
+        {"[",     {{1, "Condition evaluated to false (expected, not an error)"}}},
+        {"curl",  {{6,  "Could not resolve host"},
+                   {7,  "Failed to connect to host"},
+                   {22, "HTTP response code indicated error "
+                        "(e.g. 404, 500)"},
+                   {28, "Operation timed out"}}},
+        {"git",   {{1, "Non-zero exit (often normal — e.g. 'git diff' "
+                        "returns 1 when files differ)"}}},
+    };
+    auto it2 = semantics.find(base);
+    if (it2 == semantics.end()) return std::nullopt;
+    auto jt = it2->second.find(exit_code);
+    if (jt == it2->second.end()) return std::nullopt;
+    return jt->second;
+}
+
+bool command_requires_pipe_stdin(std::string_view command) {
+    // Lowercase normalize + collapse whitespace.
+    std::string norm;
+    norm.reserve(command.size());
+    bool in_space = false;
+    for (char c : command) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!in_space && !norm.empty()) norm += ' ';
+            in_space = true;
+        } else {
+            norm += static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c)));
+            in_space = false;
+        }
+    }
+    auto starts_with = [&](std::string_view p) {
+        return norm.size() >= p.size() && norm.compare(0, p.size(), p) == 0;
+    };
+    return starts_with("gh auth login") &&
+           norm.find("--with-token") != std::string::npos;
+}
+
+WorkdirResult validate_workdir(std::string_view workdir) {
+    WorkdirResult r;
+    if (workdir.empty()) {
+        r.error = "workdir must not be empty";
+        return r;
+    }
+    fs::path p(workdir);
+    std::error_code ec;
+    if (!p.is_absolute()) {
+        r.error = "workdir must be an absolute path: " + std::string(workdir);
+        return r;
+    }
+    if (!fs::exists(p, ec)) {
+        r.error = "workdir does not exist: " + std::string(workdir);
+        return r;
+    }
+    if (!fs::is_directory(p, ec)) {
+        r.error = "workdir is not a directory: " + std::string(workdir);
+        return r;
+    }
+    auto canon = fs::canonical(p, ec);
+    r.path = ec ? p.string() : canon.string();
+    return r;
+}
+
+int clamp_timeout(int requested) {
+    if (requested < 1) return 1;
+    if (requested > 3600) return 3600;
+    return requested;
+}
+
+}  // namespace terminal
 
 }  // namespace hermes::tools
