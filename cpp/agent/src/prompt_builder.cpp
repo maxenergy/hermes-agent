@@ -62,6 +62,58 @@ const std::map<std::string, std::string> kPlatformHints = {
      "## Platform: Matrix\n"
      "You are running inside a Matrix bot.  Replies are rendered as "
      "Markdown with full HTML pass-through.\n"},
+    {"whatsapp",
+     "You are on a text messaging communication platform, WhatsApp. "
+     "Please do not use markdown as it does not render. "
+     "You can send media files natively: to deliver a file to the user, "
+     "include MEDIA:/absolute/path/to/file in your response. The file "
+     "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
+     ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
+     "files arrive as downloadable documents. You can also include image "
+     "URLs in markdown format ![alt](url) and they will be sent as photos."},
+    {"signal",
+     "You are on a text messaging communication platform, Signal. "
+     "Please do not use markdown as it does not render. "
+     "You can send media files natively: to deliver a file to the user, "
+     "include MEDIA:/absolute/path/to/file in your response. Images "
+     "(.png, .jpg, .webp) appear as photos, audio as attachments, and "
+     "other files arrive as downloadable documents. You can also include "
+     "image URLs in markdown format ![alt](url) and they will be sent as "
+     "photos."},
+    {"email",
+     "You are communicating via email. Write clear, well-structured "
+     "responses suitable for email. Use plain text formatting (no "
+     "markdown). Keep responses concise but complete. You can send file "
+     "attachments — include MEDIA:/absolute/path/to/file in your response. "
+     "The subject line is preserved for threading. Do not include "
+     "greetings or sign-offs unless contextually appropriate."},
+    {"cron",
+     "You are running as a scheduled cron job. There is no user present — "
+     "you cannot ask questions, request clarification, or wait for "
+     "follow-up. Execute the task fully and autonomously, making "
+     "reasonable decisions where needed. Your final response is "
+     "automatically delivered to the job's configured destination — put "
+     "the primary content directly in your response."},
+    {"sms",
+     "You are communicating via SMS. Keep responses concise and use plain "
+     "text only — no markdown, no formatting. SMS messages are limited to "
+     "~1600 characters, so be brief and direct."},
+    {"bluebubbles",
+     "You are chatting via iMessage (BlueBubbles). iMessage does not "
+     "render markdown formatting — use plain text. Keep responses concise "
+     "as they appear as text messages. You can send media files natively: "
+     "include MEDIA:/absolute/path/to/file in your response. Images "
+     "(.jpg, .png, .heic) appear as photos and other files arrive as "
+     "attachments."},
+    {"weixin",
+     "You are on Weixin/WeChat. Markdown formatting is supported, so you "
+     "may use it when it improves readability, but keep the message "
+     "compact and chat-friendly. You can send media files natively: "
+     "include MEDIA:/absolute/path/to/file in your response. Images are "
+     "sent as native photos, videos play inline when supported, and other "
+     "files arrive as downloadable documents. You can also include image "
+     "URLs in markdown format ![alt](url) and they will be downloaded and "
+     "sent as native media when possible."},
 };
 
 }  // namespace
