@@ -20,8 +20,13 @@ protected:
         ToolRegistry::instance().clear();
         register_file_tools();
 
-        // Create temp directory.
-        tmp_ = fs::temp_directory_path() / "hermes_file_tools_test";
+        // Create per-test temp directory so parallel runners don't stomp.
+        auto test_name =
+            ::testing::UnitTest::GetInstance()->current_test_info()->name();
+        tmp_ = fs::temp_directory_path() /
+               (std::string("hermes_file_tools_") + test_name);
+        std::error_code ec;
+        fs::remove_all(tmp_, ec);
         fs::create_directories(tmp_);
     }
 
@@ -49,14 +54,18 @@ protected:
 
 TEST_F(FileToolsTest, ReadFileHappyPath) {
     write_tmp("hello.txt", "Hello, World!");
-    auto result = json::parse(dispatch("read_file", {{"path", "hello.txt"}}));
+    auto result = json::parse(
+        dispatch("read_file", {{"path", "hello.txt"}, {"raw", true}}));
     EXPECT_EQ(result["content"], "Hello, World!");
 }
 
 TEST_F(FileToolsTest, ReadFileWithOffsetAndLimit) {
     write_tmp("data.txt", "abcdefghij");
     auto result = json::parse(
-        dispatch("read_file", {{"path", "data.txt"}, {"offset", 3}, {"limit", 4}}));
+        dispatch("read_file", {{"path", "data.txt"},
+                               {"raw", true},
+                               {"offset", 3},
+                               {"limit", 4}}));
     EXPECT_EQ(result["content"], "defg");
 }
 
@@ -74,7 +83,8 @@ TEST_F(FileToolsTest, WriteFileRoundTrip) {
     EXPECT_TRUE(wr["written"].get<bool>());
     EXPECT_EQ(wr["bytes"], 9);
 
-    auto rd = json::parse(dispatch("read_file", {{"path", "out.txt"}}));
+    auto rd = json::parse(
+        dispatch("read_file", {{"path", "out.txt"}, {"raw", true}}));
     EXPECT_EQ(rd["content"], "test data");
 }
 
@@ -103,7 +113,9 @@ TEST_F(FileToolsTest, PatchAppliesValidDiff) {
     EXPECT_EQ(result["hunks_applied"], 1);
 
     // Verify content changed.
-    auto rd = json::parse(dispatch("read_file", {{"path", "patch_target.txt"}}));
+    auto rd = json::parse(
+        dispatch("read_file",
+                 {{"path", "patch_target.txt"}, {"raw", true}}));
     EXPECT_NE(rd["content"].get<std::string>().find("line2_modified"),
               std::string::npos);
 }
