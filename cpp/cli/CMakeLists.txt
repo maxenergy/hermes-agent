@@ -87,6 +87,7 @@ target_link_libraries(hermes_cli_lib
         hermes::agent
         hermes::batch
         hermes::environments
+        hermes::plugins
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::gateway

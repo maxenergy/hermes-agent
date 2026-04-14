@@ -14,6 +14,7 @@
 #include "hermes/gateway/pairing.hpp"
 #include "hermes/gateway/gateway_config.hpp"
 #include "hermes/llm/llm_client.hpp"
+#include "hermes/plugins/plugins_cli.hpp"
 #include "hermes/profile/profile.hpp"
 #include "hermes/skills/skill_utils.hpp"
 #include "hermes/tools/toolsets.hpp"
@@ -76,6 +77,7 @@ void print_global_help() {
               << "  runtime     Switch terminal backend (list | select <name>)\n"
               << "  memory      Configure memory backend (Honcho)\n"
               << "  rl          RL training / eval CLI — rl train|eval|list-environments\n"
+              << "  plugins     Manage plugins — list|install|uninstall|enable|disable|info|update|search|reload\n"
               << "\n"
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
@@ -1909,6 +1911,9 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "login") {
         return cmd_login(argc, argv);
+    }
+    if (sub == "plugins") {
+        return hermes::plugins::cmd_plugins(argc, argv);
     }
     if (sub == "rl") {
         std::vector<std::string> rl_argv;

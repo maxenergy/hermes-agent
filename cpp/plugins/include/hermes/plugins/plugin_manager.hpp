@@ -2,6 +2,7 @@
 #pragma once
 
 #include "hermes/plugins/plugin.hpp"
+#include "hermes/plugins/manifest.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -17,6 +18,8 @@ struct PluginInfo {
     std::string description;
     std::filesystem::path path;  // .so / .dylib / .dll
     bool enabled = true;
+    PluginManifest manifest;     // optional — empty when no plugin.yaml
+    std::string error;           // non-empty if load failed
 };
 
 class PluginManager {
@@ -48,6 +51,25 @@ public:
     /// Query helpers.
     std::vector<PluginInfo> list() const;
     bool is_loaded(const std::string& name) const;
+
+    /// Hot-reload — unload, then re-load the plugin from disk.  Fires
+    /// `rebuild_lookups_cb_` once at the end.  Returns true if the plugin
+    /// was reloaded successfully.
+    bool reload(const std::string& name);
+
+    /// Check whether @p manifest permits the plugin to register an
+    /// identifier of the given kind.  Kind is one of "tool", "command",
+    /// "event", "cli".  Empty capability grants reject everything; the
+    /// literal "*" grants unrestricted access.  This is the single enforcement
+    /// point for the plugin sandbox.
+    static bool capability_allows(const PluginManifest& manifest,
+                                  const std::string& kind,
+                                  const std::string& identifier);
+
+    /// Scan the plugin directory for `plugin.yaml` manifests (without
+    /// loading any shared library).  Used by CLI subcommands like
+    /// `list` and `info` that only need metadata.
+    std::vector<PluginManifest> scan_manifests() const;
 
 private:
     std::filesystem::path dir_;

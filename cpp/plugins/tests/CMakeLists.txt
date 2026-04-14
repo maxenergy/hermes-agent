@@ -33,3 +33,19 @@ target_link_libraries(hermes_plugins_tests
 gtest_discover_tests(hermes_plugins_tests
     DISCOVERY_MODE PRE_TEST
 )
+
+# CLI-specific plugin tests — standalone binary so it does not transitively
+# pull in hermes::cli (and therefore hermes::gateway), which keeps the
+# plugin subsystem buildable in isolation.
+add_executable(hermes_plugins_cli_tests test_plugins_cli.cpp)
+target_link_libraries(hermes_plugins_cli_tests
+    PRIVATE
+        hermes::plugins
+        hermes::core
+        GTest::gtest_main
+        hermes_warnings
+)
+
+gtest_discover_tests(hermes_plugins_cli_tests
+    DISCOVERY_MODE PRE_TEST
+)
