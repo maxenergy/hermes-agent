@@ -21,6 +21,35 @@ namespace hermes::state {
 enum class ProcessState { Running, Exited, Killed };
 enum class PidScope { Host, Sandbox };
 
+// Auto-restart policy for spawn_local().  When the child exits with a
+// non-zero (or non-matching) code the waiter thread can relaunch it up
+// to `max_restarts` times, with a fixed delay between attempts.
+struct RestartPolicy {
+    // Zero disables auto-restart (default).
+    int max_restarts = 0;
+    // Only restart on these exit codes (empty = restart on *any* non-zero).
+    std::vector<int> restart_on_exit_codes;
+    // Delay between restart attempts.
+    std::chrono::milliseconds backoff{1000};
+    // When true, a timeout-kill (exit_code 124) also counts as a
+    // restartable failure.
+    bool restart_on_timeout = false;
+};
+
+// Per-process resource limits applied via POSIX setrlimit() in the
+// child before execve.  Zero = inherit from parent.
+struct ResourceLimits {
+    // Max CPU seconds (RLIMIT_CPU).
+    unsigned long cpu_seconds = 0;
+    // Max address-space size in bytes (RLIMIT_AS).
+    unsigned long memory_bytes = 0;
+    // Max open file descriptors (RLIMIT_NOFILE).
+    unsigned long max_open_files = 0;
+    // Max core file size in bytes (RLIMIT_CORE).  Default on many
+    // distros is "unlimited"; setting to 0 disables core dumps.
+    bool disable_core_dumps = false;
+};
+
 struct ProcessSession {
     std::string id;           // uuid-ish
     std::string command;
@@ -41,10 +70,34 @@ struct ProcessSession {
     std::string output_buffer;  // rolling, trimmed to `output_buffer_max`
     std::size_t output_buffer_max = 200 * 1024;
 
+    // Split stdout/stderr tails — maintained alongside `output_buffer`
+    // so callers that care about the stream distinction can read just
+    // one side.  Each is trimmed to `stream_buffer_max`.
+    std::string stdout_buffer;
+    std::string stderr_buffer;
+    std::size_t stream_buffer_max = 100 * 1024;
+
+    // Number of bytes persisted to SessionDB so far — used by
+    // `persist_tail()` to only flush new bytes.
+    std::size_t persisted_bytes = 0;
+
+    // Restart bookkeeping.  Only populated when a RestartPolicy was
+    // configured on the spawn options.
+    int restart_attempts = 0;
+
     // Drop from the front of `output_buffer` as needed when appending
     // would exceed `output_buffer_max`. The tail of the buffer (most
     // recent output) is preserved.
     void append_output(std::string_view chunk);
+
+    // Same, but route into the per-stream buffer as well.  stream = 1
+    // for stdout, 2 for stderr.  Chunks are appended to both the
+    // combined output_buffer and the stream-specific tail.
+    void append_stream(std::string_view chunk, int stream);
+
+    // Return the last `n` bytes of a given stream (stream=0 combined,
+    // 1=stdout, 2=stderr).
+    std::string tail(int stream, std::size_t n) const;
 
     // Watch-pattern rate limit state. See ProcessRegistry::feed_output
     // for the 8-per-10s + 45s-sustained-overload policy.
@@ -86,6 +139,21 @@ struct SpawnOptions {
     // Shell to invoke command under.  Defaults to "/bin/sh" which is
     // guaranteed present on POSIX systems.
     std::string shell = "/bin/sh";
+
+    // Optional auto-restart configuration.  Ignored when
+    // max_restarts == 0.
+    RestartPolicy restart;
+
+    // Optional resource limits (POSIX setrlimit).  Zero values leave
+    // the corresponding limit inherited from the parent.
+    ResourceLimits limits;
+
+    // When non-null, invoked on every output chunk the reader thread
+    // pulls off the pipe.  Called with (process_id, stream, chunk)
+    // where stream is 1 for stdout and 2 for stderr.  Thrown
+    // exceptions are swallowed.
+    std::function<void(const std::string&, int, std::string_view)>
+        persist_sink;
 };
 
 class ProcessRegistry {
@@ -134,6 +202,34 @@ public:
     // killed and a synthetic "watch_pattern overload — process killed"
     // notification is enqueued.
     void feed_output(const std::string& id, std::string_view chunk);
+
+    // Stream-aware variant.  stream=1 (stdout) / 2 (stderr).  Routes
+    // into the stream-specific tail in addition to the combined buffer.
+    void feed_output_stream(const std::string& id, std::string_view chunk,
+                            int stream);
+
+    // Return the tail of the given stream for process `id`.  stream=0
+    // returns the combined buffer.  Empty string when no such
+    // process.
+    std::string tail(const std::string& id, int stream,
+                     std::size_t n) const;
+
+    // Drain any new bytes from `output_buffer` into `sink`.  Returns
+    // the number of bytes flushed.  Used by the gateway to persist
+    // output into SessionDB after each poll without re-writing older
+    // bytes.
+    std::size_t persist_tail(
+        const std::string& id,
+        const std::function<void(std::string_view)>& sink);
+
+    // Register a process for auto-restart bookkeeping.  The waiter
+    // thread consults this policy when a child exits; callers that
+    // manage their own spawn path can apply it by calling
+    // maybe_restart() from their waitpid handler.  Returns true if the
+    // process was (or would be) restarted.
+    bool maybe_restart(const std::string& id, int exit_code);
+    void set_restart_policy(const std::string& id, RestartPolicy policy);
+    RestartPolicy restart_policy(const std::string& id) const;
 
     // Move all pending notifications out of the queue into the caller.
     std::vector<WatchNotification> drain_notifications();

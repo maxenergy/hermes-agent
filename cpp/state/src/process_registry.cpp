@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -144,6 +145,25 @@ void ProcessSession::append_output(std::string_view chunk) {
     }
 }
 
+void ProcessSession::append_stream(std::string_view chunk, int stream) {
+    append_output(chunk);
+    auto* buf = (stream == 2) ? &stderr_buffer : &stdout_buffer;
+    buf->append(chunk.data(), chunk.size());
+    if (buf->size() > stream_buffer_max) {
+        std::size_t drop = buf->size() - stream_buffer_max;
+        buf->erase(0, drop);
+    }
+}
+
+std::string ProcessSession::tail(int stream, std::size_t n) const {
+    const std::string* src = nullptr;
+    if (stream == 1) src = &stdout_buffer;
+    else if (stream == 2) src = &stderr_buffer;
+    else src = &output_buffer;
+    if (!src || src->size() <= n) return src ? *src : std::string();
+    return src->substr(src->size() - n);
+}
+
 bool ProcessSession::overloaded() const {
     if (overload_start.time_since_epoch().count() == 0) return false;
     return (std::chrono::system_clock::now() - overload_start) >
@@ -159,6 +179,15 @@ struct ProcessRegistry::Impl {
     std::unordered_map<std::string, ProcessSession> finished;
     std::vector<ProcessSession> orphaned;
     std::deque<WatchNotification> notifications;
+    // Per-process restart policy (keyed by session id).  Consulted by
+    // ProcessRegistry::maybe_restart.
+    std::unordered_map<std::string, RestartPolicy> restart_policies;
+    // Persisted-bytes watermark — tracks what has already been flushed
+    // to the external sink so persist_tail only emits new bytes.
+    // (The field on ProcessSession is authoritative; this map is a
+    // defensive cache keyed by id for processes that have since been
+    // moved to `finished`.)
+    std::unordered_map<std::string, std::size_t> persisted_watermark;
 
     explicit Impl(std::filesystem::path p) : checkpoint_path(std::move(p)) {}
 
@@ -398,6 +427,26 @@ std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
         // New process group so the parent can signal the whole tree.
         ::setsid();
 
+        // Apply per-process resource limits.  Failures here are
+        // non-fatal — the shell will run with the parent's limits.
+        const ResourceLimits& lim = opts.limits;
+        if (lim.cpu_seconds > 0) {
+            rlimit r{lim.cpu_seconds, lim.cpu_seconds};
+            ::setrlimit(RLIMIT_CPU, &r);
+        }
+        if (lim.memory_bytes > 0) {
+            rlimit r{lim.memory_bytes, lim.memory_bytes};
+            ::setrlimit(RLIMIT_AS, &r);
+        }
+        if (lim.max_open_files > 0) {
+            rlimit r{lim.max_open_files, lim.max_open_files};
+            ::setrlimit(RLIMIT_NOFILE, &r);
+        }
+        if (lim.disable_core_dumps) {
+            rlimit r{0, 0};
+            ::setrlimit(RLIMIT_CORE, &r);
+        }
+
         ::close(out_pipe[0]);
         ::close(err_pipe[0]);
         ::dup2(out_pipe[1], STDOUT_FILENO);
@@ -438,6 +487,9 @@ std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
     {
         std::lock_guard<std::mutex> lk(impl_->mtx);
         impl_->running[id] = std::move(session);
+        if (opts.restart.max_restarts > 0) {
+            impl_->restart_policies[id] = opts.restart;
+        }
     }
 
     // Reader thread: poll stdout/stderr pipes until both EOF, feeding
@@ -445,7 +497,8 @@ std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
     ProcessRegistry* self = this;
     int out_fd = out_pipe[0];
     int err_fd = err_pipe[0];
-    std::thread([self, id, out_fd, err_fd]() {
+    auto persist_sink = opts.persist_sink;
+    std::thread([self, id, out_fd, err_fd, persist_sink]() {
         struct pollfd fds[2];
         fds[0].fd = out_fd; fds[0].events = POLLIN;
         fds[1].fd = err_fd; fds[1].events = POLLIN;
@@ -459,9 +512,15 @@ std::string ProcessRegistry::spawn_local(const SpawnOptions& opts) {
                         char buf[4096];
                         ssize_t n = ::read(fds[i].fd, buf, sizeof(buf));
                         if (n > 0) {
-                            self->feed_output(id,
-                                std::string_view(buf,
-                                    static_cast<std::size_t>(n)));
+                            int stream = (i == 0) ? 1 : 2;
+                            std::string_view chunk(
+                                buf, static_cast<std::size_t>(n));
+                            self->feed_output_stream(id, chunk, stream);
+                            if (persist_sink) {
+                                try {
+                                    persist_sink(id, stream, chunk);
+                                } catch (...) {}
+                            }
                         } else if (n == 0) {
                             ::close(fds[i].fd);
                             fds[i].fd = -1;
@@ -719,6 +778,147 @@ void ProcessRegistry::restore_from_checkpoint() {
 std::vector<ProcessSession> ProcessRegistry::orphaned() const {
     std::lock_guard<std::mutex> lk(impl_->mtx);
     return impl_->orphaned;
+}
+
+// -------------------------------------------------------------------------
+// Stream-aware feed_output + tails
+// -------------------------------------------------------------------------
+
+void ProcessRegistry::feed_output_stream(const std::string& id,
+                                         std::string_view chunk, int stream) {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    auto it = impl_->running.find(id);
+    if (it == impl_->running.end()) return;
+    ProcessSession& s = it->second;
+    s.append_stream(chunk, stream);
+    s.updated_at = std::chrono::system_clock::now();
+    impl_->scan_chunk(s, chunk);
+    if (s.state == ProcessState::Killed) {
+        ProcessSession moved = std::move(s);
+        impl_->running.erase(it);
+        impl_->finished[id] = std::move(moved);
+    }
+}
+
+std::string ProcessRegistry::tail(const std::string& id, int stream,
+                                  std::size_t n) const {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    auto run_it = impl_->running.find(id);
+    if (run_it != impl_->running.end()) return run_it->second.tail(stream, n);
+    auto fin_it = impl_->finished.find(id);
+    if (fin_it != impl_->finished.end()) return fin_it->second.tail(stream, n);
+    return {};
+}
+
+std::size_t ProcessRegistry::persist_tail(
+    const std::string& id,
+    const std::function<void(std::string_view)>& sink) {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    ProcessSession* s = nullptr;
+    auto run_it = impl_->running.find(id);
+    if (run_it != impl_->running.end()) s = &run_it->second;
+    else {
+        auto fin_it = impl_->finished.find(id);
+        if (fin_it != impl_->finished.end()) s = &fin_it->second;
+    }
+    if (!s) return 0;
+
+    // Total bytes observed so far = bytes in buffer + bytes previously
+    // dropped from the front.  We approximate "total observed" by
+    // tracking the maximum watermark seen; because the buffer is
+    // rolling we can only safely sink what's currently in it starting
+    // from the last persisted offset (which may have scrolled off).
+    std::size_t already = s->persisted_bytes;
+    std::size_t buffer_len = s->output_buffer.size();
+    if (buffer_len <= already) {
+        // Either we've already flushed everything, or older bytes
+        // rolled off — treat persisted_bytes as "end of previous
+        // flush" and emit the full current buffer as new material.
+        if (buffer_len == 0) return 0;
+        if (already == buffer_len) return 0;
+    }
+    std::string_view new_bytes;
+    if (buffer_len > already) {
+        new_bytes = std::string_view(s->output_buffer.data() + already,
+                                     buffer_len - already);
+    } else {
+        new_bytes = std::string_view(s->output_buffer);
+    }
+    if (new_bytes.empty()) return 0;
+    try {
+        if (sink) sink(new_bytes);
+    } catch (...) {
+        // Don't propagate — gateway-side sinks may throw under DB
+        // contention, but we mustn't corrupt the registry state.
+    }
+    s->persisted_bytes = buffer_len;
+    impl_->persisted_watermark[id] = buffer_len;
+    return new_bytes.size();
+}
+
+// -------------------------------------------------------------------------
+// Restart policy bookkeeping
+// -------------------------------------------------------------------------
+
+void ProcessRegistry::set_restart_policy(const std::string& id,
+                                         RestartPolicy policy) {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    impl_->restart_policies[id] = std::move(policy);
+}
+
+RestartPolicy ProcessRegistry::restart_policy(const std::string& id) const {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    auto it = impl_->restart_policies.find(id);
+    if (it == impl_->restart_policies.end()) return {};
+    return it->second;
+}
+
+bool ProcessRegistry::maybe_restart(const std::string& id, int exit_code) {
+    std::unique_lock<std::mutex> lk(impl_->mtx);
+    auto pol_it = impl_->restart_policies.find(id);
+    if (pol_it == impl_->restart_policies.end()) return false;
+    RestartPolicy& policy = pol_it->second;
+    if (policy.max_restarts <= 0) return false;
+
+    // Find the session (may be running if we're coming from feed_output
+    // synthesis, or finished if we're called post-waitpid).
+    ProcessSession* s = nullptr;
+    auto run_it = impl_->running.find(id);
+    if (run_it != impl_->running.end()) s = &run_it->second;
+    else {
+        auto fin_it = impl_->finished.find(id);
+        if (fin_it != impl_->finished.end()) s = &fin_it->second;
+    }
+    if (!s) return false;
+
+    if (s->restart_attempts >= policy.max_restarts) return false;
+
+    // Exit-code gating.
+    bool restartable = false;
+    if (exit_code == 124) {
+        restartable = policy.restart_on_timeout;
+    } else if (policy.restart_on_exit_codes.empty()) {
+        restartable = (exit_code != 0);
+    } else {
+        restartable = std::find(policy.restart_on_exit_codes.begin(),
+                                policy.restart_on_exit_codes.end(),
+                                exit_code) !=
+                      policy.restart_on_exit_codes.end();
+    }
+    if (!restartable) return false;
+
+    ++s->restart_attempts;
+    s->state = ProcessState::Running;
+    s->exit_code.reset();
+    s->ended_at = {};
+    s->updated_at = std::chrono::system_clock::now();
+    // Move back to running if currently finished.
+    if (impl_->finished.count(id)) {
+        ProcessSession moved = std::move(impl_->finished[id]);
+        impl_->finished.erase(id);
+        impl_->running[id] = std::move(moved);
+    }
+    return true;
 }
 
 }  // namespace hermes::state
