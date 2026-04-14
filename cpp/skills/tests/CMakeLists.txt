@@ -14,6 +14,7 @@ target_link_libraries(hermes_skills_tests
     PRIVATE
         hermes::skills
         hermes::core
+        hermes_llm
         GTest::gtest_main
         hermes_warnings
 )
