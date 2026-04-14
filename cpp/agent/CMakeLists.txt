@@ -22,6 +22,7 @@ add_library(hermes_agent STATIC
     src/prompt_caching.cpp
     src/rate_limit_tracker.cpp
     src/smart_model_routing.cpp
+    src/error_classifier.cpp
 )
 
 target_include_directories(hermes_agent
