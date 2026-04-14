@@ -40,6 +40,7 @@ add_library(hermes_agent STATIC
     src/session_state.cpp
     src/tool_dispatch_wrapper.cpp
     src/skill_utils.cpp
+    src/models_dev.cpp
 )
 
 target_include_directories(hermes_agent
