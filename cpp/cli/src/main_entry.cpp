@@ -453,66 +453,185 @@ int cmd_cron() {
 }
 
 int cmd_profile(int argc, char* argv[]) {
-    // hermes profile             → list profiles
-    // hermes profile create NAME → create profile
-    // hermes profile delete NAME → delete profile
-    if (argc <= 2) {
-        auto profiles = hermes::profile::list_profiles();
-        if (profiles.empty()) {
-            std::cout << "No profiles. Use 'hermes profile create <name>' to create one.\n";
-        } else {
-            std::cout << "Profiles:\n";
-            for (const auto& name : profiles) {
-                std::cout << "  " << name << "\n";
-            }
-        }
-        return 0;
+    // Full CLI surface matching hermes_cli/commands.py.
+    //   hermes profile                     -> table list
+    //   hermes profile list                -> table list
+    //   hermes profile show <name>
+    //   hermes profile create <name> [--clone[=NAME]] [--clone-all] [--no-alias]
+    //   hermes profile delete <name> [--yes]
+    //   hermes profile rename <old> <new>
+    //   hermes profile use <name>
+    //   hermes profile export <name> <output>
+    //   hermes profile import <archive> [--name NAME]
+    //   hermes profile completion bash|zsh
+    namespace hp = hermes::profile;
+
+    if (argc <= 2 || std::string(argv[2]) == "list") {
+        auto infos = hp::list_profile_infos();
+        return hp::print_profile_table(infos);
     }
 
     std::string sub = argv[2];
 
-    if (sub == "create") {
-        if (argc < 4) {
-            std::cerr << "Usage: hermes profile create <name>\n";
-            return 1;
-        }
-        std::string name = argv[3];
-        hermes::profile::create_profile(name);
-        std::cout << "Profile '" << name << "' created.\n";
-        return 0;
-    }
-
-    if (sub == "delete") {
-        if (argc < 4) {
-            std::cerr << "Usage: hermes profile delete <name>\n";
-            return 1;
-        }
-        std::string name = argv[3];
-        try {
-            hermes::profile::delete_profile(name);
-            std::cout << "Profile '" << name << "' deleted.\n";
-        } catch (const std::runtime_error& e) {
-            std::cerr << "Error: " << e.what() << "\n";
-            return 1;
-        }
-        return 0;
-    }
-
-    if (sub == "list") {
-        auto profiles = hermes::profile::list_profiles();
-        if (profiles.empty()) {
-            std::cout << "No profiles.\n";
-        } else {
-            std::cout << "Profiles:\n";
-            for (const auto& name : profiles) {
-                std::cout << "  " << name << "\n";
+    try {
+        if (sub == "show") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile show <name>\n";
+                return 1;
             }
+            return hp::print_show(argv[3]);
         }
-        return 0;
+
+        if (sub == "create") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile create <name> [--clone[=NAME]] [--clone-all] [--no-alias] [--interactive]\n";
+                return 1;
+            }
+            std::string name = argv[3];
+            hp::CreateOptions opts;
+            bool interactive = false;
+            for (int i = 4; i < argc; ++i) {
+                std::string a = argv[i];
+                if (a == "--clone-all") opts.clone_all = true;
+                else if (a == "--no-alias") opts.no_alias = true;
+                else if (a == "--interactive" || a == "-i") interactive = true;
+                else if (a == "--clone") {
+                    opts.clone_config = true;
+                }
+                else if (a.rfind("--clone=", 0) == 0) {
+                    opts.clone_from = a.substr(8);
+                    opts.clone_config = true;
+                }
+                else if (a == "--clone-from" && i + 1 < argc) {
+                    opts.clone_from = argv[++i];
+                    opts.clone_config = true;
+                }
+            }
+            if (interactive) return hp::wizard_create(name);
+            const auto dir = hp::create_profile_ex(name, opts);
+            std::cout << "Profile '" << name << "' created at " << dir.string()
+                      << "\n";
+            if (!opts.no_alias) {
+                const std::string collision = hp::check_alias_collision(name);
+                if (collision.empty()) {
+                    const auto p = hp::create_wrapper_script(name);
+                    if (!p.empty()) {
+                        std::cout << "Alias: " << p.string() << "\n";
+                    }
+                } else {
+                    std::cout << "warn: skipping alias - " << collision << "\n";
+                }
+            }
+            return 0;
+        }
+
+        if (sub == "delete") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile delete <name> [--yes]\n";
+                return 1;
+            }
+            std::string name = argv[3];
+            bool yes = false;
+            for (int i = 4; i < argc; ++i) {
+                std::string a = argv[i];
+                if (a == "--yes" || a == "-y") yes = true;
+            }
+            hp::delete_profile_ex(name, yes);
+            return 0;
+        }
+
+        if (sub == "rename") {
+            if (argc < 5) {
+                std::cerr << "Usage: hermes profile rename <old> <new>\n";
+                return 1;
+            }
+            hp::rename_profile(argv[3], argv[4]);
+            return 0;
+        }
+
+        if (sub == "use") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile use <name>\n";
+                return 1;
+            }
+            std::string name = argv[3];
+            hp::set_active_profile(name);
+            std::cout << "Active profile set to '" << name << "'.\n";
+            return 0;
+        }
+
+        if (sub == "export") {
+            if (argc < 5) {
+                std::cerr << "Usage: hermes profile export <name> <output.tar.gz>\n";
+                return 1;
+            }
+            const auto out = hp::export_profile(argv[3], argv[4]);
+            std::cout << "Exported to " << out.string() << "\n";
+            return 0;
+        }
+
+        if (sub == "import") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile import <archive> [--name NAME]\n";
+                return 1;
+            }
+            std::string archive = argv[3];
+            std::string name;
+            for (int i = 4; i < argc; ++i) {
+                std::string a = argv[i];
+                if ((a == "--name" || a == "-n") && i + 1 < argc) {
+                    name = argv[++i];
+                } else if (a.rfind("--name=", 0) == 0) {
+                    name = a.substr(7);
+                }
+            }
+            const auto dir = hp::import_profile(archive, name);
+            std::cout << "Imported profile at " << dir.string() << "\n";
+            return 0;
+        }
+
+        if (sub == "alias") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile alias <name>\n";
+                return 1;
+            }
+            std::string name = argv[3];
+            const std::string collision = hp::check_alias_collision(name);
+            if (!collision.empty()) {
+                std::cerr << "Error: " << collision << "\n";
+                return 1;
+            }
+            const auto p = hp::create_wrapper_script(name);
+            if (p.empty()) return 1;
+            std::cout << "Alias created at " << p.string() << "\n";
+            return 0;
+        }
+
+        if (sub == "completion") {
+            if (argc < 4) {
+                std::cerr << "Usage: hermes profile completion bash|zsh\n";
+                return 1;
+            }
+            std::string shell = argv[3];
+            if (shell == "bash") {
+                std::cout << hp::generate_bash_completion();
+                return 0;
+            }
+            if (shell == "zsh") {
+                std::cout << hp::generate_zsh_completion();
+                return 0;
+            }
+            std::cerr << "Unsupported shell: " << shell << "\n";
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
     }
 
     std::cerr << "Unknown profile subcommand: " << sub << "\n"
-              << "Usage: hermes profile [list|create <name>|delete <name>]\n";
+              << "Usage: hermes profile "
+                 "[list|show|create|delete|rename|use|export|import|alias|completion] ...\n";
     return 1;
 }
 
