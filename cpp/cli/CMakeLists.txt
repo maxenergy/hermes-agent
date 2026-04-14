@@ -45,6 +45,9 @@ add_library(hermes_cli_lib STATIC
     src/curses_ui.cpp
     src/rl_commands.cpp
     src/update_prompt.cpp
+    src/providers_cmd.cpp
+    src/model_switch_cmd.cpp
+    src/auth_commands.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
