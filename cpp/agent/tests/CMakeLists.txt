@@ -33,6 +33,7 @@ add_executable(hermes_agent_tests
     test_retry_utils.cpp
     test_prompt_caching.cpp
     test_rate_limit_tracker.cpp
+    test_smart_model_routing.cpp
 )
 
 target_link_libraries(hermes_agent_tests
