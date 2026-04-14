@@ -32,6 +32,14 @@ set(HERMES_CLI_TEST_SOURCES
     test_rl_commands.cpp
     test_update_prompt.cpp
     test_doctor_full.cpp
+    test_mcp_config.cpp
+    test_models_cmd.cpp
+    test_claw_cmd.cpp
+    test_cron_cmd.cpp
+    test_gateway_cmd.cpp
+    test_logs_cmd.cpp
+    test_uninstall_cmd.cpp
+    test_callbacks.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
