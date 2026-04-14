@@ -17,10 +17,13 @@
 // req.cache.native_anthropic is true.
 #include "hermes/llm/anthropic_client.hpp"
 
+#include "hermes/llm/anthropic_features.hpp"
 #include "hermes/llm/prompt_cache.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -113,14 +116,16 @@ CompletionResponse parse_anthropic_stream(
     const std::string& body_str) {
 
     std::string accumulated_content;
+    std::string accumulated_reasoning;
     std::string finish_reason;
     CanonicalUsage usage;
     std::vector<ToolCall> tool_calls;
     nlohmann::json raw_last;
     std::string current_event_type;
-    // Track current content block for tool_use accumulation.
+    // Track current content block for tool_use / thinking accumulation.
     int current_block_index = -1;
     std::string current_tool_input_json;
+    [[maybe_unused]] bool current_is_thinking = false;
 
     transport->post_json_stream(url, headers, body_str,
         [&](const std::string& chunk) {
@@ -152,6 +157,7 @@ CompletionResponse parse_anthropic_stream(
                 }
             } else if (type == "content_block_start") {
                 current_block_index = obj.value("index", -1);
+                current_is_thinking = false;
                 if (obj.contains("content_block")) {
                     auto block_type = obj["content_block"].value("type", "");
                     if (block_type == "tool_use") {
@@ -161,6 +167,12 @@ CompletionResponse parse_anthropic_stream(
                         tc.arguments = nlohmann::json::object();
                         tool_calls.push_back(std::move(tc));
                         current_tool_input_json.clear();
+                    } else if (block_type == "thinking" ||
+                               block_type == "redacted_thinking") {
+                        current_is_thinking = true;
+                        if (!accumulated_reasoning.empty()) {
+                            accumulated_reasoning += "\n\n";
+                        }
                     }
                 }
             } else if (type == "content_block_delta") {
@@ -172,6 +184,12 @@ CompletionResponse parse_anthropic_stream(
                     } else if (delta_type == "input_json_delta") {
                         current_tool_input_json +=
                             obj["delta"].value("partial_json", "");
+                    } else if (delta_type == "thinking_delta") {
+                        accumulated_reasoning +=
+                            obj["delta"].value("thinking", "");
+                    } else if (delta_type == "signature_delta") {
+                        // Signature data is preserved by the content block
+                        // but not surfaced via the reasoning string.
                     }
                 }
             } else if (type == "content_block_stop") {
@@ -187,7 +205,8 @@ CompletionResponse parse_anthropic_stream(
                 }
             } else if (type == "message_delta") {
                 if (obj.contains("delta")) {
-                    finish_reason = obj["delta"].value("stop_reason", "");
+                    finish_reason = map_anthropic_stop_reason(
+                        obj["delta"].value("stop_reason", ""));
                 }
                 if (obj.contains("usage")) {
                     // Merge output token count from delta.
@@ -211,6 +230,9 @@ CompletionResponse parse_anthropic_stream(
         out.assistant_message.content_blocks.push_back(std::move(block));
     }
     out.assistant_message.tool_calls = std::move(tool_calls);
+    if (!accumulated_reasoning.empty()) {
+        out.assistant_message.reasoning = accumulated_reasoning;
+    }
     return out;
 }
 
@@ -223,6 +245,24 @@ CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
     std::vector<Message> messages = req.messages;
     if (req.cache.native_anthropic) {
         apply_anthropic_cache_control(messages, req.cache);
+    }
+
+    // Peek extras early to know if we need OAuth sanitization on system text.
+    const auto pre_extras = parse_anthropic_extras(req.extra);
+    if (pre_extras.is_oauth) {
+        for (auto& m : messages) {
+            if (m.role == Role::System) {
+                if (!m.content_text.empty()) {
+                    m.content_text =
+                        sanitize_for_claude_code_oauth(m.content_text);
+                }
+                for (auto& b : m.content_blocks) {
+                    if (b.type == "text" || b.type.empty()) {
+                        b.text = sanitize_for_claude_code_oauth(b.text);
+                    }
+                }
+            }
+        }
     }
 
     json system_field;
@@ -247,32 +287,109 @@ CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
 
     if (req.temperature) body["temperature"] = *req.temperature;
 
-    if (!req.tools.empty()) {
+    // ── Request extras (stop_sequences, top_p/top_k, service_tier, etc.) ─
+    const auto extras = parse_anthropic_extras(req.extra);
+    auto normalized_stops = normalize_stop_sequences(extras.stop_sequences);
+    if (!normalized_stops.empty()) {
+        body["stop_sequences"] = normalized_stops;
+    }
+    if (extras.top_p) body["top_p"] = *extras.top_p;
+    if (extras.top_k) body["top_k"] = *extras.top_k;
+    if (extras.service_tier) body["service_tier"] = *extras.service_tier;
+
+    // ── Reasoning / thinking config ──────────────────────────────────────
+    if (extras.thinking_effort) {
+        const int current_max = req.max_tokens.value_or(4096);
+        auto thinking = build_thinking_config(
+            req.model, *extras.thinking_effort, current_max);
+        for (auto it = thinking.begin(); it != thinking.end(); ++it) {
+            body[it.key()] = it.value();
+        }
+    } else if (req.reasoning_effort) {
+        // Accept numeric 0..3 by mapping to the named effort labels.
+        static constexpr std::array<const char*, 4> kEffortMap = {
+            "minimal", "low", "medium", "high"};
+        int idx = std::clamp(*req.reasoning_effort, 0, 3);
+        const int current_max = req.max_tokens.value_or(4096);
+        auto thinking = build_thinking_config(
+            req.model, kEffortMap[static_cast<std::size_t>(idx)], current_max);
+        for (auto it = thinking.begin(); it != thinking.end(); ++it) {
+            body[it.key()] = it.value();
+        }
+    }
+
+    // tool_choice: "none" → drop tools entirely to prevent use.
+    const bool drop_tools = extras.tool_choice.has_value() &&
+                            extras.tool_choice.value() == "none";
+    if (!req.tools.empty() && !drop_tools) {
         json tools = json::array();
         for (const auto& t : req.tools) {
             json tool;
-            tool["name"] = t.name;
+            tool["name"] = extras.is_oauth ? apply_mcp_tool_prefix(t.name) : t.name;
             tool["description"] = t.description;
             tool["input_schema"] = t.parameters;
             tools.push_back(std::move(tool));
         }
         body["tools"] = std::move(tools);
+
+        if (extras.tool_choice) {
+            auto mapped = map_tool_choice_to_anthropic(*extras.tool_choice);
+            if (mapped) body["tool_choice"] = *mapped;
+        }
     }
 
+    // Merge any remaining provider-specific extras LAST so callers can
+    // override our computed fields.  Skip keys already consumed above.
     if (req.extra.is_object()) {
+        static constexpr std::array<const char*, 8> kConsumed = {
+            "stop_sequences", "top_p", "top_k", "service_tier",
+            "tool_choice", "thinking_effort", "fast_mode", "is_oauth",
+        };
         for (auto it = req.extra.begin(); it != req.extra.end(); ++it) {
-            body[it.key()] = it.value();
+            bool skip = false;
+            for (const char* c : kConsumed) {
+                if (it.key() == c) { skip = true; break; }
+            }
+            if (!skip) body[it.key()] = it.value();
         }
     }
 
     std::unordered_map<std::string, std::string> headers = {
-        {"x-api-key", api_key_},
         {"anthropic-version", "2023-06-01"},
         {"Content-Type", "application/json"},
     };
-    // Opt into extended prompt caching TTL if requested.
+    // OAuth (Bearer) auth vs x-api-key.
+    if (pre_extras.is_oauth) {
+        headers["Authorization"] = std::string("Bearer ") + api_key_;
+    } else {
+        headers["x-api-key"] = api_key_;
+    }
+
+    // Build beta header list: cache TTL + endpoint-specific betas +
+    // fast-mode beta when requested.
+    std::vector<std::string> betas;
     if (req.cache.native_anthropic && req.cache.cache_ttl == "1h") {
-        headers["anthropic-beta"] = "extended-cache-ttl-2025-04-11";
+        betas.emplace_back("extended-cache-ttl-2025-04-11");
+    }
+    for (const auto& b : common_betas_for_base_url(base_url_)) {
+        betas.push_back(b);
+    }
+    if (pre_extras.fast_mode &&
+        !is_third_party_anthropic_endpoint(base_url_)) {
+        betas.emplace_back("prompt-caching-2024-07-31");
+        betas.emplace_back("fast-mode-2025-08-01");
+        body["speed"] = "fast";
+    }
+    if (pre_extras.is_oauth) {
+        betas.emplace_back("oauth-2025-04-20");
+    }
+    if (!betas.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < betas.size(); ++i) {
+            if (i) joined += ',';
+            joined += betas[i];
+        }
+        headers["anthropic-beta"] = joined;
     }
 
     if (req.stream) {
@@ -300,7 +417,17 @@ CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
     out.raw = parsed;
     out.assistant_message = Message::from_anthropic(parsed);
     out.assistant_message.role = Role::Assistant;
-    out.finish_reason = parsed.value("stop_reason", "");
+    // Map Anthropic stop_reason → canonical finish_reason.
+    out.finish_reason = map_anthropic_stop_reason(
+        parsed.value("stop_reason", ""));
+    // Pull reasoning/thinking blocks into the message so downstream code
+    // can display / preserve them.
+    if (parsed.contains("content")) {
+        auto reasoning = extract_reasoning_blocks(parsed["content"]);
+        if (!reasoning.text.empty()) {
+            out.assistant_message.reasoning = reasoning.text;
+        }
+    }
     if (parsed.contains("usage")) {
         out.usage = normalize_anthropic_usage(parsed["usage"]);
     }
