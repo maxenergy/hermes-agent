@@ -25,6 +25,7 @@ add_library(hermes_agent STATIC
     src/error_classifier.cpp
     src/context_engine.cpp
     src/at_references.cpp
+    src/trajectory.cpp
 )
 
 target_include_directories(hermes_agent
