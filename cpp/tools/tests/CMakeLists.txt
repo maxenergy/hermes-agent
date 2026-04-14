@@ -55,6 +55,7 @@ add_executable(hermes_tools_tests
     test_cronjob_tool.cpp
     test_skill_manager_tool.cpp
     test_mcp_client.cpp
+    test_mcp_registration.cpp
     test_mcp_transport.cpp
     test_browser_camofox.cpp
     test_tool_backend_helpers.cpp

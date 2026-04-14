@@ -61,6 +61,7 @@ add_library(hermes_tools STATIC
     src/cronjob_tool.cpp
     src/skill_manager_tool.cpp
     src/mcp_client_tool.cpp
+    src/mcp_registration.cpp
     src/mcp_transport.cpp
     src/ffmpeg.cpp
 )
