@@ -31,6 +31,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_curses_ui.cpp
     test_rl_commands.cpp
     test_update_prompt.cpp
+    test_doctor_full.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})

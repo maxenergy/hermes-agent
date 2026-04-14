@@ -53,20 +53,20 @@ TEST(JointDelegate, DelegateDispatchReturnsChildOutput) {
     auto out = ToolRegistry::instance().dispatch(
         "delegate_task",
         json{{"goal", "summarise the docs"},
-             {"model", "gpt-test"},
              {"constraints", "be brief"}},
         ToolContext{});
     auto parsed = json::parse(out);
     EXPECT_FALSE(parsed.contains("error"));
-    EXPECT_TRUE(parsed.contains("response"));
-    EXPECT_NE(parsed["response"].get<std::string>().find("summarise the docs"),
+    ASSERT_TRUE(parsed.contains("results"));
+    ASSERT_EQ(parsed["results"].size(), 1u);
+    const auto& r0 = parsed["results"][0];
+    EXPECT_EQ(r0["status"].get<std::string>(), "completed");
+    EXPECT_NE(r0["summary"].get<std::string>().find("summarise the docs"),
               std::string::npos);
 
     ASSERT_EQ(rec.goals.size(), 1u);
-    // delegate_task prefixes the goal with "Goal: " before handing it to
-    // the sub-agent — so we match on the substring.
+    // run_with_context legacy fallback prefixes goal with "Goal: ".
     EXPECT_NE(rec.goals[0].find("summarise the docs"), std::string::npos);
-    EXPECT_EQ(rec.models[0], "gpt-test");
 
     ToolRegistry::instance().clear();
 }

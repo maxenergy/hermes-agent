@@ -433,47 +433,68 @@ std::vector<std::string> DiscordAdapter::split_message(
         return out;
     }
 
-    // Strategy: first try to split on \n\n paragraph boundaries; when a
-    // paragraph itself is too long, split on \n; when a line is too long,
-    // hard-cut at `limit` (UTF-8 aware).  Track open triple-backtick fences
-    // so we re-open them on the next chunk and close them before the split.
-    std::string remainder = content;
-    while (!remainder.empty()) {
-        if (static_cast<int>(remainder.size()) <= limit) {
-            out.push_back(remainder);
+    // Conservative split: prefer \n\n, then \n, else hard cut. We *also*
+    // track whether a fence is left open at chunk boundaries and close/
+    // reopen it — but to guarantee termination, the accounting runs over
+    // the ORIGINAL content (positions) rather than the mutable remainder.
+    std::size_t pos = 0;
+    bool pending_fence = false;
+    const std::size_t n = content.size();
+    // Per-chunk headroom so appended "```" fences never overflow `limit`.
+    const std::size_t headroom = 8;
+    const std::size_t window = limit > static_cast<int>(headroom)
+        ? static_cast<std::size_t>(limit) - headroom
+        : static_cast<std::size_t>(limit);
+
+    while (pos < n) {
+        if (n - pos <= static_cast<std::size_t>(limit) - (pending_fence ? 4u : 0u)) {
+            std::string tail = content.substr(pos);
+            if (pending_fence) tail = "```\n" + tail;
+            out.push_back(tail);
             break;
         }
+        std::size_t window_end = pos + window;
         std::size_t cut = std::string::npos;
-        // Prefer paragraph split within the window.
-        auto pp = remainder.rfind("\n\n", static_cast<std::size_t>(limit));
-        if (pp != std::string::npos && pp > 0) {
-            cut = pp + 2;
-        } else {
-            auto p = remainder.rfind('\n', static_cast<std::size_t>(limit));
-            if (p != std::string::npos && p > 0) {
-                cut = p + 1;
+        if (window_end <= n) {
+            auto pp = content.rfind("\n\n", window_end);
+            if (pp != std::string::npos && pp > pos) {
+                cut = pp + 2;
             } else {
-                cut = utf8_truncate(remainder.substr(0, limit), limit).size();
-                if (cut == 0) cut = std::min<std::size_t>(limit, remainder.size());
+                auto p = content.rfind('\n', window_end);
+                if (p != std::string::npos && p > pos) {
+                    cut = p + 1;
+                }
             }
         }
+        if (cut == std::string::npos || cut <= pos) {
+            cut = pos + window;
+            if (cut > n) cut = n;
+            // UTF-8 boundary repair.
+            while (cut > pos &&
+                   (static_cast<unsigned char>(content[cut]) & 0xC0) == 0x80) {
+                --cut;
+            }
+            if (cut <= pos) cut = pos + window;  // no further repair possible
+        }
 
-        std::string chunk = remainder.substr(0, cut);
+        std::string chunk = content.substr(pos, cut - pos);
+        if (pending_fence) chunk = "```\n" + chunk;
 
-        // Count triple-backticks to decide whether a fence is open.
+        // Count fences *inside this chunk* (we don't care about earlier
+        // chunks — we already closed them when we emitted them).
         std::size_t fences = 0;
         for (std::size_t p = 0; (p = chunk.find("```", p)) != std::string::npos; p += 3) {
             ++fences;
         }
-        bool open_fence = (fences % 2) == 1;
-        if (open_fence) {
+        bool open = (fences % 2) == 1;
+        if (open) {
             chunk += "\n```";
+            pending_fence = true;
+        } else {
+            pending_fence = false;
         }
         out.push_back(chunk);
-        remainder = remainder.substr(cut);
-        if (open_fence && !remainder.empty()) {
-            remainder = "```\n" + remainder;
-        }
+        pos = cut;
     }
     return out;
 }

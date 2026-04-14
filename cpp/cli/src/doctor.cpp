@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -352,7 +353,12 @@ std::string gateway_lock_state(const fs::path& lock_path) {
     // on Windows without additional deps; report as running.
     return "running:" + std::to_string(pid);
 #else
-    if (::kill(static_cast<pid_t>(pid), 0) == 0) {
+    // kill(pid, 0) returns 0 when the process exists and we can signal it;
+    // EPERM means the process exists but we don't have permission to signal
+    // it — still "running" from the doctor's perspective.  ESRCH means
+    // truly stale (no such process).
+    int rc = ::kill(static_cast<pid_t>(pid), 0);
+    if (rc == 0 || errno == EPERM) {
         return "running:" + std::to_string(pid);
     }
     return "stale:" + std::to_string(pid);
