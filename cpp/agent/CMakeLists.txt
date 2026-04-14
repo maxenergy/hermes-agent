@@ -29,6 +29,7 @@ add_library(hermes_agent STATIC
     src/prompt_guidance.cpp
     src/insights_format.cpp
     src/usage_pricing.cpp
+    src/context_truncate.cpp
 )
 
 target_include_directories(hermes_agent
