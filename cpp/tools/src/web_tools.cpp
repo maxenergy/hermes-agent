@@ -16,13 +16,20 @@
 #include "hermes/tools/web_tools.hpp"
 #include "hermes/tools/registry.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace hermes::tools {
 
@@ -497,5 +504,119 @@ void register_web_tools(hermes::llm::HttpTransport* transport) {
         reg.register_tool(std::move(e));
     }
 }
+
+// ── Public helpers (hermes::tools::web) ──────────────────────────────
+
+namespace web {
+
+const std::vector<std::string>& supported_providers() {
+    static const std::vector<std::string> s{
+        "exa", "tavily", "parallel", "brave", "google",
+    };
+    return s;
+}
+
+bool is_supported_provider(std::string_view name) {
+    const auto& p = supported_providers();
+    return std::find(p.begin(), p.end(), std::string(name)) != p.end();
+}
+
+std::string url_encode(std::string_view s) {
+    std::ostringstream oss;
+    oss.fill('0');
+    oss << std::hex;
+    for (char c : s) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) || c == '-' || c == '_' || c == '.' || c == '~') {
+            oss << c;
+        } else if (c == ' ') {
+            oss << '+';
+        } else {
+            oss << '%' << std::setw(2)
+                << static_cast<int>(uc);
+        }
+    }
+    return oss.str();
+}
+
+nlohmann::json normalize_tavily_search(const nlohmann::json& body) {
+    nlohmann::json out;
+    out["results"] = nlohmann::json::array();
+    if (body.contains("answer") && !body["answer"].is_null()) {
+        out["answer"] = body["answer"];
+    }
+    if (!body.contains("results") || !body["results"].is_array()) return out;
+    int i = 0;
+    for (const auto& r : body["results"]) {
+        nlohmann::json entry;
+        entry["title"] = r.value("title", "");
+        entry["url"] = r.value("url", "");
+        entry["snippet"] = r.value("content", r.value("snippet", ""));
+        entry["position"] = ++i;
+        out["results"].push_back(std::move(entry));
+    }
+    return out;
+}
+
+nlohmann::json normalize_tavily_documents(const nlohmann::json& body,
+                                          std::string_view fallback_url) {
+    nlohmann::json docs = nlohmann::json::array();
+    auto fallback = std::string(fallback_url);
+
+    if (body.contains("results") && body["results"].is_array()) {
+        for (const auto& r : body["results"]) {
+            std::string url = r.value("url", fallback);
+            std::string raw = r.value("raw_content", r.value("content", ""));
+            nlohmann::json d;
+            d["url"] = url;
+            d["title"] = r.value("title", "");
+            d["content"] = raw;
+            d["raw_content"] = raw;
+            d["metadata"] = {{"sourceURL", url},
+                             {"title", r.value("title", "")}};
+            docs.push_back(std::move(d));
+        }
+    }
+    if (body.contains("failed_results") && body["failed_results"].is_array()) {
+        for (const auto& f : body["failed_results"]) {
+            std::string url = f.value("url", fallback);
+            nlohmann::json d;
+            d["url"] = url;
+            d["title"] = "";
+            d["content"] = "";
+            d["raw_content"] = "";
+            d["error"] = f.value("error", "extraction failed");
+            d["metadata"] = {{"sourceURL", url}};
+            docs.push_back(std::move(d));
+        }
+    }
+    if (body.contains("failed_urls") && body["failed_urls"].is_array()) {
+        for (const auto& u : body["failed_urls"]) {
+            std::string url = u.is_string() ? u.get<std::string>() : u.dump();
+            nlohmann::json d;
+            d["url"] = url;
+            d["title"] = "";
+            d["content"] = "";
+            d["raw_content"] = "";
+            d["error"] = "extraction failed";
+            d["metadata"] = {{"sourceURL", url}};
+            docs.push_back(std::move(d));
+        }
+    }
+    return docs;
+}
+
+std::string cache_key(std::string_view provider, std::string_view query,
+                      const nlohmann::json& opts) {
+    std::string material(provider);
+    material += '\x1f';
+    material.append(query);
+    material += '\x1f';
+    material += opts.dump();
+    auto h = std::hash<std::string>{}(material);
+    return std::string(provider) + ":" + std::to_string(h);
+}
+
+}  // namespace web
 
 }  // namespace hermes::tools

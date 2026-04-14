@@ -252,4 +252,112 @@ TEST_F(WebToolsTest, CacheExpiresOnTtl) {
     set_web_search_cache_ttl_seconds(60);
 }
 
+// ── Helper-function coverage (web:: namespace) ───────────────────────
+
+TEST(WebUtil, SupportedProvidersContainsExpected) {
+    const auto& p = web::supported_providers();
+    EXPECT_NE(std::find(p.begin(), p.end(), "exa"), p.end());
+    EXPECT_NE(std::find(p.begin(), p.end(), "tavily"), p.end());
+    EXPECT_NE(std::find(p.begin(), p.end(), "brave"), p.end());
+    EXPECT_NE(std::find(p.begin(), p.end(), "google"), p.end());
+}
+
+TEST(WebUtil, IsSupportedProvider) {
+    EXPECT_TRUE(web::is_supported_provider("exa"));
+    EXPECT_TRUE(web::is_supported_provider("tavily"));
+    EXPECT_FALSE(web::is_supported_provider("bogus"));
+    EXPECT_FALSE(web::is_supported_provider(""));
+}
+
+TEST(WebUtil, UrlEncodePlain) {
+    EXPECT_EQ(web::url_encode("hello"), "hello");
+    EXPECT_EQ(web::url_encode("abc123"), "abc123");
+    EXPECT_EQ(web::url_encode("a-b.c_d~e"), "a-b.c_d~e");
+}
+
+TEST(WebUtil, UrlEncodeSpaces) {
+    EXPECT_EQ(web::url_encode("hello world"), "hello+world");
+}
+
+TEST(WebUtil, UrlEncodeReserved) {
+    EXPECT_EQ(web::url_encode("a&b=c"), "a%26b%3dc");
+    EXPECT_EQ(web::url_encode("100%"), "100%25");
+    EXPECT_EQ(web::url_encode("?x=1"), "%3fx%3d1");
+}
+
+TEST(WebUtil, CacheKeyStable) {
+    auto k1 = web::cache_key("exa", "foo",
+                             nlohmann::json{{"num_results", 5}});
+    auto k2 = web::cache_key("exa", "foo",
+                             nlohmann::json{{"num_results", 5}});
+    EXPECT_EQ(k1, k2);
+    EXPECT_TRUE(k1.find("exa:") == 0);
+}
+
+TEST(WebUtil, CacheKeyDiffersByProvider) {
+    auto k1 = web::cache_key("exa", "foo", {});
+    auto k2 = web::cache_key("tavily", "foo", {});
+    EXPECT_NE(k1, k2);
+}
+
+TEST(WebUtil, NormalizeTavilySearchEmpty) {
+    auto r = web::normalize_tavily_search(nlohmann::json::object());
+    EXPECT_TRUE(r["results"].is_array());
+    EXPECT_TRUE(r["results"].empty());
+}
+
+TEST(WebUtil, NormalizeTavilySearchWithResults) {
+    nlohmann::json body = {
+        {"answer", "it is 42"},
+        {"results",
+         nlohmann::json::array(
+             {{{"title", "Hitchhiker's"},
+               {"url", "https://x/1"},
+               {"content", "42 is the answer"}}})}};
+    auto r = web::normalize_tavily_search(body);
+    EXPECT_EQ(r["answer"].get<std::string>(), "it is 42");
+    ASSERT_EQ(r["results"].size(), 1u);
+    EXPECT_EQ(r["results"][0]["title"].get<std::string>(), "Hitchhiker's");
+    EXPECT_EQ(r["results"][0]["snippet"].get<std::string>(),
+              "42 is the answer");
+    EXPECT_EQ(r["results"][0]["position"].get<int>(), 1);
+}
+
+TEST(WebUtil, NormalizeTavilyDocumentsBasic) {
+    nlohmann::json body = {
+        {"results",
+         nlohmann::json::array(
+             {{{"url", "https://x"},
+               {"title", "Page"},
+               {"raw_content", "full text"}}})}};
+    auto docs = web::normalize_tavily_documents(body);
+    ASSERT_EQ(docs.size(), 1u);
+    EXPECT_EQ(docs[0]["url"].get<std::string>(), "https://x");
+    EXPECT_EQ(docs[0]["raw_content"].get<std::string>(), "full text");
+    EXPECT_EQ(docs[0]["metadata"]["sourceURL"].get<std::string>(), "https://x");
+}
+
+TEST(WebUtil, NormalizeTavilyDocumentsFailedResults) {
+    nlohmann::json body = {
+        {"failed_results",
+         nlohmann::json::array(
+             {{{"url", "https://bad"}, {"error", "timeout"}}})},
+        {"failed_urls", nlohmann::json::array({"https://other"})}};
+    auto docs = web::normalize_tavily_documents(body, "https://fallback");
+    ASSERT_EQ(docs.size(), 2u);
+    EXPECT_EQ(docs[0]["url"].get<std::string>(), "https://bad");
+    EXPECT_EQ(docs[0]["error"].get<std::string>(), "timeout");
+    EXPECT_EQ(docs[1]["url"].get<std::string>(), "https://other");
+    EXPECT_EQ(docs[1]["error"].get<std::string>(), "extraction failed");
+}
+
+TEST(WebUtil, NormalizeTavilyDocumentsFallbackUrl) {
+    nlohmann::json body = {
+        {"results",
+         nlohmann::json::array({{{"title", "T"}, {"content", "C"}}})}};
+    auto docs = web::normalize_tavily_documents(body, "https://fb");
+    ASSERT_EQ(docs.size(), 1u);
+    EXPECT_EQ(docs[0]["url"].get<std::string>(), "https://fb");
+}
+
 }  // namespace
