@@ -65,6 +65,16 @@ add_library(hermes_gateway STATIC
     src/safe_fetch.cpp
     src/slack_subcommand_router.cpp
     src/channel_cache.cpp
+    src/gateway_helpers.cpp
+    src/session_manager.cpp
+    src/message_pipeline.cpp
+    src/backpressure.cpp
+    src/metrics.cpp
+    src/command_dispatcher.cpp
+    src/shutdown_sequencer.cpp
+    src/config_validator.cpp
+    src/session_ttl.cpp
+    platforms/base_adapter.cpp
     platforms/telegram.cpp
     platforms/websocket_transport.cpp
     platforms/discord.cpp
