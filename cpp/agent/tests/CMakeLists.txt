@@ -30,6 +30,8 @@ add_executable(hermes_agent_tests
     test_compression_feedback.cpp
     test_insights.cpp
     test_redact.cpp
+    test_retry_utils.cpp
+    test_prompt_caching.cpp
 )
 
 target_link_libraries(hermes_agent_tests
