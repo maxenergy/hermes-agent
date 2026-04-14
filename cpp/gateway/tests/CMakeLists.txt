@@ -40,6 +40,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_discord_gateway.cpp
     test_slack_socket_mode.cpp
     test_matrix_e2ee.cpp
+    test_matrix_full.cpp
     test_media_cache.cpp
     test_safe_fetch.cpp
     test_slack_subcommand_router.cpp
