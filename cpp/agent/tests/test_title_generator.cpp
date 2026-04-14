@@ -55,10 +55,55 @@ TEST(TitleGenerator, StripsQuotesAndPrefix) {
     EXPECT_EQ(t, "Project Setup");
 }
 
-TEST(TitleGenerator, TruncatesAt60Chars) {
+TEST(TitleGenerator, TruncatesAt80Chars) {
     StubClient s(std::string(120, 'a'));
     auto t = generate_title(&s, "gpt-aux", "noise");
-    EXPECT_LE(t.size(), 60u);
+    EXPECT_LE(t.size(), 80u);
+}
+
+TEST(TitleGenerator, PostprocessHandlesTitlePrefix) {
+    EXPECT_EQ(hermes::agent::postprocess_title(" Title: Hello "), "Hello");
+    EXPECT_EQ(hermes::agent::postprocess_title("\"Quoted\""), "Quoted");
+    EXPECT_EQ(hermes::agent::postprocess_title("'  mixed '"), "mixed");
+}
+
+TEST(TitleGenerator, ShouldAutoTitleByHistoryLength) {
+    std::vector<hermes::llm::Message> hist;
+    EXPECT_TRUE(hermes::agent::should_auto_title(hist));
+    hermes::llm::Message u;
+    u.role = hermes::llm::Role::User;
+    hist.push_back(u);
+    EXPECT_TRUE(hermes::agent::should_auto_title(hist));
+    hist.push_back(u);
+    EXPECT_TRUE(hermes::agent::should_auto_title(hist));
+    hist.push_back(u);  // 3 user msgs — too late.
+    EXPECT_FALSE(hermes::agent::should_auto_title(hist));
+}
+
+TEST(TitleGenerator, AutoTitleSkipsWhenAlreadySet) {
+    hermes::agent::SessionTitleStore store;
+    bool called_set = false;
+    store.get_title = [](const std::string&) { return "Existing"; };
+    store.set_title = [&](const std::string&, const std::string&) {
+        called_set = true;
+        return true;
+    };
+    StubClient s("Generated");
+    hermes::agent::auto_title_session(store, &s, "aux", "sess-1", "u", "a");
+    EXPECT_FALSE(called_set);
+}
+
+TEST(TitleGenerator, AutoTitleStoresGenerated) {
+    hermes::agent::SessionTitleStore store;
+    std::string stored;
+    store.get_title = [](const std::string&) { return std::string(); };
+    store.set_title = [&](const std::string&, const std::string& t) {
+        stored = t;
+        return true;
+    };
+    StubClient s("Project Setup");
+    hermes::agent::auto_title_session(store, &s, "aux", "sess-1", "help", "sure");
+    EXPECT_EQ(stored, "Project Setup");
 }
 
 TEST(TitleGenerator, EmptyOnException) {
