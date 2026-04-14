@@ -31,6 +31,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_gateway_lifecycle.cpp
     test_email_imap.cpp
     test_telegram_reactions.cpp
+    test_telegram_full.cpp
     test_slack_threads.cpp
     test_discord_threads.cpp
     test_discord_voice.cpp

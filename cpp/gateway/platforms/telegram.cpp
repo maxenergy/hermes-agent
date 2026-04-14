@@ -305,7 +305,17 @@ std::vector<std::string> split_message_for_telegram(const std::string& text,
         if (inside_fence) budget = budget > 6 ? budget - 6 : budget;
 
         if (remaining.size() <= budget) {
-            if (inside_fence) remaining += "\n```";
+            // Recount fences in the remaining to see whether it ends still
+            // inside a fence and thus needs an auto-close appended.  Start
+            // outside since any re-opened fence is present at the start of
+            // `remaining` as an opening token.
+            bool local = false;
+            std::size_t i = 0;
+            while ((i = remaining.find("```", i)) != std::string::npos) {
+                local = !local;
+                i += 3;
+            }
+            if (local) remaining += "\n```";
             out.push_back(remaining);
             break;
         }
