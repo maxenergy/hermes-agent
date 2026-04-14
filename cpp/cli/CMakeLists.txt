@@ -56,6 +56,13 @@ add_library(hermes_cli_lib STATIC
     src/logs_cmd.cpp
     src/uninstall_cmd.cpp
     src/callbacks.cpp
+    src/main_preparse.cpp
+    src/main_help_gen.cpp
+    src/main_diagnostics.cpp
+    src/main_pipe_mode.cpp
+    src/main_update_flow.cpp
+    src/main_session_browser.cpp
+    src/main_repl_dispatch.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
