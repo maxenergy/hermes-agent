@@ -169,12 +169,12 @@ std::vector<Message> ContextCompressor::compress(
     for (size_t i = tail_start; i < messages.size(); ++i) {
         compressed.push_back(std::move(messages[i]));
     }
-    ++compression_count_;
+    ++this->ContextEngine::compression_count;
     return compressed;
 }
 
 void ContextCompressor::on_session_reset() {
-    compression_count_ = 0;
+    this->ContextEngine::compression_count = 0;
 }
 
 void ContextCompressor::update_model(const hermes::llm::ModelMetadata& meta) {

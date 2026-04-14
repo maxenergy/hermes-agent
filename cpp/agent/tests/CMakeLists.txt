@@ -35,6 +35,7 @@ add_executable(hermes_agent_tests
     test_rate_limit_tracker.cpp
     test_smart_model_routing.cpp
     test_error_classifier.cpp
+    test_context_engine.cpp
 )
 
 target_link_libraries(hermes_agent_tests

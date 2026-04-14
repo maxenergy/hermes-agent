@@ -51,14 +51,15 @@ public:
     void on_session_reset() override;
     void update_model(const hermes::llm::ModelMetadata& meta) override;
 
-    int compression_count() const { return compression_count_; }
+    std::string_view name() const override { return "compressor"; }
+
+    int compression_count() const { return static_cast<int>(ContextEngine::compression_count); }
     const CompressionOptions& options() const { return opts_; }
 
 private:
     hermes::llm::LlmClient* summarizer_;
     std::string summarizer_model_;
     CompressionOptions opts_;
-    int compression_count_ = 0;
     int64_t current_model_context_ = 0;
 };
 
