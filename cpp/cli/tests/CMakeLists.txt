@@ -41,6 +41,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_uninstall_cmd.cpp
     test_callbacks.cpp
     test_main_entry_full.cpp
+    test_auth_core.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
