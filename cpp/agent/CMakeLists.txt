@@ -31,6 +31,7 @@ add_library(hermes_agent STATIC
     src/usage_pricing.cpp
     src/context_truncate.cpp
     src/aux_provider_alias.cpp
+    src/credential_pool.cpp
 )
 
 target_include_directories(hermes_agent
