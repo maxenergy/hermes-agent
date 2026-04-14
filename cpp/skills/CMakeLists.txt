@@ -21,6 +21,7 @@ add_library(hermes_skills STATIC
     src/skill_commands.cpp
     src/skills_hub.cpp
     src/skills_sync.cpp
+    src/skills_guard.cpp
 )
 
 target_include_directories(hermes_skills
