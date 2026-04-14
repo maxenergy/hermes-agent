@@ -27,6 +27,7 @@ add_library(hermes_agent STATIC
     src/at_references.cpp
     src/trajectory.cpp
     src/prompt_guidance.cpp
+    src/insights_format.cpp
 )
 
 target_include_directories(hermes_agent

@@ -41,6 +41,7 @@ add_executable(hermes_agent_tests
     test_memory_manager_ext.cpp
     test_trajectory_helpers.cpp
     test_prompt_guidance.cpp
+    test_insights_format.cpp
 )
 
 target_link_libraries(hermes_agent_tests
