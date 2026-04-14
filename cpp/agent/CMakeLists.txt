@@ -3,6 +3,10 @@
 # Composes Phase 1-3 libraries (core/config/state/llm) into the conversation
 # loop: PromptBuilder, ContextCompressor, MemoryManager, AIAgent.
 
+if(NOT TARGET yaml-cpp::yaml-cpp)
+    find_package(yaml-cpp CONFIG QUIET)
+endif()
+
 add_library(hermes_agent STATIC
     src/prompt_builder.cpp
     src/context_compressor.cpp
@@ -35,6 +39,7 @@ add_library(hermes_agent STATIC
     src/skill_commands.cpp
     src/session_state.cpp
     src/tool_dispatch_wrapper.cpp
+    src/skill_utils.cpp
 )
 
 target_include_directories(hermes_agent
@@ -52,6 +57,7 @@ target_link_libraries(hermes_agent
         hermes::llm
     PRIVATE
         hermes_warnings
+        yaml-cpp::yaml-cpp
 )
 
 add_library(hermes::agent ALIAS hermes_agent)
