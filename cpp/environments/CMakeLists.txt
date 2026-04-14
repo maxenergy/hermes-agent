@@ -14,6 +14,7 @@ add_library(hermes_environments STATIC
     src/dotfile_sync.cpp
     src/scp_copier.cpp
     src/spawn_via_env.cpp
+    src/tool_context.cpp
 )
 
 target_include_directories(hermes_environments
