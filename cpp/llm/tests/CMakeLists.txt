@@ -20,6 +20,7 @@ add_executable(hermes_llm_tests
     test_tokenizer.cpp
     test_auxiliary_fallback.cpp
     test_anthropic_depth.cpp
+    test_anthropic_adapter_depth.cpp
 )
 
 target_link_libraries(hermes_llm_tests
