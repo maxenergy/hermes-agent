@@ -396,7 +396,7 @@ void HermesCLI::handle_reset() {
 void HermesCLI::handle_model(const std::string& args) {
     if (args.empty()) {
         std::string current = "anthropic/claude-opus-4-6";
-        if (config_.contains("model")) {
+        if (config_.contains("model") && config_["model"].is_string()) {
             current = config_["model"].get<std::string>();
         }
         std::cout << "Current model: " << current << "\n";
