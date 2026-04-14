@@ -17,6 +17,7 @@ add_library(hermes_agent STATIC
     src/context_references.cpp
     src/compression_feedback.cpp
     src/insights.cpp
+    src/redact.cpp
 )
 
 target_include_directories(hermes_agent
