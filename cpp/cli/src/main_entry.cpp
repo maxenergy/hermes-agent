@@ -6,8 +6,15 @@
 #include "hermes/auth/nous_subscription.hpp"
 #include "hermes/auth/qwen_oauth.hpp"
 #include "hermes/cli/claw_migrate.hpp"
+#include "hermes/cli/claw_cmd.hpp"
+#include "hermes/cli/cron_cmd.hpp"
+#include "hermes/cli/gateway_cmd.hpp"
 #include "hermes/cli/hermes_cli.hpp"
+#include "hermes/cli/logs_cmd.hpp"
+#include "hermes/cli/mcp_config.hpp"
+#include "hermes/cli/models_cmd.hpp"
 #include "hermes/cli/rl_commands.hpp"
+#include "hermes/cli/uninstall_cmd.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/cron/jobs.hpp"
@@ -282,25 +289,7 @@ int cmd_config(int argc, char* argv[]) {
 }
 
 int cmd_gateway(int argc, char* argv[]) {
-    if (argc <= 2) {
-        std::cout << "Usage: hermes gateway [start|stop]\n";
-        return 1;
-    }
-
-    std::string sub = argv[2];
-    if (sub == "start") {
-        std::cout << "Starting gateway...\n";
-        // Stub — gateway start is a future phase.
-        return 0;
-    }
-    if (sub == "stop") {
-        std::cout << "Stopping gateway...\n";
-        // Stub — gateway stop is a future phase.
-        return 0;
-    }
-
-    std::cerr << "Unknown gateway subcommand: " << sub << "\n";
-    return 1;
+    return hermes::cli::gateway_cmd::run(argc, argv);
 }
 
 int cmd_setup() {
@@ -391,67 +380,25 @@ int cmd_skills() {
 }
 
 int cmd_logs() {
-    auto home = hermes::core::path::get_hermes_home();
-    auto log_file = home / "logs" / "agent.log";
+    char self[] = "hermes";
+    char sub[] = "logs";
+    char* fake_argv[] = {self, sub};
+    return hermes::cli::logs_cmd::run(2, fake_argv);
+}
 
-    if (!fs::exists(log_file)) {
-        std::cout << "No log file found at " << log_file << "\n";
-        return 1;
-    }
-
-    std::ifstream file(log_file);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open " << log_file << "\n";
-        return 1;
-    }
-
-    // Read all lines, keep last 50.
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(file, line)) {
-        lines.push_back(line);
-    }
-
-    std::size_t start = 0;
-    if (lines.size() > 50) {
-        start = lines.size() - 50;
-    }
-    for (std::size_t i = start; i < lines.size(); ++i) {
-        std::cout << lines[i] << "\n";
-    }
-    return 0;
+int cmd_logs(int argc, char* argv[]) {
+    return hermes::cli::logs_cmd::run(argc, argv);
 }
 
 int cmd_cron() {
-    auto home = hermes::core::path::get_hermes_home();
-    auto cron_dir = home / "cron";
+    char self[] = "hermes";
+    char sub[] = "cron";
+    char* fake_argv[] = {self, sub};
+    return hermes::cli::cron_cmd::run(2, fake_argv);
+}
 
-    hermes::cron::JobStore store(cron_dir);
-    auto jobs = store.list_all();
-
-    if (jobs.empty()) {
-        std::cout << "No scheduled jobs.\n";
-        return 0;
-    }
-
-    std::cout << "Scheduled jobs:\n\n";
-    std::cout << "  " << std::left
-              << std::setw(12) << "ID"
-              << std::setw(20) << "Name"
-              << std::setw(16) << "Schedule"
-              << std::setw(8) << "Runs"
-              << "Status\n";
-    std::cout << "  " << std::string(60, '-') << "\n";
-
-    for (const auto& job : jobs) {
-        std::string status = job.paused ? "paused" : "active";
-        std::cout << "  " << std::setw(12) << job.id.substr(0, 10)
-                  << std::setw(20) << job.name.substr(0, 18)
-                  << std::setw(16) << job.schedule_str.substr(0, 14)
-                  << std::setw(8) << job.run_count
-                  << status << "\n";
-    }
-    return 0;
+int cmd_cron(int argc, char* argv[]) {
+    return hermes::cli::cron_cmd::run(argc, argv);
 }
 
 int cmd_profile(int argc, char* argv[]) {
@@ -644,34 +591,10 @@ int cmd_update() {
 }
 
 int cmd_uninstall() {
-    std::cout << "This will remove ~/.hermes/ and the hermes binary.\n"
-              << "Are you sure? [y/N]: ";
-    std::string confirm;
-    if (!std::getline(std::cin, confirm) || (confirm != "y" && confirm != "Y")) {
-        std::cout << "Uninstall cancelled.\n";
-        return 0;
-    }
-
-    auto home = hermes::core::path::get_hermes_home();
-    std::error_code ec;
-    fs::remove_all(home, ec);
-    if (ec) {
-        std::cerr << "Failed to remove " << home << ": " << ec.message() << "\n";
-        return 1;
-    }
-    std::cout << "Removed " << home << "\n";
-
-    // Try to remove the binary itself.
-    auto self = fs::read_symlink("/proc/self/exe", ec);
-    if (!ec && fs::exists(self)) {
-        fs::remove(self, ec);
-        if (!ec) {
-            std::cout << "Removed " << self << "\n";
-        }
-    }
-
-    std::cout << "Hermes uninstalled.\n";
-    return 0;
+    char self[] = "hermes";
+    char sub[] = "uninstall";
+    char* fake_argv[] = {self, sub};
+    return hermes::cli::uninstall_cmd::run(2, fake_argv);
 }
 
 // --------------------------------------------------------------------------
@@ -1870,10 +1793,16 @@ int main_entry(int argc, char* argv[]) {
         return cmd_skills();
     }
     if (sub == "logs") {
-        return cmd_logs();
+        return cmd_logs(argc, argv);
     }
     if (sub == "cron") {
-        return cmd_cron();
+        return cmd_cron(argc, argv);
+    }
+    if (sub == "mcp") {
+        return hermes::cli::mcp_config::run(argc, argv);
+    }
+    if (sub == "models") {
+        return hermes::cli::models_cmd::run(argc, argv);
     }
     if (sub == "profile") {
         return cmd_profile(argc, argv);
@@ -1889,7 +1818,7 @@ int main_entry(int argc, char* argv[]) {
         return cmd_pairing(argc, argv);
     }
     if (sub == "claw") {
-        return cmd_claw(argc, argv);
+        return hermes::cli::claw_cmd::run(argc, argv);
     }
     if (sub == "providers") {
         return cmd_providers(argc, argv);
