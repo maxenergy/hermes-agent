@@ -50,6 +50,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_whatsapp_pairing.cpp
     test_whatsapp_ephemeral.cpp
     test_signal_encryption.cpp
+    test_gateway_depth.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})
