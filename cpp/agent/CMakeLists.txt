@@ -33,6 +33,7 @@ add_library(hermes_agent STATIC
     src/aux_provider_alias.cpp
     src/credential_pool.cpp
     src/skill_commands.cpp
+    src/session_state.cpp
 )
 
 target_include_directories(hermes_agent

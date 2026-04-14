@@ -47,6 +47,7 @@ add_executable(hermes_agent_tests
     test_aux_provider_alias.cpp
     test_credential_pool.cpp
     test_skill_commands.cpp
+    test_session_state.cpp
 )
 
 target_link_libraries(hermes_agent_tests
