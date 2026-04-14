@@ -37,6 +37,7 @@ add_executable(hermes_agent_tests
     test_error_classifier.cpp
     test_context_engine.cpp
     test_memory_provider.cpp
+    test_at_references.cpp
 )
 
 target_link_libraries(hermes_agent_tests

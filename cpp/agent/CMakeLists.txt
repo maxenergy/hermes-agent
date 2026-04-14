@@ -24,6 +24,7 @@ add_library(hermes_agent STATIC
     src/smart_model_routing.cpp
     src/error_classifier.cpp
     src/context_engine.cpp
+    src/at_references.cpp
 )
 
 target_include_directories(hermes_agent
