@@ -96,4 +96,34 @@ std::string render_intermediate_body(std::string_view accumulated,
 std::size_t compute_split_offset(std::string_view accumulated,
                                   std::size_t safe_limit);
 
+// ---------------------------------------------------------------------------
+// truncate_message — depth port of gateway/platforms/base.py::truncate_message.
+//
+// Splits a long message into chunks that fit under `max_length`, honouring:
+//   * triple-backtick code-block boundaries (closing + reopening fences
+//     across chunk boundaries, preserving the language tag),
+//   * inline-code boundaries — avoids splitting inside an odd number of
+//     backticks that would leave a dangling ` character,
+//   * chunk indicators "(1/3)" appended to each chunk when the result
+//     spans more than one message,
+//   * prefers split points at newlines, then spaces, then a hard cut.
+// ---------------------------------------------------------------------------
+std::vector<std::string> truncate_message_with_fences(
+    std::string_view content, std::size_t max_length = 4096);
+
+// Exposed helper used internally by truncate_message — returns {split_at,
+// backtick_fixup_applied}.  Visible for test coverage.
+struct SplitPoint {
+    std::size_t split_at = 0;
+    bool fixup_applied = false;
+};
+SplitPoint find_chunk_split_point(std::string_view remaining,
+                                  std::size_t headroom);
+
+// True when `chunk_body` ends inside an open triple-backtick code block.
+// Returns the captured language tag via `out_lang` when true.
+bool ends_inside_code_block(std::string_view chunk_body,
+                            bool currently_in_code,
+                            std::string& out_lang);
+
 }  // namespace hermes::gateway

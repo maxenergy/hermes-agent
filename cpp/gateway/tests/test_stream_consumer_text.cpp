@@ -196,3 +196,102 @@ TEST(StreamConsumerText, RenderIntermediateOmitsCursorOnDone) {
 TEST(StreamConsumerText, RenderIntermediateOmitsCursorOnSegmentBreak) {
     EXPECT_EQ(render_intermediate_body("seg", false, true, " ▉"), "seg");
 }
+
+// ---------------------------------------------------------------------------
+// truncate_message
+// ---------------------------------------------------------------------------
+
+TEST(StreamConsumerTextTruncate, ShortReturnsSingleChunk) {
+    auto chunks = truncate_message_with_fences("hello world", 4096);
+    ASSERT_EQ(chunks.size(), 1u);
+    EXPECT_EQ(chunks[0], "hello world");
+}
+
+TEST(StreamConsumerTextTruncate, SplitsOnWhitespaceWithIndicators) {
+    // Build a paragraph of repeated phrases forcing at least two chunks.
+    std::string phrase = "alpha beta gamma delta epsilon zeta eta theta ";
+    std::string body;
+    while (body.size() < 300) body += phrase;
+    auto chunks = truncate_message_with_fences(body, 120);
+    ASSERT_GE(chunks.size(), 2u);
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+        std::string suffix = " (" + std::to_string(i + 1) + "/" +
+                             std::to_string(chunks.size()) + ")";
+        EXPECT_NE(chunks[i].find(suffix), std::string::npos)
+            << "chunk " << i << " missing indicator";
+        EXPECT_LE(chunks[i].size(), 120u);
+    }
+}
+
+TEST(StreamConsumerTextTruncate, HandlesNoNaturalBoundary) {
+    std::string body(300, 'x');
+    auto chunks = truncate_message_with_fences(body, 80);
+    ASSERT_GE(chunks.size(), 2u);
+    for (const auto& c : chunks) {
+        EXPECT_LE(c.size(), 80u);
+    }
+}
+
+TEST(StreamConsumerTextTruncate, ClosesAndReopensCodeFence) {
+    // A code block that exceeds the limit must be split at a line boundary,
+    // closed with "```" at the end of the first chunk, and reopened with the
+    // language tag at the start of the next.
+    std::string lines;
+    for (int i = 0; i < 40; ++i) {
+        lines += "line_" + std::to_string(i) + "_filler_content\n";
+    }
+    std::string body = "Intro text\n```python\n" + lines + "```\nOutro";
+    auto chunks = truncate_message_with_fences(body, 200);
+    ASSERT_GE(chunks.size(), 2u);
+    // First chunk should close the fence.
+    EXPECT_NE(chunks.front().find("```"), std::string::npos);
+    // Second chunk should start with ```python reopen.
+    EXPECT_EQ(chunks[1].rfind("```python\n", 0), 0u);
+}
+
+TEST(StreamConsumerTextTruncate, FindSplitPointPrefersNewline) {
+    std::string s(50, 'a');
+    s += "\n";
+    s += std::string(40, 'b');
+    auto sp = find_chunk_split_point(s, 80);
+    EXPECT_EQ(sp.split_at, 50u);
+    EXPECT_FALSE(sp.fixup_applied);
+}
+
+TEST(StreamConsumerTextTruncate, FindSplitPointFallsBackToSpace) {
+    // No newline, but space in the second half.
+    std::string s(40, 'a');
+    s += " ";
+    s += std::string(40, 'b');
+    auto sp = find_chunk_split_point(s, 80);
+    EXPECT_EQ(sp.split_at, 40u);
+}
+
+TEST(StreamConsumerTextTruncate, EndsInsideCodeBlockWithLang) {
+    std::string lang;
+    EXPECT_TRUE(ends_inside_code_block("text\n```python\ndef foo():", false, lang));
+    EXPECT_EQ(lang, "python");
+}
+
+TEST(StreamConsumerTextTruncate, EndsInsideCodeBlockClosed) {
+    std::string lang;
+    EXPECT_FALSE(ends_inside_code_block("```py\nx\n```\nafter", false, lang));
+    EXPECT_EQ(lang, "");
+}
+
+TEST(StreamConsumerTextTruncate, EndsInsideCodeBlockContinuation) {
+    std::string lang = "rust";
+    EXPECT_TRUE(ends_inside_code_block("more code\nstill in block", true, lang));
+    EXPECT_EQ(lang, "rust");
+}
+
+TEST(StreamConsumerTextTruncate, InlineCodeBacktickFixupApplies) {
+    // Need candidate with: an odd number of backticks + a space before the
+    // last backtick that is past headroom/4.
+    std::string prefix = "one two three four five `inline more ";  // len ~ 37
+    std::string s = prefix + std::string(80, 'x');
+    // headroom 40 → safe boundary must be > 10. The space before the
+    // backtick sits at position len("one two three four five ")-1 = 23 > 10.
+    auto sp = find_chunk_split_point(s, 40);
+    EXPECT_TRUE(sp.fixup_applied);
+}
