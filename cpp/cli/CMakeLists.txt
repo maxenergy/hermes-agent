@@ -65,6 +65,7 @@ add_library(hermes_cli_lib STATIC
     src/main_session_browser.cpp
     src/main_repl_dispatch.cpp
     src/setup_helpers.cpp
+    src/auth_helpers.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
@@ -94,6 +95,7 @@ target_include_directories(hermes_cli_lib
 target_compile_features(hermes_cli_lib PUBLIC cxx_std_17)
 
 find_package(SQLite3 REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 target_link_libraries(hermes_cli_lib
     PUBLIC
@@ -115,6 +117,7 @@ target_link_libraries(hermes_cli_lib
         hermes_warnings
         yaml-cpp::yaml-cpp
         SQLite::SQLite3
+        OpenSSL::Crypto
 )
 
 add_library(hermes::cli ALIAS hermes_cli_lib)
