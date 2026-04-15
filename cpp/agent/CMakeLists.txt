@@ -9,6 +9,7 @@ endif()
 
 add_library(hermes_agent STATIC
     src/prompt_builder.cpp
+    src/prompt_builder_depth.cpp
     src/context_compressor.cpp
     src/context_compressor_depth.cpp
     src/memory_manager.cpp

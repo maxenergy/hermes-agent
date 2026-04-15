@@ -17,6 +17,7 @@ include(GoogleTest)
 
 add_executable(hermes_agent_tests
     test_prompt_builder.cpp
+    test_prompt_builder_depth.cpp
     test_context_compressor.cpp
     test_context_compressor_depth.cpp
     test_memory_manager.cpp
