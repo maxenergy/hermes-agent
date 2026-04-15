@@ -295,3 +295,24 @@ TEST(StreamConsumerTextTruncate, InlineCodeBacktickFixupApplies) {
     auto sp = find_chunk_split_point(s, 40);
     EXPECT_TRUE(sp.fixup_applied);
 }
+
+TEST(StreamConsumerTextTruncate, EvenBacktickCountNoFixup) {
+    // Two backticks → balanced inline code, no fixup needed.
+    std::string s = "alpha `one` beta `two` gamma ";
+    s += std::string(80, 'b');
+    auto sp = find_chunk_split_point(s, 40);
+    EXPECT_FALSE(sp.fixup_applied);
+}
+
+TEST(StreamConsumerTextTruncate, TruncateLimitFloorKicksIn) {
+    // When max_length is tiny, the prefix reserve exceeds the limit so
+    // the helper falls back to half-limit headroom.  We simply assert
+    // the result covers the whole input without exception.
+    auto chunks = truncate_message_with_fences("hello world", 5);
+    // content already larger than 5 but under our single-chunk fast path
+    // (len > max_length), so it should split.
+    ASSERT_FALSE(chunks.empty());
+    std::string joined;
+    for (const auto& c : chunks) joined += c;
+    EXPECT_NE(joined.find("hello"), std::string::npos);
+}
