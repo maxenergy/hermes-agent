@@ -10,6 +10,7 @@
 #include "hermes/llm/message.hpp"
 #include "hermes/llm/openai_client.hpp"
 #include "hermes/skills/skill_utils.hpp"
+#include "hermes/state/session_db.hpp"
 #include "hermes/tools/clarify_tool.hpp"
 #include "hermes/tools/delegate_tool.hpp"
 #include "hermes/tools/discover_tools.hpp"
@@ -279,6 +280,18 @@ std::string HermesCLI::query(const std::string& message) {
         total_input_tokens_ += result.usage.input_tokens;
         total_output_tokens_ += result.usage.output_tokens;
 
+        // Persist to SessionDB so /resume can restore this conversation.
+        ensure_session_id();
+        persist_turn(message, text);
+        if (session_db_ && !session_id_.empty()) {
+            try {
+                session_db_->add_tokens(session_id_,
+                                        result.usage.input_tokens,
+                                        result.usage.output_tokens,
+                                        0.0);
+            } catch (...) {}
+        }
+
         return text.empty() ? "[empty response]" : text;
     } catch (const std::exception& e) {
         return std::string("[error] ") + e.what();
@@ -328,6 +341,9 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "provider") { handle_provider(args); }
     else if (canonical == "insights") { handle_insights(); }
     else if (canonical == "platforms"){ handle_platforms(); }
+    else if (canonical == "sessions") { handle_sessions(); }
+    else if (canonical == "resume")   { handle_resume(args); }
+    else if (canonical == "continue") { handle_continue(); }
     else {
         std::cout << "/" << canonical << " is not available in this context\n";
     }
@@ -594,6 +610,138 @@ void HermesCLI::handle_insights() {
 void HermesCLI::handle_platforms() {
     std::cout << "Connected platforms:\n"
               << "  CLI only\n";
+}
+
+// ── Session resume plumbing ──────────────────────────────────────────────
+
+void HermesCLI::ensure_session_db() {
+    if (session_db_) return;
+    try {
+        session_db_ = std::make_unique<hermes::state::SessionDB>();
+    } catch (const std::exception& e) {
+        std::cerr << "[warn] session db unavailable: " << e.what() << "\n";
+    }
+}
+
+void HermesCLI::ensure_session_id() {
+    if (!session_id_.empty()) return;
+    ensure_session_db();
+    if (!session_db_) return;
+    std::string model;
+    if (config_.contains("model") && config_["model"].is_string()) {
+        model = config_["model"].get<std::string>();
+    }
+    try {
+        session_id_ = session_db_->create_session("cli", model,
+                                                  nlohmann::json::object());
+    } catch (const std::exception& e) {
+        std::cerr << "[warn] create_session failed: " << e.what() << "\n";
+    }
+}
+
+void HermesCLI::persist_turn(const std::string& user_msg,
+                             const std::string& assistant_msg) {
+    if (!session_db_ || session_id_.empty()) return;
+    hermes::state::MessageRow u;
+    u.session_id = session_id_;
+    u.turn_index = static_cast<int>(history_.size()) - 2;  // user added first
+    u.role = "user";
+    u.content = user_msg;
+    u.tool_calls = nlohmann::json::array();
+    u.created_at = std::chrono::system_clock::now();
+    try { session_db_->save_message(u); } catch (...) {}
+
+    hermes::state::MessageRow a;
+    a.session_id = session_id_;
+    a.turn_index = static_cast<int>(history_.size()) - 1;
+    a.role = "assistant";
+    a.content = assistant_msg;
+    a.tool_calls = nlohmann::json::array();
+    a.created_at = std::chrono::system_clock::now();
+    try { session_db_->save_message(a); } catch (...) {}
+}
+
+bool HermesCLI::resume_session(const std::string& id_or_name) {
+    ensure_session_db();
+    if (!session_db_) {
+        std::cout << "Session database unavailable.\n";
+        return false;
+    }
+    std::string resolved_id;
+    // 1. Exact id hit.
+    if (session_db_->get_session(id_or_name).has_value()) {
+        resolved_id = id_or_name;
+    } else {
+        // 2. Prefix / title substring match across recent sessions.
+        auto sessions = session_db_->list_sessions(200, 0);
+        for (const auto& s : sessions) {
+            if (s.id.rfind(id_or_name, 0) == 0 ||
+                (s.title && s.title->find(id_or_name) != std::string::npos)) {
+                resolved_id = s.id;
+                break;
+            }
+        }
+    }
+    if (resolved_id.empty()) {
+        std::cout << "No session matching '" << id_or_name << "'.\n";
+        return false;
+    }
+    auto msgs = session_db_->get_messages(resolved_id);
+    session_id_ = resolved_id;
+    history_.clear();
+    for (const auto& m : msgs) {
+        history_.push_back({{"role", m.role}, {"content", m.content}});
+    }
+    std::cout << "Resumed session " << resolved_id << " ("
+              << msgs.size() << " messages).\n";
+    return true;
+}
+
+bool HermesCLI::continue_last_session() {
+    ensure_session_db();
+    if (!session_db_) return false;
+    auto sessions = session_db_->list_sessions(1, 0);
+    if (sessions.empty()) {
+        std::cout << "No previous sessions found.\n";
+        return false;
+    }
+    return resume_session(sessions[0].id);
+}
+
+void HermesCLI::handle_sessions() {
+    ensure_session_db();
+    if (!session_db_) {
+        std::cout << "Session database unavailable.\n";
+        return;
+    }
+    auto sessions = session_db_->list_sessions(20, 0);
+    if (sessions.empty()) {
+        std::cout << "No sessions yet.\n";
+        return;
+    }
+    std::cout << "Recent sessions (use /resume <id-prefix>):\n";
+    for (const auto& s : sessions) {
+        auto t = std::chrono::system_clock::to_time_t(s.updated_at);
+        std::tm tm = *std::localtime(&t);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
+        std::cout << "  " << s.id.substr(0, 12) << "  " << buf
+                  << "  tok=" << (s.input_tokens + s.output_tokens)
+                  << "  " << (s.title ? *s.title : std::string("(untitled)"))
+                  << "\n";
+    }
+}
+
+void HermesCLI::handle_resume(const std::string& args) {
+    if (args.empty()) {
+        std::cout << "Usage: /resume <session-id-or-prefix>\n";
+        return;
+    }
+    resume_session(args);
+}
+
+void HermesCLI::handle_continue() {
+    continue_last_session();
 }
 
 }  // namespace hermes::cli

@@ -92,6 +92,8 @@ std::vector<CommandDef> build_registry() {
         {"background", "Run a prompt in the background",        "Session",       {"bg"},               "<prompt>",  true,  false, ""},
         {"btw",        "Inject a side note without resending",  "Session",       {},                   "<note>",    true,  false, ""},
         {"queue",      "Queue a follow-up prompt",              "Session",       {"q"},                "<prompt>",  false, false, ""},
+        {"sessions",   "List recent sessions",                  "Session",       {"ls"},               "",          true,  false, ""},
+        {"continue",   "Resume the most recent session",        "Session",       {"cont"},             "",          true,  false, ""},
 
         // ── Configuration ────────────────────────────────────────────
         {"model",       "Show or switch the active model",       "Configuration", {"m"},                "[model]",   false, false, ""},

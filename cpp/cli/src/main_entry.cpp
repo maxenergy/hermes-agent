@@ -1730,6 +1730,33 @@ int cmd_pairing(int argc, char* argv[]) {
     }
 }
 
+// Scan argv for --resume/-r/--continue/-c before the subcommand lookup.
+// Non-destructive: we read-only, leaving the REPL's own arg parsing intact.
+namespace {
+struct ResumeFlags {
+    std::string resume_id;  // non-empty if --resume / -r given
+    bool continue_flag = false;
+};
+ResumeFlags scan_resume_flags(int argc, char* argv[]) {
+    ResumeFlags out;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--resume" || a == "-r") {
+            if (i + 1 < argc) out.resume_id = argv[++i];
+        } else if (a.rfind("--resume=", 0) == 0) {
+            out.resume_id = a.substr(9);
+        } else if (a == "--continue" || a == "-c") {
+            out.continue_flag = true;
+        }
+    }
+    return out;
+}
+void apply_resume_flags(HermesCLI& cli, const ResumeFlags& f) {
+    if (!f.resume_id.empty()) cli.resume_session(f.resume_id);
+    else if (f.continue_flag)  cli.continue_last_session();
+}
+}  // namespace
+
 int main_entry(int argc, char* argv[]) {
     if (argc < 2) {
         // Pipe mode: when stdin is not a TTY, read all input and run as
@@ -1760,8 +1787,18 @@ int main_entry(int argc, char* argv[]) {
     if (sub == "--version" || sub == "-V" || sub == "version") {
         return cmd_version();
     }
+    // Top-level --resume / --continue without a subcommand → interactive chat
+    // with the previous session preloaded.
+    if (sub == "--resume" || sub == "-r" || sub == "--continue" ||
+        sub == "-c" || sub.rfind("--resume=", 0) == 0) {
+        HermesCLI cli;
+        apply_resume_flags(cli, scan_resume_flags(argc, argv));
+        cli.run();
+        return 0;
+    }
     if (sub == "chat") {
         HermesCLI cli;
+        apply_resume_flags(cli, scan_resume_flags(argc, argv));
         cli.run();
         return 0;
     }

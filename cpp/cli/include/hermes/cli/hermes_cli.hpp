@@ -14,6 +14,7 @@
 
 namespace hermes::agent { class AIAgent; class PromptBuilder; }
 namespace hermes::llm { class LlmClient; }
+namespace hermes::state { class SessionDB; }
 
 namespace hermes::cli {
 
@@ -34,6 +35,11 @@ public:
     // Command dispatch — called from REPL when input starts with '/'.
     // Returns true if the input was a recognized command.
     bool process_command(const std::string& input);
+
+    // Resume API — load a previous session's messages into the REPL state.
+    // Returns true if the session was found and loaded.
+    bool resume_session(const std::string& session_id_or_name);
+    bool continue_last_session();
 
     // Visible for testing.
     void show_banner();
@@ -59,11 +65,20 @@ private:
     void handle_provider(const std::string& args);
     void handle_insights();
     void handle_platforms();
+    void handle_sessions();
+    void handle_resume(const std::string& args);
+    void handle_continue();
+
+    void ensure_session_db();
+    void ensure_session_id();
+    void persist_turn(const std::string& user_msg,
+                      const std::string& assistant_msg);
 
     nlohmann::json config_;
     std::string session_id_;
     std::vector<nlohmann::json> history_;  // lightweight; full Message in agent
     std::vector<std::string> input_history_;  // last 100 inputs for /retry
+    std::unique_ptr<hermes::state::SessionDB> session_db_;
     int64_t total_input_tokens_ = 0;
     int64_t total_output_tokens_ = 0;
     bool verbose_ = false;
