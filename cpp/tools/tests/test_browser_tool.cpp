@@ -43,7 +43,7 @@ TEST_F(BrowserToolTest, NavigateRecordsUrl) {
 TEST_F(BrowserToolTest, SnapshotReturnsFakeElements) {
     fake_->fake_snapshot.url = "https://test.com";
     fake_->fake_snapshot.title = "Test Page";
-    fake_->fake_snapshot.elements = {{"e1", "div", "Hello", "button"}};
+    fake_->fake_snapshot.elements = {{"e1", "div", "Hello", "button", 0, 0, 0, 0, true, {}}};
 
     auto r = nlohmann::json::parse(dispatch("browser_snapshot"));
     EXPECT_EQ(r["url"], "https://test.com");
