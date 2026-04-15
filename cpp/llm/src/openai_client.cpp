@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 // OpenAI chat-completions client.
 //
 // Wire format for POST /v1/chat/completions:
@@ -47,7 +49,17 @@ json build_chat_completions_body(const CompletionRequest& req) {
 
     if (req.temperature) body["temperature"] = *req.temperature;
     if (req.max_tokens) body["max_tokens"] = *req.max_tokens;
-    if (req.reasoning_effort) body["reasoning_effort"] = *req.reasoning_effort;
+    if (req.reasoning_effort) {
+        // Some endpoints (Bailian Coding Plan) require reasoning_effort to
+        // be a string ("low"|"medium"|"high") or an object {effort:...},
+        // not a raw integer. Map 0..3 → string.
+        static constexpr const char* kEffortNames[] = {"none", "low",
+                                                      "medium", "high"};
+        int level = *req.reasoning_effort;
+        if (level < 0) level = 0;
+        if (level > 3) level = 3;
+        body["reasoning_effort"] = kEffortNames[level];
+    }
 
     // Merge provider-specific extras last so callers can override.
     if (req.extra.is_object()) {
@@ -119,6 +131,7 @@ CompletionResponse parse_openai_stream(
     const std::string& /*provider*/) {
 
     std::string accumulated_content;
+    std::string accumulated_reasoning;
     std::string finish_reason;
     CanonicalUsage usage;
     // Track tool calls by index.
@@ -160,6 +173,13 @@ CompletionResponse parse_openai_stream(
             // Accumulate content tokens.
             if (delta.contains("content") && delta["content"].is_string()) {
                 accumulated_content += delta["content"].get<std::string>();
+            }
+            // Accumulate reasoning_content (thinking models — DashScope/Qwen,
+            // DeepSeek, etc. send reasoning before content).
+            if (delta.contains("reasoning_content") &&
+                delta["reasoning_content"].is_string()) {
+                accumulated_reasoning +=
+                    delta["reasoning_content"].get<std::string>();
             }
 
             // Accumulate tool calls.
@@ -212,6 +232,9 @@ CompletionResponse parse_openai_stream(
     out.usage = usage;
     out.assistant_message.role = Role::Assistant;
     out.assistant_message.content_text = accumulated_content;
+    if (!accumulated_reasoning.empty()) {
+        out.assistant_message.reasoning = accumulated_reasoning;
+    }
     out.assistant_message.tool_calls = std::move(tool_calls);
     return out;
 }
@@ -230,13 +253,27 @@ CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
         body["stream"] = true;
         // Request usage info in stream mode.
         body["stream_options"] = {{"include_usage", true}};
+        if (headers.find("User-Agent") == headers.end()) {
+            headers["User-Agent"] = "QwenCode/0.14.3 (linux; x64)";
+        }
         return parse_openai_stream(
             transport_, base_url_ + "/chat/completions",
             headers, body.dump(), provider_name());
     }
 
+    if (headers.find("User-Agent") == headers.end()) {
+        // Some OpenAI-compatible endpoints (e.g. Bailian Coding Plan at
+        // coding.dashscope.aliyuncs.com) reject default libcurl UAs with
+        // "Coding Plan is currently only available for Coding Agents".
+        // Send a Qwen Code-shaped UA by default; override via extra_headers.
+        headers["User-Agent"] = "QwenCode/0.14.3 (linux; x64)";
+    }
     const auto resp = transport_->post_json(
         base_url_ + "/chat/completions", headers, body.dump());
+    if (std::getenv("HERMES_DEBUG_LLM")) {
+        std::fprintf(stderr, "[hermes-llm] %s status=%d body=%.1000s\n",
+                     base_url_.c_str(), resp.status_code, resp.body.c_str());
+    }
     if (resp.status_code < 200 || resp.status_code >= 300) {
         throw ApiError(resp.status_code, resp.body, provider_name());
     }
