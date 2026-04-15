@@ -40,6 +40,9 @@ add_library(hermes_tools STATIC
     src/web_tools_depth.cpp
     src/vision_tool.cpp
     src/send_message_tool.cpp
+    src/send_message_tool_depth.cpp
+    src/skills_tool_depth.cpp
+    src/skill_manager_tool_depth.cpp
     src/image_generation_tool.cpp
     src/tts_tool.cpp
     src/delegate_tool.cpp
