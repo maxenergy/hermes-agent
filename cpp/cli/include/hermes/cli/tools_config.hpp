@@ -1,17 +1,27 @@
 // tools_config — C++ port of hermes_cli/tools_config.py.
 //
-// The Python module drives the interactive `hermes tools` wizard. We
-// keep the configuration *data* (toolset labels, defaults, provider
-// tables) and the *config-tree mutation* helpers here — enough for
-// unit tests and for CLI subcommands like `hermes tools list` /
-// `hermes tools enable` / `hermes tools disable`.
+// The Python module drives the interactive `hermes tools` wizard.
+// This header exposes both the pure data (toolset registry, providers,
+// cost table) and the interactive state-machine hooks used by the
+// curses-based editor. Everything is split so unit tests can drive
+// state transitions without a TTY.
 //
-// Interactive menus are driven by the thin wrapper in tools_config.cpp
-// that calls into `curses_ui`.
+// Surface overview:
+//
+//   - Toolset / platform metadata      (configurable_toolsets, ...)
+//   - Provider/backend metadata        (tool_categories, provider_catalog)
+//   - Per-tool allow/deny lists        (AllowDeny, read/apply from config)
+//   - Cost preview                      (estimate_monthly_cost)
+//   - Config read/write + atomic save  (save_tools_config_atomic)
+//   - Interactive editor state-machine (EditorState, apply_key_*)
+//   - Top-level CLI dispatcher         (dispatch)
 #pragma once
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
+#include <functional>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <string>
@@ -20,54 +30,50 @@
 
 namespace hermes::cli::tools_config {
 
-// --- Toolset registry -------------------------------------------------------
+// ===========================================================================
+// Toolset / platform metadata
+// ===========================================================================
 
 struct ToolsetInfo {
     std::string key;          // e.g. "web"
     std::string label;        // "Web Search & Scraping"
     std::string description;  // "web_search, web_extract"
+    // Approx per-month cost when heavily used (USD). 0 = free / unknown.
+    double est_monthly_usd = 0.0;
+    // Tools under this toolset (for allow/deny UX).
+    std::vector<std::string> tools;
 };
 
-// Full list of user-configurable toolsets, in display order.
 const std::vector<ToolsetInfo>& configurable_toolsets();
-
-// Look up a toolset by key. Returns nullptr when unknown.
 const ToolsetInfo* find_toolset(const std::string& key);
-
-// Toolsets that are OFF by default for new installs.
 const std::set<std::string>& default_off_toolsets();
-
-// Effective default selection: everything in configurable_toolsets()
-// except the default-off set.
 std::set<std::string> default_enabled_toolsets();
-
-// --- Platforms --------------------------------------------------------------
 
 struct PlatformInfo {
     std::string key;                // e.g. "cli"
     std::string label;              // "CLI"
     std::string default_toolset;    // "hermes-cli"
+    // Env var that, if set, signals the platform is enabled.
+    std::string probe_env_var;
 };
 
 const std::vector<PlatformInfo>& platforms();
 const PlatformInfo* find_platform(const std::string& key);
 
-// --- Config read / write ---------------------------------------------------
+// Return the set of platforms whose `probe_env_var` is present.
+std::vector<std::string> detected_platforms();
 
-// Read the set of toolsets enabled for a given platform from `config`.
-// Falls back to `default_enabled_toolsets()` when the platform has no
-// saved config.
+// ===========================================================================
+// Config read / write
+// ===========================================================================
+
 std::set<std::string> get_enabled_toolsets(const nlohmann::json& config,
                                            const std::string& platform);
 
-// Write an enabled set back to config under
-// `config["platform_toolsets"][platform] = [...]`.
 void set_enabled_toolsets(nlohmann::json& config,
                           const std::string& platform,
                           const std::set<std::string>& enabled);
 
-// Enable / disable a single toolset for a single platform. Creates any
-// missing config nodes.
 void enable_toolset(nlohmann::json& config,
                     const std::string& platform,
                     const std::string& toolset);
@@ -75,11 +81,46 @@ void disable_toolset(nlohmann::json& config,
                      const std::string& platform,
                      const std::string& toolset);
 
-// Return the set of platforms that currently have any toolset config
-// persisted in `config["platform_toolsets"]`.
 std::vector<std::string> configured_platforms(const nlohmann::json& config);
 
-// --- Providers --------------------------------------------------------------
+// Atomic write of a JSON config object to disk (YAML-wrapped, at the
+// hermes home config.yaml path). Returns true on success.
+bool save_tools_config_atomic(const nlohmann::json& config);
+
+// Overload: write to a specific path as JSON. Returns true on success.
+bool write_json_atomic(const std::string& path, const nlohmann::json& config);
+
+// ===========================================================================
+// Per-tool allow/deny lists
+// ===========================================================================
+
+struct AllowDeny {
+    std::set<std::string> allow;   // if non-empty, only these are allowed
+    std::set<std::string> deny;    // these are always blocked
+};
+
+// Read `config["tool_acl"][platform]` into an AllowDeny.
+AllowDeny read_tool_acl(const nlohmann::json& config,
+                        const std::string& platform);
+
+// Write AllowDeny back under `config["tool_acl"][platform]`.
+void write_tool_acl(nlohmann::json& config,
+                    const std::string& platform,
+                    const AllowDeny& acl);
+
+// Return true if `tool` is permitted under the given ACL.
+// Semantics:
+//   - if deny contains tool           -> false
+//   - if allow non-empty and tool not in allow -> false
+//   - otherwise                       -> true
+bool is_tool_allowed(const AllowDeny& acl, const std::string& tool);
+
+// List of every tool across every toolset. Useful for interactive pickers.
+std::vector<std::string> all_tools();
+
+// ===========================================================================
+// Providers
+// ===========================================================================
 
 struct ProviderOption {
     std::string name;        // display name
@@ -87,6 +128,8 @@ struct ProviderOption {
     std::string backend;     // backend id, e.g. "firecrawl", "edge"
     std::vector<std::string> env_vars;  // env vars the provider requires
     bool requires_nous_auth = false;
+    // Approx per-call USD cost — cheap heuristic for preview.
+    double est_usd_per_call = 0.0;
 };
 
 struct ToolCategory {
@@ -95,35 +138,111 @@ struct ToolCategory {
     std::vector<ProviderOption> providers;
 };
 
-// Read the known provider tables (TTS / web / image_gen / browser /
-// vision / code_execution / memory / session_search). Only a curated
-// subset of the Python map — enough to drive a functional CLI.
 const std::vector<ToolCategory>& tool_categories();
-
 const ToolCategory* find_category(const std::string& key);
-
-// Return the environment variable names used by a category. Useful for
-// warning the user about missing credentials.
 std::vector<std::string> env_vars_for_category(const std::string& key);
-
-// Check whether every env var named in `vars` is set in the process
-// environment. Empty / unset values count as missing.
 bool env_vars_present(const std::vector<std::string>& vars);
 
-// --- Rendering --------------------------------------------------------------
+// Return the first provider in a category whose env_vars are all set.
+// nullptr if none.
+const ProviderOption* resolve_active_provider(const ToolCategory& cat);
 
-// Render a one-line status of every toolset for a platform ("[x] web",
-// "[ ] vision", etc.). Returns number of lines printed.
+// Active backend resolved from config or env — e.g. which web backend
+// is actually in use. Empty string if none can be determined.
+std::string active_backend_for_category(const nlohmann::json& config,
+                                        const std::string& category_key);
+
+// ===========================================================================
+// Cost preview
+// ===========================================================================
+
+struct CostEstimate {
+    double monthly_usd = 0.0;
+    std::vector<std::pair<std::string, double>> breakdown;  // {toolset, usd}
+};
+
+// Estimate monthly cost given enabled toolsets (rough heuristic based
+// on est_monthly_usd on ToolsetInfo).
+CostEstimate estimate_monthly_cost(const std::set<std::string>& enabled);
+
+// Render a cost estimate to stream.
+void render_cost_estimate(std::ostream& out, const CostEstimate& est);
+
+// ===========================================================================
+// Rendering (non-interactive)
+// ===========================================================================
+
 std::size_t render_toolset_status(std::ostream& out,
                                   const nlohmann::json& config,
                                   const std::string& platform);
 
-// Render the full `hermes tools list` output (one block per platform).
 int cmd_list(std::ostream& out, const nlohmann::json& config);
 
-// --- CLI entry point -------------------------------------------------------
+// Print a table showing each category + which backend is active.
+void render_provider_table(std::ostream& out, const nlohmann::json& config);
 
-// Top-level dispatcher; mirrors Python `tools_command(args)`.
+// Print the full allow/deny ACL for a platform.
+void render_acl(std::ostream& out,
+                const nlohmann::json& config,
+                const std::string& platform);
+
+// ===========================================================================
+// Interactive editor state-machine (testable without a TTY)
+// ===========================================================================
+
+enum class EditorView {
+    ToolsetList,   // main toggle list
+    ProviderList,  // per-category provider selector
+    AclEditor,     // allow/deny tool editor
+    CostPreview,
+};
+
+struct EditorState {
+    EditorView view = EditorView::ToolsetList;
+    std::string platform = "cli";
+    std::size_t cursor = 0;
+    std::set<std::string> enabled;
+    std::string current_category;   // while in ProviderList/AclEditor
+    AllowDeny acl;
+    bool dirty = false;
+    bool done = false;
+    bool cancelled = false;
+
+    // Status line displayed at the bottom of the UI.
+    std::string status;
+};
+
+// Construct an EditorState seeded from a config + platform.
+EditorState make_editor(const nlohmann::json& config,
+                        const std::string& platform);
+
+// Apply a single keypress (`key` is an ASCII char + special names
+// "UP","DOWN","PGUP","PGDN","ENTER","ESC","SPACE","TAB","q").
+// Returns true if the state changed.
+bool apply_key(EditorState& state, const std::string& key);
+
+// Flush editor state back into a config JSON (mutates in-place).
+void apply_to_config(const EditorState& state, nlohmann::json& config);
+
+// Render the current view to a vector of plain-text lines (one per row).
+std::vector<std::string> render_editor(const EditorState& state,
+                                       std::size_t width = 80);
+
+// ===========================================================================
+// CLI entry point
+// ===========================================================================
+
 int dispatch(int argc, char** argv);
+
+// Subcommand handlers, exposed for tests.
+int cmd_list_cli(int argc, char** argv);
+int cmd_enable_cli(int argc, char** argv);
+int cmd_disable_cli(int argc, char** argv);
+int cmd_reset_cli(int argc, char** argv);
+int cmd_allow_cli(int argc, char** argv);
+int cmd_deny_cli(int argc, char** argv);
+int cmd_cost_cli(int argc, char** argv);
+int cmd_providers_cli(int argc, char** argv);
+int cmd_edit_cli(int argc, char** argv);
 
 }  // namespace hermes::cli::tools_config
