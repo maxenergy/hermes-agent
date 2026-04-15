@@ -6,11 +6,11 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "hermes/gateway/platforms/api_server.hpp"
-#include "hermes/gateway/platforms/bluebubbles.hpp"
-#include "hermes/gateway/platforms/home_assistant.hpp"
-#include "hermes/gateway/platforms/mattermost.hpp"
-#include "hermes/gateway/platforms/webhook.hpp"
+#include "../platforms/api_server.hpp"
+#include "../platforms/bluebubbles.hpp"
+#include "../platforms/home_assistant.hpp"
+#include "../platforms/mattermost.hpp"
+#include "../platforms/webhook.hpp"
 
 using namespace hermes::gateway::platforms;
 
@@ -281,15 +281,8 @@ TEST(IdempotencyCacheTest, PutGetMatchesFingerprint) {
 
 TEST(ApiServerAdapter, HmacSignatureRoundTrip) {
     auto body = std::string{"hello world"};
-    std::string sig;
-    {
-        // Compute signature using verify_hmac helper.
-        unsigned char digest[32];
-        auto hex = api_make_request_fingerprint({{"x", body}}, {"x"});
-        (void)hex;
-    }
-    // Easier: compute via webhook helper (uses same OpenSSL HMAC).
-    sig = webhook_compute_hmac_sha256("secret", body);
+    // Compute via webhook helper (uses same OpenSSL HMAC primitive).
+    auto sig = webhook_compute_hmac_sha256("secret", body);
     EXPECT_TRUE(ApiServerAdapter::verify_hmac_signature("secret", body, sig));
     EXPECT_FALSE(ApiServerAdapter::verify_hmac_signature("wrong", body, sig));
 }
