@@ -17,6 +17,8 @@ set(HERMES_ENV_TEST_SOURCES
     test_scp_copier.cpp
     test_spawn_via_env.cpp
     test_tool_context.cpp
+    test_agent_loop.cpp
+    test_hermes_base_env.cpp
 )
 
 add_executable(hermes_environments_tests ${HERMES_ENV_TEST_SOURCES})

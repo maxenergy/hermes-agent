@@ -51,6 +51,7 @@ add_executable(hermes_agent_tests
     test_tool_dispatch_wrapper.cpp
     test_skill_utils.cpp
     test_models_dev.cpp
+    test_display.cpp
 )
 
 target_link_libraries(hermes_agent_tests

@@ -15,6 +15,8 @@ add_library(hermes_environments STATIC
     src/scp_copier.cpp
     src/spawn_via_env.cpp
     src/tool_context.cpp
+    src/agent_loop.cpp
+    src/hermes_base_env.cpp
 )
 
 target_include_directories(hermes_environments
