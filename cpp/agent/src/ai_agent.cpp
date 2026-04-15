@@ -425,6 +425,15 @@ struct AIAgent::Impl {
                         }
                     }
                 }
+                // Thinking-model fallback: some models (qwen3.6-plus) return
+                // only reasoning_content with empty content when they decide
+                // the reasoning IS the answer. Surface it so we don't emit
+                // an empty response.
+                if (result.final_response.empty() &&
+                    resp.assistant_message.reasoning &&
+                    !resp.assistant_message.reasoning->empty()) {
+                    result.final_response = *resp.assistant_message.reasoning;
+                }
                 result.completed = true;
                 result.iterations_used = api_calls + 1;
                 result.usage = total_usage;

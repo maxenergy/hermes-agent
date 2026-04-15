@@ -253,6 +253,10 @@ Message Message::from_openai(const json& obj) {
     }
     if (obj.contains("reasoning") && obj["reasoning"].is_string()) {
         m.reasoning = obj["reasoning"].get<std::string>();
+    } else if (obj.contains("reasoning_content") &&
+               obj["reasoning_content"].is_string()) {
+        // DashScope / Qwen thinking-model alias.
+        m.reasoning = obj["reasoning_content"].get<std::string>();
     }
     return m;
 }
