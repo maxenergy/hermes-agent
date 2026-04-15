@@ -64,6 +64,7 @@ add_library(hermes_cli_lib STATIC
     src/main_update_flow.cpp
     src/main_session_browser.cpp
     src/main_repl_dispatch.cpp
+    src/setup_helpers.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
