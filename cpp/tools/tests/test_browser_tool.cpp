@@ -169,4 +169,172 @@ TEST_F(BrowserToolTest, CheckFnExcludesFromDefinitions) {
     }
 }
 
+// ---- helper-level tests ---------------------------------------------------
+
+TEST(BrowserToolHelpers, SecretMarkerDetectsAnthropicKey) {
+    EXPECT_TRUE(url_contains_secret_marker(
+        "https://evil.example.com/?token=sk-ant-AAAAA"));
+}
+
+TEST(BrowserToolHelpers, SecretMarkerDetectsUrlEncodedKey) {
+    EXPECT_TRUE(url_contains_secret_marker(
+        "https://evil.example.com/?token=sk%2Dant%2DAAA"));
+}
+
+TEST(BrowserToolHelpers, SecretMarkerDetectsAwsKey) {
+    EXPECT_TRUE(url_contains_secret_marker(
+        "https://example.com/?aws_key=AKIAIOSFODNN7EXAMPLE"));
+}
+
+TEST(BrowserToolHelpers, SecretMarkerCleanUrlPasses) {
+    EXPECT_FALSE(url_contains_secret_marker("https://example.com/page"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressDetectsLocalhost) {
+    EXPECT_TRUE(url_targets_private_address("http://localhost:8080/x"));
+    EXPECT_TRUE(url_targets_private_address("http://127.0.0.1/x"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressDetectsRfc1918) {
+    EXPECT_TRUE(url_targets_private_address("http://10.0.0.1/"));
+    EXPECT_TRUE(url_targets_private_address("http://192.168.1.1/"));
+    EXPECT_TRUE(url_targets_private_address("http://172.16.0.1/"));
+    EXPECT_TRUE(url_targets_private_address("http://172.31.255.255/"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressIgnoresPublicRanges) {
+    EXPECT_FALSE(url_targets_private_address("http://172.32.0.1/"));
+    EXPECT_FALSE(url_targets_private_address("http://8.8.8.8/"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressDetectsMetadataIp) {
+    EXPECT_TRUE(url_targets_private_address("http://169.254.169.254/latest"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressDetectsMdns) {
+    EXPECT_TRUE(url_targets_private_address("http://router.local/"));
+}
+
+TEST(BrowserToolHelpers, PrivateAddressDetectsIpv6Loopback) {
+    EXPECT_TRUE(url_targets_private_address("http://[::1]:8080/"));
+}
+
+TEST(BrowserToolHelpers, IsSafeBrowserUrlComposes) {
+    EXPECT_TRUE(is_safe_browser_url("https://example.com/"));
+    EXPECT_FALSE(is_safe_browser_url("http://localhost/"));
+    EXPECT_FALSE(is_safe_browser_url("https://x?token=sk-ant-bad"));
+    EXPECT_FALSE(is_safe_browser_url(""));
+}
+
+TEST(BrowserToolHelpers, BotDetectionPatternsExist) {
+    EXPECT_FALSE(bot_detection_title_patterns().empty());
+}
+
+TEST(BrowserToolHelpers, LooksLikeBotDetectionMatches) {
+    EXPECT_TRUE(looks_like_bot_detection("Just a moment..."));
+    EXPECT_TRUE(looks_like_bot_detection("Cloudflare CAPTCHA"));
+    EXPECT_FALSE(looks_like_bot_detection("Welcome to Example"));
+}
+
+TEST(BrowserToolHelpers, TruncateSnapshotShortReturnsInput) {
+    std::string s = "hello\nworld";
+    EXPECT_EQ(truncate_snapshot(s, 100), s);
+}
+
+TEST(BrowserToolHelpers, TruncateSnapshotCutsAtLineBoundary) {
+    std::string s;
+    for (int i = 0; i < 200; ++i) s += "line of accessible content\n";
+    auto out = truncate_snapshot(s, 500);
+    EXPECT_LT(out.size(), 600u);
+    EXPECT_NE(out.find("more lines truncated"), std::string::npos);
+}
+
+TEST(BrowserToolHelpers, ExtractScreenshotPathQuoted) {
+    auto p = extract_screenshot_path(R"(Screenshot saved to "/tmp/x.png")");
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(*p, "/tmp/x.png");
+}
+
+TEST(BrowserToolHelpers, ExtractScreenshotPathUnquoted) {
+    auto p = extract_screenshot_path("Screenshot saved to /var/tmp/y.png\n");
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(*p, "/var/tmp/y.png");
+}
+
+TEST(BrowserToolHelpers, ExtractScreenshotPathBareToken) {
+    auto p = extract_screenshot_path("hello world /tmp/snap.png ");
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(*p, "/tmp/snap.png");
+}
+
+TEST(BrowserToolHelpers, ExtractScreenshotPathMissing) {
+    EXPECT_FALSE(extract_screenshot_path("nothing here").has_value());
+}
+
+TEST(BrowserToolHelpers, NormaliseCdpEndpointPassthroughForBrowserPath) {
+    auto out = normalise_cdp_endpoint("ws://h:9222/devtools/browser/abc");
+    EXPECT_EQ(out, "ws://h:9222/devtools/browser/abc");
+}
+
+TEST(BrowserToolHelpers, NormaliseCdpEndpointDropsTrailingSlash) {
+    auto out = normalise_cdp_endpoint("http://localhost:9222/");
+    EXPECT_EQ(out, "http://localhost:9222");
+}
+
+TEST(BrowserToolHelpers, NormaliseCdpEndpointWsToHttp) {
+    auto out = normalise_cdp_endpoint("ws://localhost:9222");
+    EXPECT_EQ(out, "http://localhost:9222");
+}
+
+TEST(BrowserToolHelpers, NormaliseCdpEndpointEmpty) {
+    EXPECT_TRUE(normalise_cdp_endpoint("   ").empty());
+}
+
+TEST(BrowserToolHelpers, NormaliseBrowserRefStripsBracket) {
+    EXPECT_EQ(normalise_browser_ref("[ref=e7]"), "e7");
+}
+
+TEST(BrowserToolHelpers, NormaliseBrowserRefRawIsKept) {
+    EXPECT_EQ(normalise_browser_ref("e9"), "e9");
+}
+
+TEST(BrowserToolHelpers, NormaliseBrowserRefTrimsWhitespace) {
+    EXPECT_EQ(normalise_browser_ref("  abc  "), "abc");
+}
+
+TEST(BrowserToolHelpers, IsKnownBrowserKeyEnter) {
+    EXPECT_TRUE(is_known_browser_key("Enter"));
+}
+
+TEST(BrowserToolHelpers, IsKnownBrowserKeySingleChar) {
+    EXPECT_TRUE(is_known_browser_key("a"));
+}
+
+TEST(BrowserToolHelpers, IsKnownBrowserKeyChord) {
+    EXPECT_TRUE(is_known_browser_key("Ctrl+Shift+A"));
+}
+
+TEST(BrowserToolHelpers, IsKnownBrowserKeyEmpty) {
+    EXPECT_FALSE(is_known_browser_key(""));
+}
+
+TEST(BrowserToolHelpers, ParseBrowserKeyChordSingle) {
+    auto k = parse_browser_key_chord("Enter");
+    EXPECT_EQ(k.key, "Enter");
+    EXPECT_TRUE(k.modifiers.empty());
+}
+
+TEST(BrowserToolHelpers, ParseBrowserKeyChordWithModifiers) {
+    auto k = parse_browser_key_chord("Ctrl+Shift+A");
+    EXPECT_EQ(k.key, "A");
+    ASSERT_EQ(k.modifiers.size(), 2u);
+    EXPECT_EQ(k.modifiers[0], "ctrl");
+    EXPECT_EQ(k.modifiers[1], "shift");
+}
+
+TEST(BrowserToolHelpers, ParseBrowserKeyChordEmpty) {
+    auto k = parse_browser_key_chord("   ");
+    EXPECT_TRUE(k.key.empty());
+}
+
 }  // namespace
