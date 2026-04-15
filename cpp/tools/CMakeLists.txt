@@ -62,6 +62,7 @@ add_library(hermes_tools STATIC
     src/voice_mode_tool.cpp
     src/rl_training_tool.cpp
     src/code_execution_tool.cpp
+    src/code_execution_depth.cpp
     src/cronjob_tool.cpp
     src/skill_manager_tool.cpp
     src/mcp_client_tool.cpp
