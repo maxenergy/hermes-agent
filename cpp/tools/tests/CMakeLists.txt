@@ -34,6 +34,7 @@ add_executable(hermes_tools_tests
     test_file_tools.cpp
     test_file_operations.cpp
     test_terminal_tool.cpp
+    test_terminal_tool_depth.cpp
     test_web_tools.cpp
     test_web_tools_depth.cpp
     test_vision_tool.cpp

@@ -34,6 +34,7 @@ add_library(hermes_tools STATIC
     src/file_operations.cpp
     src/file_tools.cpp
     src/terminal_tool.cpp
+    src/terminal_tool_depth.cpp
     src/discover_tools.cpp
     src/web_tools.cpp
     src/web_tools_depth.cpp
