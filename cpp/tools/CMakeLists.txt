@@ -54,6 +54,7 @@ add_library(hermes_tools STATIC
     src/browser_backend.cpp
     src/browser_camofox.cpp
     src/browser_tool.cpp
+    src/browser_tool_depth.cpp
     src/browser_helpers.cpp
     src/terminal_helpers.cpp
     src/debug_helpers.cpp
