@@ -32,6 +32,7 @@ endif()
 
 add_library(hermes_cli_lib STATIC
     src/commands.cpp
+    src/commands_depth.cpp
     src/skin_engine.cpp
     src/display.cpp
     src/clipboard.cpp

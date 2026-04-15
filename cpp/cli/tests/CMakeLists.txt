@@ -17,6 +17,7 @@ include(GoogleTest)
 
 set(HERMES_CLI_TEST_SOURCES
     test_commands.cpp
+    test_commands_depth.cpp
     test_skin_engine.cpp
     test_hermes_cli.cpp
     test_display.cpp
