@@ -36,6 +36,7 @@ add_library(hermes_tools STATIC
     src/terminal_tool.cpp
     src/discover_tools.cpp
     src/web_tools.cpp
+    src/web_tools_depth.cpp
     src/vision_tool.cpp
     src/send_message_tool.cpp
     src/image_generation_tool.cpp
