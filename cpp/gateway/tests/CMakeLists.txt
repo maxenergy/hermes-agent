@@ -53,6 +53,8 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_signal_encryption.cpp
     test_gateway_depth.cpp
     test_platform_depth_port.cpp
+    test_base_depth.cpp
+    test_api_server_depth.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

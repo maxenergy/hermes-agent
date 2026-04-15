@@ -19,6 +19,8 @@ set(HERMES_ENV_TEST_SOURCES
     test_tool_context.cpp
     test_agent_loop.cpp
     test_hermes_base_env.cpp
+    test_opd_helpers.cpp
+    test_web_research_helpers.cpp
 )
 
 add_executable(hermes_environments_tests ${HERMES_ENV_TEST_SOURCES})
