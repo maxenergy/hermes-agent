@@ -57,6 +57,7 @@ add_library(hermes_gateway STATIC
     src/status.cpp
     src/gateway_runner.cpp
     src/stream_consumer.cpp
+    src/stream_consumer_text.cpp
     src/channel_directory.cpp
     src/message_mirror.cpp
     src/sticker_cache.cpp

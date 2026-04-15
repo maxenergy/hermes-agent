@@ -24,6 +24,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_gateway_runner.cpp
     test_platform_adapters.cpp
     test_stream_consumer.cpp
+    test_stream_consumer_text.cpp
     test_channel_directory.cpp
     test_message_mirror.cpp
     test_sticker_cache.cpp
