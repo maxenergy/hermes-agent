@@ -36,6 +36,7 @@ add_library(hermes_agent STATIC
     src/context_truncate.cpp
     src/aux_provider_alias.cpp
     src/credential_pool.cpp
+    src/credential_pool_depth.cpp
     src/skill_commands.cpp
     src/session_state.cpp
     src/tool_dispatch_wrapper.cpp

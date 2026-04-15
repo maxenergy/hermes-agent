@@ -46,6 +46,7 @@ add_executable(hermes_agent_tests
     test_context_truncate.cpp
     test_aux_provider_alias.cpp
     test_credential_pool.cpp
+    test_credential_pool_depth.cpp
     test_skill_commands.cpp
     test_session_state.cpp
     test_tool_dispatch_wrapper.cpp
