@@ -17,6 +17,8 @@ add_library(hermes_environments STATIC
     src/tool_context.cpp
     src/agent_loop.cpp
     src/hermes_base_env.cpp
+    src/opd_helpers.cpp
+    src/web_research_helpers.cpp
 )
 
 target_include_directories(hermes_environments

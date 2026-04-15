@@ -75,6 +75,8 @@ add_library(hermes_gateway STATIC
     src/shutdown_sequencer.cpp
     src/config_validator.cpp
     src/session_ttl.cpp
+    src/base_depth.cpp
+    src/api_server_depth.cpp
     platforms/base_adapter.cpp
     platforms/telegram.cpp
     platforms/websocket_transport.cpp
