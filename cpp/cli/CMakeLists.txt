@@ -77,6 +77,8 @@ add_library(hermes_cli_lib STATIC
     src/copilot_auth.cpp
     src/nous_subscription.cpp
     src/dump_cmd.cpp
+    src/memory_setup.cpp
+    src/webhook_cmd.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state

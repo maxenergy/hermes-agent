@@ -55,6 +55,8 @@ set(HERMES_CLI_TEST_SOURCES
     test_copilot_auth.cpp
     test_nous_subscription.cpp
     test_dump_cmd.cpp
+    test_memory_setup.cpp
+    test_webhook_cmd.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
