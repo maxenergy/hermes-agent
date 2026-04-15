@@ -53,6 +53,8 @@ set(HERMES_CLI_TEST_SOURCES
     test_skills_hub_helpers.cpp
     test_model_normalize.cpp
     test_copilot_auth.cpp
+    test_nous_subscription.cpp
+    test_dump_cmd.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
