@@ -42,6 +42,7 @@ add_executable(hermes_tools_tests
     test_send_message_tool_depth.cpp
     test_skills_tool_depth.cpp
     test_skill_manager_tool_depth.cpp
+    test_terminal_tool_depth_ex.cpp
     test_image_gen_tool.cpp
     test_tts_tool.cpp
     test_delegate_tool.cpp
