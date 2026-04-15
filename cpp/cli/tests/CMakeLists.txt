@@ -47,6 +47,10 @@ set(HERMES_CLI_TEST_SOURCES
     test_auth_helpers.cpp
     test_models_helpers.cpp
     test_gateway_helpers.cpp
+    test_plugins_helpers.cpp
+    test_profiles_helpers.cpp
+    test_runtime_provider_helpers.cpp
+    test_skills_hub_helpers.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
