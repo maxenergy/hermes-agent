@@ -66,6 +66,7 @@ add_library(hermes_cli_lib STATIC
     src/main_repl_dispatch.cpp
     src/setup_helpers.cpp
     src/auth_helpers.cpp
+    src/models_helpers.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
