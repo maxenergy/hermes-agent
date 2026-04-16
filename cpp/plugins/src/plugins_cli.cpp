@@ -11,6 +11,7 @@
 #include "hermes/plugins/plugin_manager.hpp"
 #include "hermes/plugins/state.hpp"
 #include "hermes/core/path.hpp"
+#include "hermes/core/platform/subprocess.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,9 +29,6 @@
 
 #ifdef _WIN32
 #  include <windows.h>
-#else
-#  include <sys/wait.h>
-#  include <unistd.h>
 #endif
 
 namespace hermes::plugins {
@@ -78,25 +76,22 @@ std::string shell_quote(const std::string& s) {
     return out;
 }
 
-// Run a command, capturing stdout + stderr into a combined string.
-// Returns (exit_code, output).
+// Run a shell command, capturing stdout + stderr into a combined
+// string.  Returns (exit_code, output).
 std::pair<int, std::string> run_command(const std::string& cmd) {
-#ifdef _WIN32
-    (void)cmd;
-    return {1, "subprocess execution not implemented on Windows"};
+    hermes::core::platform::SubprocessOptions opts;
+#if defined(_WIN32)
+    opts.argv = {"cmd.exe", "/c", cmd};
 #else
-    std::string full = cmd + " 2>&1";
-    FILE* pipe = popen(full.c_str(), "r");
-    if (!pipe) return {1, "popen failed"};
-    std::string out;
-    std::array<char, 512> buf;
-    while (fgets(buf.data(), buf.size(), pipe)) {
-        out += buf.data();
-    }
-    int rc = pclose(pipe);
-    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : 1;
-    return {exit_code, out};
+    opts.argv = {"/bin/sh", "-c", cmd};
 #endif
+    auto r = hermes::core::platform::run_capture(opts);
+    if (!r.spawn_error.empty()) {
+        return {1, r.spawn_error};
+    }
+    std::string combined = std::move(r.stdout_text);
+    combined += r.stderr_text;
+    return {r.exit_code, combined};
 }
 
 // Plugin directory list (sorted) — helper for error messages.

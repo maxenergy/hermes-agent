@@ -7,6 +7,8 @@
 // installed (system, conda, static, etc.).
 #include "hermes/tools/ffmpeg.hpp"
 
+#include "hermes/core/platform/subprocess.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -20,8 +22,11 @@
 #include <regex>
 #include <sstream>
 
-#include <sys/wait.h>
+#if !defined(_WIN32)
 #include <unistd.h>
+#else
+#include <process.h>
+#endif
 
 namespace hermes::tools::ffmpeg {
 
@@ -66,9 +71,13 @@ std::string which(const std::string& bin) {
         std::error_code ec;
         if (std::filesystem::is_regular_file(candidate, ec) ||
             std::filesystem::is_symlink(candidate, ec)) {
+#if defined(_WIN32)
+            return candidate.string();
+#else
             if (::access(candidate.c_str(), X_OK) == 0) {
                 return candidate.string();
             }
+#endif
         }
         return {};
     };
@@ -97,75 +106,17 @@ CommandOutcome default_runner(const CommandInvocation& inv) {
         return out;
     }
 
-    int stdout_pipe[2];
-    int stderr_pipe[2];
-    if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+    hermes::core::platform::SubprocessOptions opts;
+    opts.argv = inv.argv;
+    auto r = hermes::core::platform::run_capture(opts);
+    if (!r.spawn_error.empty()) {
         out.exit_code = -1;
-        out.stderr_text = std::string("pipe() failed: ") + std::strerror(errno);
+        out.stderr_text = r.spawn_error;
         return out;
     }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        out.exit_code = -1;
-        out.stderr_text = std::string("fork() failed: ") + std::strerror(errno);
-        return out;
-    }
-    if (pid == 0) {
-        // Child
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        close(stdout_pipe[0]);
-        close(stdout_pipe[1]);
-        close(stderr_pipe[0]);
-        close(stderr_pipe[1]);
-
-        std::vector<char*> cargv;
-        cargv.reserve(inv.argv.size() + 1);
-        // NB: we need mutable C strings for execvp.
-        std::vector<std::string> owned = inv.argv;
-        for (auto& s : owned) cargv.push_back(&s[0]);
-        cargv.push_back(nullptr);
-        execvp(cargv[0], cargv.data());
-        _exit(127);
-    }
-
-    // Parent
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
-    auto drain = [](int fd, std::string& dest) {
-        std::array<char, 4096> buf;
-        while (true) {
-            ssize_t n = ::read(fd, buf.data(), buf.size());
-            if (n > 0) {
-                dest.append(buf.data(), static_cast<size_t>(n));
-            } else if (n == 0) {
-                break;
-            } else {
-                if (errno == EINTR) continue;
-                break;
-            }
-        }
-    };
-    drain(stdout_pipe[0], out.stdout_text);
-    drain(stderr_pipe[0], out.stderr_text);
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-
-    int status = 0;
-    while (true) {
-        pid_t r = waitpid(pid, &status, 0);
-        if (r == -1 && errno == EINTR) continue;
-        break;
-    }
-    if (WIFEXITED(status)) {
-        out.exit_code = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        out.exit_code = 128 + WTERMSIG(status);
-    } else {
-        out.exit_code = -1;
-    }
+    out.stdout_text = std::move(r.stdout_text);
+    out.stderr_text = std::move(r.stderr_text);
+    out.exit_code = r.exit_code;
     return out;
 }
 

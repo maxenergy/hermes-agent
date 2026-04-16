@@ -13,14 +13,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <hermes/core/path.hpp>
-
-#ifndef _WIN32
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/select.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
+#include <hermes/core/platform/subprocess.hpp>
 
 namespace hermes::cli {
 
@@ -122,136 +115,39 @@ std::optional<HookManifest> load_manifest(const fs::path& manifest_path,
     return m;
 }
 
-// Spawn the child for real (POSIX implementation).  Returns ExecutorOutput.
-#ifndef _WIN32
+// Spawn the child for real — goes through the cross-platform subprocess
+// primitive, which delegates to fork+execvp on POSIX and CreateProcessW
+// on Win32.  We still shell out via "/bin/sh -c" (or "cmd /c") so the
+// HOOK.yaml `command` value can be a shell pipeline.
 ExecutorOutput spawn_real(const std::string& command,
                           const std::string& stdin_payload,
                           std::chrono::milliseconds timeout) {
     ExecutorOutput out;
-    int in_pipe[2] = {-1, -1};
-    int out_pipe[2] = {-1, -1};
-    int err_pipe[2] = {-1, -1};
-
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
-        out.stderr_text = std::string("pipe(): ") + std::strerror(errno);
-        out.exit_code = 127;
-        return out;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        out.stderr_text = std::string("fork(): ") + std::strerror(errno);
-        out.exit_code = 127;
-        return out;
-    }
-
-    if (pid == 0) {
-        // Child.
-        dup2(in_pipe[0], STDIN_FILENO);
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(err_pipe[1], STDERR_FILENO);
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
-        close(err_pipe[0]); close(err_pipe[1]);
-
-        // Use a shell so that "command" can be a shell pipeline.  This
-        // mirrors subprocess.run(..., shell=True) semantics in Python.
-        execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
-        // If execl fails:
-        std::fprintf(stderr, "execl failed: %s\n", std::strerror(errno));
-        _exit(127);
-    }
-
-    // Parent.
-    close(in_pipe[0]);
-    close(out_pipe[1]);
-    close(err_pipe[1]);
-
-    // Write stdin payload, then close.
-    if (!stdin_payload.empty()) {
-        ssize_t n = write(in_pipe[1], stdin_payload.data(), stdin_payload.size());
-        (void)n;  // Best-effort.
-    }
-    close(in_pipe[1]);
-
-    // Drain stdout/stderr with a wall-clock timeout.
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    fcntl(out_pipe[0], F_SETFL, O_NONBLOCK);
-    fcntl(err_pipe[0], F_SETFL, O_NONBLOCK);
-
-    bool out_open = true, err_open = true;
-    while (out_open || err_open) {
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            kill(pid, SIGKILL);
-            out.exit_code = 124;  // Mirror coreutils `timeout`.
-            out.stderr_text += "[hooks] subprocess timed out\n";
-            break;
-        }
-
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        int maxfd = -1;
-        if (out_open) { FD_SET(out_pipe[0], &rfds); maxfd = std::max(maxfd, out_pipe[0]); }
-        if (err_open) { FD_SET(err_pipe[0], &rfds); maxfd = std::max(maxfd, err_pipe[0]); }
-
-        auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
-        timeval tv{};
-        tv.tv_sec = static_cast<time_t>(remaining.count() / 1000000);
-        tv.tv_usec = static_cast<suseconds_t>(remaining.count() % 1000000);
-
-        int r = select(maxfd + 1, &rfds, nullptr, nullptr, &tv);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (r == 0) continue;  // Loop will check deadline.
-
-        char buf[4096];
-        if (out_open && FD_ISSET(out_pipe[0], &rfds)) {
-            ssize_t n = read(out_pipe[0], buf, sizeof(buf));
-            if (n > 0) {
-                out.stdout_text.append(buf, static_cast<size_t>(n));
-            } else if (n == 0) {
-                out_open = false;
-            }
-        }
-        if (err_open && FD_ISSET(err_pipe[0], &rfds)) {
-            ssize_t n = read(err_pipe[0], buf, sizeof(buf));
-            if (n > 0) {
-                out.stderr_text.append(buf, static_cast<size_t>(n));
-            } else if (n == 0) {
-                err_open = false;
-            }
-        }
-    }
-
-    close(out_pipe[0]);
-    close(err_pipe[0]);
-
-    int status = 0;
-    waitpid(pid, &status, 0);
-    if (out.exit_code == 0) {
-        if (WIFEXITED(status)) {
-            out.exit_code = WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            out.exit_code = 128 + WTERMSIG(status);
-        }
-    }
-    return out;
-}
+    hermes::core::platform::SubprocessOptions opts;
+#if defined(_WIN32)
+    opts.argv = {"cmd.exe", "/c", command};
 #else
-// TODO(windows): use CreateProcess with redirected pipes.  For now hooks
-// are simply not invoked on Windows -- discovery still works.
-ExecutorOutput spawn_real(const std::string& /*command*/,
-                          const std::string& /*stdin_payload*/,
-                          std::chrono::milliseconds /*timeout*/) {
-    ExecutorOutput out;
-    out.stderr_text = "[hooks] subprocess execution not yet implemented on Windows";
-    out.exit_code = 127;
+    opts.argv = {"/bin/sh", "-c", command};
+#endif
+    opts.stdin_input = stdin_payload;
+    opts.timeout = timeout;
+
+    auto r = hermes::core::platform::run_capture(opts);
+    if (!r.spawn_error.empty()) {
+        out.stderr_text = r.spawn_error;
+        out.exit_code = 127;
+        return out;
+    }
+    out.stdout_text = std::move(r.stdout_text);
+    out.stderr_text = std::move(r.stderr_text);
+    if (r.timed_out) {
+        out.exit_code = 124;  // Mirror coreutils `timeout`.
+        out.stderr_text += "[hooks] subprocess timed out\n";
+    } else {
+        out.exit_code = r.exit_code;
+    }
     return out;
 }
-#endif
 
 }  // namespace
 

@@ -1,6 +1,7 @@
 // banner — implementation. See banner.hpp for API.
 #include "hermes/cli/banner.hpp"
 #include "hermes/core/path.hpp"
+#include "hermes/core/platform/subprocess.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -17,14 +18,6 @@
 #include <sstream>
 #include <string>
 #include <system_error>
-
-#if defined(_WIN32)
-#include <cstdio>
-#include <io.h>
-#else
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 namespace hermes::cli::banner {
 
@@ -187,56 +180,17 @@ std::pair<int, std::string> run_git(
     const std::filesystem::path& cwd,
     const std::vector<std::string>& args,
     int timeout_seconds = 5) {
-    (void)timeout_seconds;  // we rely on git's own -q / ref-only ops
-#if defined(_WIN32)
-    // Minimal Windows fallback — use system(); no timeout.
-    std::string cmdline = "cd /d \"" + cwd.string() + "\" && git";
-    for (const auto& a : args) cmdline += " \"" + a + "\"";
-    cmdline += " 2>NUL";
-    FILE* pipe = _popen(cmdline.c_str(), "r");
-    if (!pipe) return {-1, ""};
-    std::string out;
-    char buf[256];
-    while (std::fgets(buf, sizeof(buf), pipe)) out += buf;
-    int rc = _pclose(pipe);
-    return {rc, out};
-#else
-    int pipefd[2];
-    if (::pipe(pipefd) != 0) return {-1, ""};
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(pipefd[0]);
-        ::close(pipefd[1]);
-        return {-1, ""};
+    hermes::core::platform::SubprocessOptions o;
+    o.argv.reserve(args.size() + 1);
+    o.argv.emplace_back("git");
+    for (const auto& a : args) o.argv.push_back(a);
+    o.cwd = cwd.string();
+    if (timeout_seconds > 0) {
+        o.timeout = std::chrono::seconds(timeout_seconds);
     }
-    if (pid == 0) {
-        ::close(pipefd[0]);
-        ::dup2(pipefd[1], 1);
-        int devnull = ::open("/dev/null", 1);
-        if (devnull >= 0) ::dup2(devnull, 2);
-        ::close(pipefd[1]);
-        std::error_code ec;
-        std::filesystem::current_path(cwd, ec);
-        std::vector<const char*> argv;
-        argv.push_back("git");
-        for (const auto& a : args) argv.push_back(a.c_str());
-        argv.push_back(nullptr);
-        ::execvp("git", const_cast<char* const*>(argv.data()));
-        ::_exit(127);
-    }
-    ::close(pipefd[1]);
-    std::string out;
-    char buf[256];
-    ssize_t n;
-    while ((n = ::read(pipefd[0], buf, sizeof(buf))) > 0) {
-        out.append(buf, buf + n);
-    }
-    ::close(pipefd[0]);
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    return {rc, out};
-#endif
+    auto r = hermes::core::platform::run_capture(o);
+    if (!r.spawn_error.empty()) return {-1, ""};
+    return {r.exit_code, r.stdout_text};
 }
 
 std::string strip(std::string s) {

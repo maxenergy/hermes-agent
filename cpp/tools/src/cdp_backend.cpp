@@ -8,14 +8,21 @@
 
 #include <nlohmann/json.hpp>
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <signal.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  include <windows.h>
+#else
+#  include <arpa/inet.h>
+#  include <fcntl.h>
+#  include <netdb.h>
+#  include <signal.h>
+#  include <sys/socket.h>
+#  include <sys/stat.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -139,6 +146,11 @@ CdpBackend::CdpBackend(CdpConfig config) : config_(std::move(config)) {}
 CdpBackend::~CdpBackend() { close(); }
 
 bool CdpBackend::launch() {
+#if defined(_WIN32)
+    // CDP browser backend is POSIX-only for now — Windows needs
+    // CreateProcessW + DevTools pipe; scheduled for a future stream.
+    return false;
+#else
     // Already running?
     if (chrome_pid_ > 0) return true;
 
@@ -224,9 +236,11 @@ bool CdpBackend::launch() {
     // Timeout — kill Chrome
     close();
     return false;
+#endif
 }
 
 void CdpBackend::close() {
+#if !defined(_WIN32)
     if (chrome_pid_ > 0) {
         ::kill(chrome_pid_, SIGTERM);
         // Give it a moment, then SIGKILL
@@ -240,6 +254,7 @@ void CdpBackend::close() {
         ::waitpid(chrome_pid_, &status, 0);
         chrome_pid_ = -1;
     }
+#endif
     tab_ws_url_.clear();
 
     // Clean up temp dir

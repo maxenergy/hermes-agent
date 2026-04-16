@@ -28,6 +28,8 @@ add_library(hermes_core STATIC
     src/fuzzy.cpp
     src/patch_parser.cpp
     src/uds_rpc.cpp
+    src/platform/subprocess_posix.cpp
+    src/platform/subprocess_win32.cpp
 )
 
 target_include_directories(hermes_core

@@ -17,10 +17,13 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace hermes::tools {
 
@@ -95,6 +98,11 @@ public:
     }
 
     std::string start(std::string& error) override {
+#if defined(_WIN32)
+        (void)error;
+        error = "voice recording not supported on Windows yet";
+        return {};
+#else
         if (recording_.load()) {
             error = "already recording";
             return {};
@@ -156,9 +164,13 @@ public:
         start_time_ = std::chrono::steady_clock::now();
         recording_.store(true);
         return path_;
+#endif
     }
 
     std::string stop() override {
+#if defined(_WIN32)
+        return {};
+#else
         if (!recording_.load()) return {};
         kill(pid_, SIGTERM);
         int status = 0;
@@ -184,6 +196,7 @@ public:
             return {};
         }
         return path_;
+#endif
     }
 
     void cancel() override {
@@ -209,7 +222,11 @@ public:
 
 private:
     std::atomic<bool> recording_{false};
+#if defined(_WIN32)
+    int pid_ = -1;
+#else
     pid_t pid_ = -1;
+#endif
     std::string path_;
     std::string backend_name_;
     std::chrono::steady_clock::time_point start_time_;

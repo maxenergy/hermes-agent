@@ -50,7 +50,11 @@ public:
 
 private:
     CdpConfig config_;
+#if defined(_WIN32)
+    int chrome_pid_ = -1;   // placeholder; CDP backend is POSIX-only for now
+#else
     pid_t chrome_pid_ = -1;
+#endif
     std::string temp_dir_;   // auto-created user data dir (if config_.user_data_dir empty)
     std::string tab_ws_url_; // WebSocket debugger URL for the active tab
 

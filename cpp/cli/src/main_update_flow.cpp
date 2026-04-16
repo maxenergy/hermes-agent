@@ -2,6 +2,7 @@
 
 #include "hermes/cli/main_update_flow.hpp"
 #include "hermes/core/path.hpp"
+#include "hermes/core/platform/subprocess.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -27,18 +28,6 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 namespace {
 
-std::string shell_quote(const std::string& in) {
-    // POSIX-ish — safe enough for argv passthrough.  Wrap in single quotes
-    // and escape any embedded single quotes.
-    std::string out = "'";
-    for (char c : in) {
-        if (c == '\'') out += "'\\''";
-        else           out += c;
-    }
-    out += "'";
-    return out;
-}
-
 std::string trim(const std::string& s) {
     std::size_t a = 0, b = s.size();
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
@@ -53,27 +42,18 @@ RealGitShell::RealGitShell(std::string git_binary) : git_(std::move(git_binary))
 GitResult RealGitShell::run(const std::vector<std::string>& args,
                             const std::string& cwd) {
     GitResult r;
-    std::ostringstream cmd;
-    if (!cwd.empty()) {
-        cmd << "cd " << shell_quote(cwd) << " && ";
-    }
-    cmd << shell_quote(git_);
-    for (const auto& a : args) cmd << " " << shell_quote(a);
-    cmd << " 2>/dev/null";  // stderr swallowed; callers use stdout + exit code
-    std::FILE* p = ::popen(cmd.str().c_str(), "r");
-    if (!p) {
+    hermes::core::platform::SubprocessOptions opts;
+    opts.argv.reserve(args.size() + 1);
+    opts.argv.push_back(git_);
+    for (const auto& a : args) opts.argv.push_back(a);
+    opts.cwd = cwd;
+    auto res = hermes::core::platform::run_capture(opts);
+    if (!res.spawn_error.empty()) {
         r.exit_code = -1;
         return r;
     }
-    char buf[512];
-    while (std::fgets(buf, sizeof(buf), p)) r.stdout_text += buf;
-    int rc = ::pclose(p);
-#ifdef WEXITSTATUS
-    if (WIFEXITED(rc)) r.exit_code = WEXITSTATUS(rc);
-    else r.exit_code = rc;
-#else
-    r.exit_code = rc;
-#endif
+    r.stdout_text = std::move(res.stdout_text);
+    r.exit_code = res.exit_code;
     return r;
 }
 
