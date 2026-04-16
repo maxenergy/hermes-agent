@@ -19,8 +19,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -1006,6 +1008,443 @@ std::string SkillsHub::state_json() const {
     }
     root["taps"] = std::move(taps);
     return root.dump(2);
+}
+
+namespace {
+
+// Minimal base64 encoder (RFC 4648).  Duplicated rather than reaching
+// across subsystem boundaries because skills/ must not depend on tools/.
+std::string b64_encode_bytes(const unsigned char* data, std::size_t n) {
+    static const char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((n + 2) / 3) * 4);
+    for (std::size_t i = 0; i < n; i += 3) {
+        std::uint32_t v = static_cast<std::uint32_t>(data[i]) << 16;
+        std::size_t rem = n - i;
+        if (rem > 1) v |= static_cast<std::uint32_t>(data[i + 1]) << 8;
+        if (rem > 2) v |= static_cast<std::uint32_t>(data[i + 2]);
+        out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+        out.push_back(rem > 1 ? kAlphabet[(v >> 6) & 0x3F] : '=');
+        out.push_back(rem > 2 ? kAlphabet[v & 0x3F] : '=');
+    }
+    return out;
+}
+
+}  // namespace
+
+bool SkillsHub::upload(const std::string& name, const std::string& token,
+                       std::string* error_out) {
+    auto set_err = [&](const std::string& msg) {
+        if (error_out) *error_out = msg;
+    };
+    if (name.empty()) { set_err("empty skill name"); return false; }
+    if (token.empty()) { set_err("auth token required"); return false; }
+
+    auto skill_dir = paths_.skills_dir / name;
+    std::error_code ec;
+    if (!fs::exists(skill_dir, ec) || !fs::is_directory(skill_dir, ec)) {
+        set_err("skill not installed: " + name);
+        return false;
+    }
+
+    // Walk the skill directory, base64-encode every file into a JSON
+    // envelope so the receiver can reconstitute it.
+    json files = json::array();
+    for (auto it = fs::recursive_directory_iterator(
+             skill_dir, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); ++it) {
+        if (!it->is_regular_file(ec)) continue;
+        auto rel = fs::relative(it->path(), skill_dir, ec).generic_string();
+        std::ifstream in(it->path(), std::ios::binary);
+        if (!in) continue;
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        std::string raw = buf.str();
+        files.push_back({
+            {"path", rel},
+            {"content_b64", b64_encode_bytes(
+                reinterpret_cast<const unsigned char*>(raw.data()), raw.size())},
+        });
+    }
+    if (files.empty()) {
+        set_err("skill has no files: " + name);
+        return false;
+    }
+
+    auto lock_entry = lock_.get(name);
+    json envelope = {
+        {"name", name},
+        {"version", lock_entry ? lock_entry->version : ""},
+        {"content_hash", lock_entry ? lock_entry->content_hash
+                                    : hash_skill_dir(skill_dir)},
+        {"files", std::move(files)},
+    };
+
+    auto* transport = transport_ ? transport_
+                                 : hermes::llm::get_default_transport();
+    if (!transport) { set_err("http transport unavailable"); return false; }
+    std::unordered_map<std::string, std::string> headers;
+    headers["Accept"] = "application/json";
+    headers["Content-Type"] = "application/json";
+    headers["Authorization"] = "Bearer " + token;
+    headers["User-Agent"] = "hermes-agent-cpp/0.1 (+skills-hub)";
+
+    try {
+        auto resp = transport->post_json(
+            base_url_ + "/skills/" + name + "/upload", headers, envelope.dump());
+        if (resp.status_code >= 200 && resp.status_code < 300) {
+            audit("upload.ok", name, "status=" + std::to_string(resp.status_code));
+            return true;
+        }
+        audit("upload.failed", name,
+              "status=" + std::to_string(resp.status_code));
+        set_err("hub returned HTTP " + std::to_string(resp.status_code));
+        return false;
+    } catch (const std::exception& ex) {
+        audit("upload.failed", name, ex.what());
+        set_err(std::string("transport error: ") + ex.what());
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stream B — token-authenticated HTTP surface
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Minimal URL-encoder for query string values.
+std::string url_encode(const std::string& s) {
+    static const char* kHex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size() * 3);
+    for (unsigned char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+std::string make_uuid_token() {
+    static std::random_device rd;
+    static std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<std::uint64_t> d;
+    std::uint64_t a = d(gen);
+    std::uint64_t b = d(gen);
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(a),
+                  static_cast<unsigned long long>(b));
+    return buf;
+}
+
+// Parse an API SkillEntry object.  Tolerates missing fields.
+SkillEntry parse_remote_entry(const json& j) {
+    SkillEntry e;
+    e.name = j.value("name", "");
+    e.version = j.value("version", "");
+    e.description = j.value("description", "");
+    e.author = j.value("author", "");
+    e.download_url = j.value("download_url", "");
+    e.updated_at = j.value("updated_at", "");
+    if (j.contains("size_bytes") && j["size_bytes"].is_number_unsigned()) {
+        e.size_bytes = j["size_bytes"].get<std::uint64_t>();
+    } else if (j.contains("size_bytes") && j["size_bytes"].is_number_integer()) {
+        auto v = j["size_bytes"].get<std::int64_t>();
+        if (v > 0) e.size_bytes = static_cast<std::uint64_t>(v);
+    }
+    if (j.contains("tags") && j["tags"].is_array()) {
+        for (const auto& t : j["tags"]) {
+            if (t.is_string()) e.tags.push_back(t.get<std::string>());
+        }
+    }
+    return e;
+}
+
+// Extract the list from either a bare array or {"items": [...]} / {"results": [...]}.
+std::vector<SkillEntry> parse_entry_list(const json& root) {
+    std::vector<SkillEntry> out;
+    auto absorb = [&](const json& arr) {
+        for (const auto& item : arr) {
+            if (item.is_object()) out.push_back(parse_remote_entry(item));
+        }
+    };
+    if (root.is_array()) {
+        absorb(root);
+    } else if (root.is_object()) {
+        for (const char* key : {"items", "results", "skills"}) {
+            if (root.contains(key) && root[key].is_array()) {
+                absorb(root[key]);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+struct FetchOutcome {
+    bool ok = false;
+    int status = 0;
+    std::string body;
+    std::string transport_error;
+};
+
+FetchOutcome authed_get(hermes::llm::HttpTransport* transport,
+                        const std::string& url,
+                        const std::string& token) {
+    FetchOutcome out;
+    if (!transport) {
+        out.transport_error = "http transport unavailable";
+        return out;
+    }
+    std::unordered_map<std::string, std::string> headers;
+    headers["Accept"] = "application/json";
+    headers["User-Agent"] = "hermes-agent-cpp/0.1 (+skills-hub)";
+    if (!token.empty()) {
+        headers["Authorization"] = "Bearer " + token;
+    }
+    try {
+        auto resp = transport->get(url, headers);
+        out.status = resp.status_code;
+        out.body = std::move(resp.body);
+        out.ok = (resp.status_code >= 200 && resp.status_code < 300);
+        return out;
+    } catch (const std::exception& ex) {
+        out.transport_error = std::string("transport error: ") + ex.what();
+        return out;
+    }
+}
+
+// Format a user-readable error from a fetch outcome.
+std::string format_fetch_error(const FetchOutcome& r,
+                               const std::string& where) {
+    if (!r.transport_error.empty()) {
+        return where + ": " + r.transport_error;
+    }
+    if (r.status == 0) {
+        return where + ": no response from hub";
+    }
+    return where + ": hub returned HTTP " + std::to_string(r.status);
+}
+
+}  // namespace
+
+std::vector<SkillEntry> SkillsHub::list_all(const std::string& token,
+                                            int page, int page_size,
+                                            std::string* error_out) const {
+    if (page < 1) page = 1;
+    if (page_size < 1) page_size = 50;
+    if (page_size > 1000) page_size = 1000;
+    auto* transport = transport_ ? transport_
+                                 : hermes::llm::get_default_transport();
+    const std::string url = base_url_ + "/skills?page=" +
+                            std::to_string(page) + "&page_size=" +
+                            std::to_string(page_size);
+    auto r = authed_get(transport, url, token);
+    if (!r.ok) {
+        if (error_out) *error_out = format_fetch_error(r, "list_all");
+        return {};
+    }
+    auto root = json::parse(r.body, nullptr, false);
+    if (root.is_discarded()) {
+        if (error_out) *error_out = "list_all: malformed JSON from hub";
+        return {};
+    }
+    return parse_entry_list(root);
+}
+
+std::vector<SkillEntry> SkillsHub::search(const std::string& query,
+                                          const std::string& token,
+                                          std::string* error_out) const {
+    auto* transport = transport_ ? transport_
+                                 : hermes::llm::get_default_transport();
+    const std::string url = base_url_ + "/skills/search?q=" + url_encode(query);
+    auto r = authed_get(transport, url, token);
+    if (!r.ok) {
+        if (error_out) *error_out = format_fetch_error(r, "search");
+        return {};
+    }
+    auto root = json::parse(r.body, nullptr, false);
+    if (root.is_discarded()) {
+        if (error_out) *error_out = "search: malformed JSON from hub";
+        return {};
+    }
+    return parse_entry_list(root);
+}
+
+std::optional<SkillEntry> SkillsHub::get(const std::string& name,
+                                         const std::string& token,
+                                         std::string* error_out) const {
+    if (name.empty()) {
+        if (error_out) *error_out = "get: empty skill name";
+        return std::nullopt;
+    }
+    auto* transport = transport_ ? transport_
+                                 : hermes::llm::get_default_transport();
+    const std::string url = base_url_ + "/skills/" + url_encode(name);
+    auto r = authed_get(transport, url, token);
+    if (!r.ok) {
+        if (error_out) *error_out = format_fetch_error(r, "get");
+        return std::nullopt;
+    }
+    auto root = json::parse(r.body, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        if (error_out) *error_out = "get: malformed JSON from hub";
+        return std::nullopt;
+    }
+    return parse_remote_entry(root);
+}
+
+std::optional<fs::path> SkillsHub::install(
+    const std::string& name,
+    const fs::path& dest_root,
+    const std::string& token,
+    std::string* error_out) const {
+    auto set_err = [&](const std::string& msg) {
+        if (error_out) *error_out = msg;
+    };
+    if (name.empty()) { set_err("install: empty skill name"); return std::nullopt; }
+    if (name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos ||
+        name == "." || name == "..") {
+        set_err("install: invalid skill name");
+        return std::nullopt;
+    }
+
+    // 1) Fetch metadata to learn the download URL.
+    std::string get_err;
+    auto entry = get(name, token, &get_err);
+    if (!entry) {
+        set_err(get_err.empty() ? "install: metadata fetch failed" : get_err);
+        return std::nullopt;
+    }
+    if (entry->download_url.empty()) {
+        set_err("install: hub entry has no download_url");
+        return std::nullopt;
+    }
+
+    // 2) Download the tarball bytes.
+    auto* transport = transport_ ? transport_
+                                 : hermes::llm::get_default_transport();
+    auto fetched = authed_get(transport, entry->download_url, token);
+    if (!fetched.ok) {
+        set_err(format_fetch_error(fetched, "install"));
+        return std::nullopt;
+    }
+    if (fetched.body.empty()) {
+        set_err("install: empty tarball from hub");
+        return std::nullopt;
+    }
+
+    // 3) Write bytes to a temporary file.
+    std::error_code ec;
+    fs::path tmp_dir = fs::temp_directory_path(ec);
+    if (ec) {
+        set_err("install: cannot resolve temp dir: " + ec.message());
+        return std::nullopt;
+    }
+    fs::path tmp_file = tmp_dir /
+        (std::string("hermes-skill-") + make_uuid_token() + ".tgz");
+    {
+        std::ofstream out(tmp_file, std::ios::binary);
+        if (!out) {
+            set_err("install: cannot create temp file: " + tmp_file.string());
+            return std::nullopt;
+        }
+        out.write(fetched.body.data(),
+                  static_cast<std::streamsize>(fetched.body.size()));
+        if (!out) {
+            fs::remove(tmp_file, ec);
+            set_err("install: write failed for temp file");
+            return std::nullopt;
+        }
+    }
+
+    // 4) Prepare dest.  Move any existing dir aside as .bak.<ts>.
+    fs::create_directories(dest_root, ec);
+    if (ec) {
+        fs::remove(tmp_file, ec);
+        set_err("install: cannot create dest root: " + ec.message());
+        return std::nullopt;
+    }
+    fs::path dest = dest_root / name;
+    if (fs::exists(dest, ec)) {
+        auto ts = std::to_string(static_cast<long long>(std::time(nullptr)));
+        fs::path bak = dest_root / (name + ".bak." + ts);
+        fs::rename(dest, bak, ec);
+        if (ec) {
+            // Fallback to remove — last-ditch effort.
+            fs::remove_all(dest, ec);
+            ec.clear();
+        }
+    }
+    fs::create_directories(dest, ec);
+    if (ec) {
+        fs::remove(tmp_file, ec);
+        set_err("install: cannot create dest dir: " + ec.message());
+        return std::nullopt;
+    }
+
+    // 5) Extract the tarball.  POSIX-only for now.
+#if defined(_WIN32)
+    fs::remove(tmp_file, ec);
+    fs::remove_all(dest, ec);
+    set_err("install: tar extract requires Stream C platform layer");
+    return std::nullopt;
+#else
+    std::string cmd = "tar -xzf '";
+    cmd += tmp_file.string();
+    cmd += "' -C '";
+    cmd += dest.string();
+    cmd += "' --strip-components=0 2>/dev/null";
+    int rc = std::system(cmd.c_str());
+    fs::remove(tmp_file, ec);
+    if (rc != 0) {
+        // Some tarballs have a single top-level directory that shares
+        // the skill name — if extraction produced <dest>/<name>/... the
+        // caller still expects <dest>/SKILL.md etc.  Flatten one level
+        // if needed.
+        set_err("install: tar extraction failed (exit " +
+                std::to_string(rc) + ")");
+        fs::remove_all(dest, ec);
+        return std::nullopt;
+    }
+
+    // Handle tarballs that wrap their content in a single top-level dir
+    // whose name matches the skill.  Flatten one level so callers can
+    // rely on dest/<files>.
+    {
+        std::vector<fs::path> children;
+        for (auto& entry_it : fs::directory_iterator(dest, ec)) {
+            children.push_back(entry_it.path());
+        }
+        if (children.size() == 1 && fs::is_directory(children[0], ec) &&
+            children[0].filename() == name) {
+            fs::path wrap = children[0];
+            fs::path staging = dest_root /
+                (std::string(".") + name + ".flatten." + make_uuid_token());
+            fs::rename(wrap, staging, ec);
+            if (!ec) {
+                fs::remove_all(dest, ec);
+                fs::rename(staging, dest, ec);
+                if (ec) {
+                    set_err("install: flatten rename failed: " + ec.message());
+                    return std::nullopt;
+                }
+            }
+        }
+    }
+    return dest;
+#endif
 }
 
 }  // namespace hermes::skills

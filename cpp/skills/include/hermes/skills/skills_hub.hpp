@@ -54,6 +54,21 @@ struct HubSkillEntry {
     std::vector<std::string> dependencies;
 };
 
+// Lightweight skill record returned by the remote Hub HTTP API.
+// Unlike `HubSkillEntry` (which tracks source/identifier/trust for
+// tap-based discovery) this type mirrors the REST `Skill` schema and
+// is used exclusively by the token-authenticated HTTP surface.
+struct SkillEntry {
+    std::string name;
+    std::string version;
+    std::string description;
+    std::string author;
+    std::vector<std::string> tags;
+    std::string download_url;  // tarball URL; empty when not provided
+    std::uint64_t size_bytes = 0;
+    std::string updated_at;    // ISO-8601 timestamp
+};
+
 // One record in `lock.json` — identifies a pinned, installed skill.
 struct HubLockEntry {
     std::string name;
@@ -292,6 +307,52 @@ public:
 
     // Expose hub state as JSON (for /skills ls).
     std::string state_json() const;
+
+    // Upload an installed skill bundle to the hub.  Serialises the
+    // skill directory into a JSON envelope (relative path → base64
+    // bytes) and POSTs it to `{base_url}/skills/{name}/upload` with a
+    // Bearer token.  Returns true on HTTP 2xx.
+    bool upload(const std::string& name, const std::string& token,
+                std::string* error_out = nullptr);
+
+    // ---------------------------------------------------------------
+    // Token-authenticated HTTP surface (Stream B — remote Hub API).
+    // These methods talk to `{base_url}/skills/...` directly via the
+    // injected HttpTransport, attaching `Authorization: Bearer <token>`
+    // when the token is non-empty.  They neither read nor mutate the
+    // local lock file / quarantine — callers handle persistence.
+    // Errors are surfaced via optional `error_out` strings.
+    // ---------------------------------------------------------------
+
+    // Pull one page of the hub catalogue.
+    // GET {base}/skills?page=<page>&page_size=<page_size>
+    std::vector<SkillEntry> list_all(const std::string& token,
+                                     int page = 1,
+                                     int page_size = 50,
+                                     std::string* error_out = nullptr) const;
+
+    // Search the hub:  GET {base}/skills/search?q=<query>
+    std::vector<SkillEntry> search(const std::string& query,
+                                   const std::string& token,
+                                   std::string* error_out = nullptr) const;
+
+    // Fetch metadata for one skill by name.
+    // GET {base}/skills/<name>
+    std::optional<SkillEntry> get(const std::string& name,
+                                  const std::string& token,
+                                  std::string* error_out = nullptr) const;
+
+    // Download the skill tarball from `SkillEntry::download_url`, then
+    // extract into `dest_root / name`.  Any pre-existing directory is
+    // moved aside to `<name>.bak.<ts>` first.  On success returns the
+    // installed path; on failure returns std::nullopt and fills
+    // `error_out`.  On non-POSIX platforms this returns nullopt with a
+    // "tar extract requires Stream C platform layer" error.
+    std::optional<std::filesystem::path> install(
+        const std::string& name,
+        const std::filesystem::path& dest_root,
+        const std::string& token,
+        std::string* error_out = nullptr) const;
 
 private:
     HubPaths paths_;

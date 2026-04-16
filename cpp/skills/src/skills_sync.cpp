@@ -78,11 +78,15 @@ SyncResult SkillsSync::push(const std::string& token) {
         out.errors.push_back("SkillsHub backend not connected");
         return out;
     }
-    // The hub upload API is not yet wired — every push is reported as an
-    // error rather than a silent no-op so callers know the push failed.
     auto installed = iter_skill_index();
     for (const auto& local : installed) {
-        out.errors.push_back("upload not implemented: " + local.name);
+        std::string err;
+        if (hub_->upload(local.name, token, &err)) {
+            ++out.uploaded;
+        } else {
+            out.errors.push_back("upload failed: " + local.name +
+                                 (err.empty() ? "" : " (" + err + ")"));
+        }
     }
     return out;
 }

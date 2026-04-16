@@ -4,6 +4,7 @@ set(HERMES_SKILLS_TEST_SOURCES
     test_skill_utils.cpp
     test_skill_commands.cpp
     test_skills_hub.cpp
+    test_hub_http.cpp
     test_skills_sync.cpp
     test_skills_builtins_complete.cpp
     test_skills_guard.cpp
