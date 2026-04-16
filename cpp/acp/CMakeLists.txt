@@ -2,6 +2,7 @@
 
 add_library(hermes_acp STATIC
     src/acp_adapter.cpp
+    src/permissions.cpp
 )
 
 target_include_directories(hermes_acp

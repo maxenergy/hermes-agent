@@ -37,8 +37,12 @@ AcpAdapter::AcpAdapter(AcpConfig config) : config_(std::move(config)) {
 }
 
 void AcpAdapter::start() {
+    // ACP runs over stdio JSON-RPC — no socket is opened here.  The
+    // process's stdin/stdout pipe is owned by the editor host; the host
+    // feeds requests through handle_request().  Flipping the flag lets
+    // other components (status probes, tests) see that the adapter is
+    // ready to accept RPCs.
     running_.store(true, std::memory_order_release);
-    // Stub: real implementation would start an HTTP server.
 }
 
 void AcpAdapter::stop() {
@@ -179,8 +183,182 @@ nlohmann::json AcpAdapter::handle_request(const nlohmann::json& request) {
                 {"method", method}};
     }
 
-    // Stub: all other methods return not_implemented (but pass auth).
-    return {{"status", "not_implemented"}, {"method", method}};
+    nlohmann::json params =
+        request.value("params", nlohmann::json::object());
+
+    if (method == "new_session" || method == "session/new") {
+        std::lock_guard<std::mutex> lk(sessions_mu_);
+        auto new_id = mint_session_id_locked();
+        sessions_[new_id] = sessions_.count(session_id)
+                                ? sessions_[session_id]
+                                : std::string("api-key");
+        return {{"status", "ok"}, {"session_id", new_id}};
+    }
+
+    if (method == "session/cancel" || method == "cancel") {
+        std::string prompt_id = params.value("prompt_id", std::string{});
+        if (prompt_id.empty()) prompt_id = session_id;
+        cancel_prompt(prompt_id);
+        return {{"status", "ok"}, {"cancelled", prompt_id}};
+    }
+
+    if (method == "prompt" || method == "session/prompt") {
+        PromptHandler handler;
+        {
+            std::lock_guard<std::mutex> lk(prompt_mu_);
+            handler = prompt_handler_;
+        }
+        if (!handler) {
+            // Honest JSON-RPC method-not-found (spec code -32601) when
+            // no agent is wired to the adapter.
+            return {{"status", "error"},
+                    {"error", "method_not_available"},
+                    {"detail",
+                     "Prompt handler not registered — set via "
+                     "AcpAdapter::set_prompt_handler()."},
+                    {"method", method}};
+        }
+        try {
+            auto result = handler(params);
+            if (result.is_object() && result.contains("error")) {
+                return {{"status", "error"},
+                        {"error", result.value("error", std::string{"handler error"})},
+                        {"method", method}};
+            }
+            return {{"status", "ok"}, {"result", std::move(result)}};
+        } catch (const std::exception& ex) {
+            return {{"status", "error"},
+                    {"error", std::string("prompt handler threw: ") + ex.what()},
+                    {"method", method}};
+        }
+    }
+
+    if (method == "session/close") {
+        {
+            std::lock_guard<std::mutex> lk(sessions_mu_);
+            sessions_.erase(session_id);
+        }
+        {
+            std::lock_guard<std::mutex> lk(perms_mu_);
+            permissions_.erase(session_id);
+        }
+        return {{"status", "ok"}, {"closed", session_id}};
+    }
+
+    if (method == "session/get_permissions") {
+        std::string target = params.value("session_id", std::string{});
+        if (target.empty()) target = session_id;
+
+        bool known = false;
+        {
+            std::lock_guard<std::mutex> lk(sessions_mu_);
+            known = sessions_.find(target) != sessions_.end();
+        }
+        if (!known) {
+            return {{"status", "error"},
+                    {"error", "invalid_params"},
+                    {"code", -32602},
+                    {"detail", "unknown session_id"},
+                    {"method", method}};
+        }
+
+        PermissionMatrix snapshot = get_permissions(target);
+        return {{"status", "ok"},
+                {"session_id", target},
+                {"matrix", snapshot.to_json()}};
+    }
+
+    if (method == "session/set_permissions") {
+        std::string target = params.value("session_id", std::string{});
+        if (target.empty()) target = session_id;
+
+        bool known = false;
+        {
+            std::lock_guard<std::mutex> lk(sessions_mu_);
+            known = sessions_.find(target) != sessions_.end();
+        }
+        if (!known) {
+            return {{"status", "error"},
+                    {"error", "invalid_params"},
+                    {"code", -32602},
+                    {"detail", "unknown session_id"},
+                    {"method", method}};
+        }
+
+        if (!params.contains("matrix") || !params.at("matrix").is_object()) {
+            return {{"status", "error"},
+                    {"error", "invalid_params"},
+                    {"code", -32602},
+                    {"detail", "missing or malformed 'matrix' object"},
+                    {"method", method}};
+        }
+
+        PermissionMatrix parsed =
+            PermissionMatrix::from_json(params.at("matrix"));
+        set_permissions(target, std::move(parsed));
+        return {{"status", "ok"}, {"session_id", target}};
+    }
+
+    // JSON-RPC method not found (spec code -32601).
+    return {{"status", "error"},
+            {"error", "method_not_found"},
+            {"code", -32601},
+            {"method", method}};
+}
+
+PermissionMatrix AcpAdapter::get_permissions(
+    const std::string& session_id) const {
+    std::lock_guard<std::mutex> lk(perms_mu_);
+    auto it = permissions_.find(session_id);
+    if (it == permissions_.end()) {
+        // Default matrix: conservative defaults, no rules.
+        return PermissionMatrix{};
+    }
+    return it->second;
+}
+
+void AcpAdapter::set_permissions(const std::string& session_id,
+                                 PermissionMatrix matrix) {
+    std::lock_guard<std::mutex> lk(perms_mu_);
+    // unordered_map does not support heterogeneous insert_or_assign with
+    // a non-copyable/movable type via operator[], but PermissionMatrix
+    // is move-assignable, so [] works fine.
+    auto [it, inserted] =
+        permissions_.emplace(session_id, PermissionMatrix{});
+    (void)inserted;
+    it->second = std::move(matrix);
+}
+
+bool AcpAdapter::has_permission_matrix(
+    const std::string& session_id) const {
+    std::lock_guard<std::mutex> lk(perms_mu_);
+    return permissions_.find(session_id) != permissions_.end();
+}
+
+PermissionDecision AcpAdapter::check_permission(
+    const std::string& session_id, PermissionScope scope,
+    const nlohmann::json& context) const {
+    // Copy the matrix out under the lock so evaluate() can run without
+    // holding perms_mu_ (the matrix has its own internal lock).
+    PermissionMatrix snapshot = get_permissions(session_id);
+    return snapshot.evaluate(scope, context);
+}
+
+void AcpAdapter::set_prompt_handler(PromptHandler handler) {
+    std::lock_guard<std::mutex> lk(prompt_mu_);
+    prompt_handler_ = std::move(handler);
+}
+
+void AcpAdapter::cancel_prompt(const std::string& prompt_id) {
+    if (prompt_id.empty()) return;
+    std::lock_guard<std::mutex> lk(prompt_mu_);
+    cancelled_prompts_.insert(prompt_id);
+}
+
+bool AcpAdapter::is_cancelled(const std::string& prompt_id) const {
+    if (prompt_id.empty()) return false;
+    std::lock_guard<std::mutex> lk(prompt_mu_);
+    return cancelled_prompts_.find(prompt_id) != cancelled_prompts_.end();
 }
 
 }  // namespace hermes::acp

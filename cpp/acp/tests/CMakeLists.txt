@@ -18,6 +18,7 @@ include(GoogleTest)
 add_executable(hermes_acp_tests
     test_acp_adapter.cpp
     test_auth.cpp
+    test_permissions.cpp
 )
 
 target_link_libraries(hermes_acp_tests

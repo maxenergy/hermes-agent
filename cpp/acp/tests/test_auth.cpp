@@ -100,14 +100,17 @@ TEST(AcpAuthTest, AuthenticateRpcThenDispatch) {
     const auto sid = auth_resp["session_id"].get<std::string>();
     EXPECT_FALSE(sid.empty());
 
-    // 2. Subsequent call with session_id passes auth.
+    // 2. Subsequent call with session_id passes auth.  new_session mints
+    //    a fresh opaque session id bound to the same auth method.
     nlohmann::json call = {
         {"method", "new_session"},
         {"session_id", sid},
     };
     auto r = adapter.handle_request(call);
-    EXPECT_EQ(r["status"], "not_implemented");
-    EXPECT_EQ(r["method"], "new_session");
+    EXPECT_EQ(r["status"], "ok");
+    EXPECT_TRUE(r.contains("session_id"));
+    EXPECT_FALSE(r["session_id"].get<std::string>().empty());
+    EXPECT_NE(r["session_id"].get<std::string>(), sid);
 }
 
 TEST(AcpAuthTest, AuthenticateRpcErrorPropagated) {

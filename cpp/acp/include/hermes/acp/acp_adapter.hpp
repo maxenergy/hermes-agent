@@ -18,13 +18,17 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "hermes/acp/permissions.hpp"
 
 namespace hermes::acp {
 
@@ -72,6 +76,40 @@ public:
     // True if an env-provided credential was detected at construction time.
     bool has_env_credential() const { return !env_token_.empty(); }
 
+    // Register a prompt handler — invoked for `prompt` / `session/prompt`
+    // RPCs.  Receives the params object and returns the response payload
+    // (or an object with an `error` field).
+    using PromptHandler =
+        std::function<nlohmann::json(const nlohmann::json& params)>;
+    void set_prompt_handler(PromptHandler handler);
+
+    // Signal a pending prompt should be cancelled — the adapter flips a
+    // cancel flag that long-running prompt handlers can poll via
+    // is_cancelled(prompt_id).  No-op if the id is unknown.
+    void cancel_prompt(const std::string& prompt_id);
+    bool is_cancelled(const std::string& prompt_id) const;
+
+    // Permission matrix (per-session) ------------------------------------
+    //
+    // The Gateway / tool-dispatch layer consults check_permission() before
+    // actually touching the filesystem / shell / network / memory store.
+    // RPC methods `session/get_permissions` and `session/set_permissions`
+    // let the client inspect and replace the matrix at runtime.
+    //
+    // If no matrix was explicitly installed for the session, the default
+    // PermissionMatrix (conservative defaults, no rules) is consulted.
+    PermissionDecision check_permission(const std::string& session_id,
+                                        PermissionScope scope,
+                                        const nlohmann::json& context) const;
+
+    // Direct accessors — primarily for tests and programmatic setup.
+    // Returns a snapshot (copy) of the session's matrix, or the default
+    // matrix if the session has none installed.
+    PermissionMatrix get_permissions(const std::string& session_id) const;
+    void set_permissions(const std::string& session_id,
+                         PermissionMatrix matrix);
+    bool has_permission_matrix(const std::string& session_id) const;
+
 private:
     // Issue a new opaque session id. Caller holds sessions_mu_.
     std::string mint_session_id_locked() const;
@@ -86,6 +124,16 @@ private:
     mutable std::mutex sessions_mu_;
     // session_id -> method_id that minted it.
     std::unordered_map<std::string, std::string> sessions_;
+
+    mutable std::mutex prompt_mu_;
+    PromptHandler prompt_handler_;
+    std::unordered_set<std::string> cancelled_prompts_;
+
+    // Per-session permission matrices.  Absence in the map means "use
+    // the default matrix".  The outer map is guarded by perms_mu_; each
+    // PermissionMatrix also has its own mutex for fine-grained access.
+    mutable std::mutex perms_mu_;
+    std::unordered_map<std::string, PermissionMatrix> permissions_;
 };
 
 }  // namespace hermes::acp
