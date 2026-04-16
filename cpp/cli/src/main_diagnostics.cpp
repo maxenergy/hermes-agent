@@ -316,8 +316,9 @@ std::string render_banner(const BannerOptions& opts) {
 }
 
 // ---------------------------------------------------------------------------
-// Update probe — stub that shells out to `git fetch` and counts commits.
-// Kept deliberately cheap; the real Python flow uses GitHub's compare API.
+// Update probe — shells out to `git ls-remote` + `git rev-list --count` and
+// reports how many commits the local checkout is behind origin HEAD.  One
+// network round-trip; does not modify the local repo.
 // ---------------------------------------------------------------------------
 UpdateCheckResult check_for_updates(int timeout_secs) {
     UpdateCheckResult r;

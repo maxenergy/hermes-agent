@@ -19,6 +19,10 @@ namespace hermes::agent {
 class AIAgent;
 }
 
+namespace hermes::state {
+class ProcessRegistry;
+}
+
 namespace hermes::gateway {
 
 // Classification of the most recent connect() failure.  Returned by
@@ -123,6 +127,11 @@ public:
     void start_reconnect_watcher();       // exponential backoff reconnect
     void start_process_watcher();         // poll ProcessRegistry
 
+    // Attach a ProcessRegistry so start_process_watcher() can emit
+    // `EVT_PROCESS_COMPLETED` events when backgrounded processes finish.
+    // Non-owning pointer — the caller retains ownership.
+    void set_process_registry(hermes::state::ProcessRegistry* reg);
+
     // Agent factory — allows injection of a custom factory for testing.
     using AgentFactory =
         std::function<std::shared_ptr<hermes::agent::AIAgent>(
@@ -159,6 +168,11 @@ private:
     // Watcher threads.
     std::vector<std::thread> watcher_threads_;
     std::atomic<bool> stop_watchers_{false};
+
+    // Process registry integration (optional, non-owning).
+    hermes::state::ProcessRegistry* process_registry_ = nullptr;
+    std::unordered_map<std::string, bool> seen_finished_processes_;
+    std::mutex seen_finished_mu_;
 
     // Command dispatch helper for handle_message.
     bool try_dispatch_command(const std::string& session_key,

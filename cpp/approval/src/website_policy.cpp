@@ -1,11 +1,18 @@
 #include "hermes/approval/website_policy.hpp"
 
+#include "hermes/core/path.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace hermes::approval {
@@ -76,9 +83,10 @@ bool match_pattern(const std::string& host, const std::string& pattern) {
     return false;
 }
 
-// Hardcoded known-bad list (placeholder — Phase 8 will source from a real
-// feed). Domains here are short-circuit blocked regardless of policy.
-const std::array<const char*, 4>& blocked_domains() {
+// Baseline list used when no override feed is configured.  User-supplied
+// feeds (via `$HERMES_BLOCKED_DOMAINS_FILE` or
+// `<HERMES_HOME>/approval/blocked_domains.txt`) are merged on top.
+const std::array<const char*, 4>& baseline_blocked_domains() {
     static const std::array<const char*, 4> table{
         "malware.test",
         "phishing.test",
@@ -86,6 +94,76 @@ const std::array<const char*, 4>& blocked_domains() {
         "exploitkit.test",
     };
     return table;
+}
+
+// Lazy-loaded, mtime-invalidated merged blocked-domain set.  The first
+// call populates from the baseline + file source; subsequent calls
+// re-read the file only when its mtime advances.
+const std::unordered_set<std::string>& blocked_domain_set() {
+    static std::mutex mu;
+    static std::unordered_set<std::string> cached;
+    static std::filesystem::file_time_type cached_mtime{};
+    static std::filesystem::path cached_path;
+    static bool primed = false;
+
+    std::lock_guard<std::mutex> lock(mu);
+
+    std::filesystem::path feed_path;
+    if (const char* env = std::getenv("HERMES_BLOCKED_DOMAINS_FILE");
+        env && *env) {
+        feed_path = env;
+    } else {
+        try {
+            feed_path = hermes::core::path::get_hermes_home() /
+                        "approval" / "blocked_domains.txt";
+        } catch (...) {
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::file_time_type mtime{};
+    bool have_file = false;
+    if (!feed_path.empty() &&
+        std::filesystem::is_regular_file(feed_path, ec)) {
+        mtime = std::filesystem::last_write_time(feed_path, ec);
+        if (!ec) have_file = true;
+    }
+
+    if (primed && cached_path == feed_path &&
+        cached_mtime == mtime) {
+        return cached;
+    }
+
+    std::unordered_set<std::string> fresh;
+    for (const char* bad : baseline_blocked_domains()) {
+        fresh.insert(bad);
+    }
+    if (have_file) {
+        std::ifstream in(feed_path);
+        std::string line;
+        while (std::getline(in, line)) {
+            // Strip comments (# ...) and whitespace.
+            auto hash = line.find('#');
+            if (hash != std::string::npos) line.erase(hash);
+            auto l = line.find_first_not_of(" \t\r\n");
+            auto r = line.find_last_not_of(" \t\r\n");
+            if (l == std::string::npos) continue;
+            std::string host = line.substr(l, r - l + 1);
+            std::string norm;
+            norm.reserve(host.size());
+            for (char c : host) {
+                norm.push_back(static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c))));
+            }
+            if (!norm.empty()) fresh.insert(std::move(norm));
+        }
+    }
+
+    cached = std::move(fresh);
+    cached_mtime = mtime;
+    cached_path = feed_path;
+    primed = true;
+    return cached;
 }
 
 }  // namespace
@@ -131,11 +209,13 @@ void WebsitePolicy::load_from_json(const nlohmann::json& j) {
 
 bool is_blocked_domain(std::string_view host) {
     const std::string h = normalize_host(host);
-    for (const char* bad : blocked_domains()) {
-        if (h == bad) return true;
-        const std::string b(bad);
-        if (h.size() > b.size() &&
-            h.compare(h.size() - b.size() - 1, b.size() + 1, "." + b) == 0) {
+    const auto& set = blocked_domain_set();
+    if (set.count(h)) return true;
+    // Subdomain match: any "<...>.bad" where "bad" is in the set.
+    for (const auto& bad : set) {
+        if (h.size() > bad.size() &&
+            h.compare(h.size() - bad.size() - 1, bad.size() + 1,
+                      "." + bad) == 0) {
             return true;
         }
     }

@@ -6,17 +6,19 @@
 // expires_at) that can evict expired entries and invoke a refresh
 // callback to repopulate them on miss.
 //
-// The real Python pool supports multiple credentials per provider with
-// round-robin selection; the C++17 port keeps a single slot per
-// provider for now (the common case) and leaves round-robin as a TODO.
+// Supports multiple credentials per provider with round-robin selection
+// (mirrors the Python pool).  Single-slot callers keep working via
+// `store()`, which replaces the provider's list with exactly one entry.
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace hermes::llm {
 
@@ -53,8 +55,17 @@ public:
 
     // Cache a credential under `provider` directly, bypassing any
     // refresher.  Useful for tests and for providers whose credentials
-    // are supplied explicitly (e.g. via config.yaml).
+    // are supplied explicitly (e.g. via config.yaml).  Replaces any
+    // existing credential(s) for the provider with a single entry.
     void store(const std::string& provider, PooledCredential cred);
+
+    // Append a credential to the provider's round-robin list without
+    // dropping previously stored entries.  Duplicates by api_key are
+    // skipped.
+    void add(const std::string& provider, PooledCredential cred);
+
+    // Return the number of credentials currently stored for `provider`.
+    std::size_t count(const std::string& provider) const;
 
     // Look up a credential.  If the cached entry is expired and a
     // refresher is registered, the refresher is called and its result
@@ -83,7 +94,13 @@ public:
 
 private:
     mutable std::mutex mu_;
-    std::unordered_map<std::string, PooledCredential> entries_;
+    // Round-robin slot list per provider.  Cursor tracks the next
+    // credential to return from `get()`.
+    struct Slot {
+        std::vector<PooledCredential> creds;
+        std::uint64_t cursor = 0;
+    };
+    std::unordered_map<std::string, Slot> slots_;
     std::unordered_map<std::string, Refresher> refreshers_;
 };
 

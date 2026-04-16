@@ -119,6 +119,7 @@ target_link_libraries(hermes_gateway
         hermes::agent
         nlohmann_json::nlohmann_json
     PRIVATE
+        hermes::state
         hermes_warnings
 )
 

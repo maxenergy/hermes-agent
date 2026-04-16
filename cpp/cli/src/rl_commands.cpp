@@ -10,6 +10,7 @@
 
 #include "hermes/batch/batch_runner.hpp"
 #include "hermes/environments/local.hpp"
+#include "hermes/tools/rl_training_tool.hpp"
 #include "hermes/tools/terminal_tool.hpp"
 
 namespace hermes::cli::rl {
@@ -346,13 +347,30 @@ int dispatch_rl_command(const std::vector<std::string>& argv) {
     }
 
     if (args.verb == "list-environments") {
-        // The actual list lives in the Python/Nous API.  Emit a stub
-        // instructing the user to use the ``rl_list_environments``
-        // tool from an interactive session — keeps us decoupled from
-        // the Nous HTTP client here.
-        std::cout <<
-            "Run `hermes rl train` and invoke the `rl_list_environments` "
-            "tool to list the available environments.\n";
+        auto& reg = hermes::tools::RlLocalRegistry::instance();
+        const auto& envs = reg.environments();
+        if (envs.empty()) {
+            std::cout << "No RL environments found.\n"
+                      << "  - Set $TINKER_ATROPOS_ROOT to the tinker-atropos "
+                         "checkout, or\n"
+                      << "  - Drop environment modules under "
+                      << reg.environments_dir() << "\n";
+            return 0;
+        }
+        std::cout << "Available RL environments (" << envs.size() << "):\n";
+        for (const auto& e : envs) {
+            std::cout << "  - " << e.name;
+            if (!e.class_name.empty()) std::cout << " (" << e.class_name << ")";
+            if (!e.description.empty()) {
+                auto desc = e.description;
+                if (desc.size() > 80) desc.resize(77), desc.append("...");
+                std::cout << " — " << desc;
+            }
+            std::cout << "\n";
+            if (!e.file_path.empty()) {
+                std::cout << "      " << e.file_path << "\n";
+            }
+        }
         return 0;
     }
 

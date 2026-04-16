@@ -1,9 +1,12 @@
 #include <hermes/gateway/gateway_runner.hpp>
 
 #include <hermes/agent/ai_agent.hpp>
+#include <hermes/core/platform/subprocess.hpp>
 #include <hermes/core/retry.hpp>
 #include <hermes/gateway/status.hpp>
+#include <hermes/state/process_registry.hpp>
 
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <thread>
@@ -279,6 +282,30 @@ GatewayRunner::drain_pending(const std::string& session_key) {
     return msgs;
 }
 
+// --- Hook execution helpers ---
+namespace {
+
+// Run the hook command via /bin/sh -c (or cmd /c on Windows) with the
+// JSON context on stdin.  Returns true if the child exited with status
+// 0.  Output is captured but discarded — hooks log to their own files.
+bool run_hook_command(const std::string& cwd, const std::string& command,
+                      const std::string& stdin_payload) {
+    if (command.empty()) return false;
+    hermes::core::platform::SubprocessOptions opts;
+#if defined(_WIN32)
+    opts.argv = {"cmd.exe", "/c", command};
+#else
+    opts.argv = {"/bin/sh", "-c", command};
+#endif
+    opts.cwd = cwd;
+    opts.stdin_input = stdin_payload;
+    opts.discard_output = true;
+    auto r = hermes::core::platform::run_capture(opts);
+    return r.spawn_error.empty() && !r.timed_out && r.exit_code == 0;
+}
+
+}  // namespace
+
 // --- Hook discovery ---
 
 void GatewayRunner::discover_hooks(const fs::path& hooks_dir) {
@@ -299,18 +326,30 @@ void GatewayRunner::discover_hooks(const fs::path& hooks_dir) {
             auto j = nlohmann::json::parse(ifs);
             std::string name = j.value("name", entry.path().filename().string());
             auto events = j.value("events", std::vector<std::string>{});
+            // `command` is a shell pipeline; `script` is a relative file
+            // resolved against the hook directory.  Either is acceptable.
+            std::string command = j.value("command", std::string{});
+            std::string script = j.value("script", std::string{});
+            std::string cwd_str = entry.path().string();
+            if (command.empty() && !script.empty()) {
+                auto script_path = entry.path() / script;
+                command = "exec " + script_path.string();
+            }
 
             for (const auto& event_pattern : events) {
                 hooks_->register_hook(
                     event_pattern,
-                    [name, event_pattern](const std::string& evt,
-                                          const nlohmann::json& ctx) {
-                        // Log the event — actual Python handler execution
-                        // is deferred to a later phase.
-                        (void)evt;
-                        (void)ctx;
-                        // In production this would invoke the hook's
-                        // handler script.
+                    [name, event_pattern, command, cwd_str](
+                        const std::string& evt, const nlohmann::json& ctx) {
+                        if (command.empty()) return;
+                        nlohmann::json payload = {
+                            {"hook", name},
+                            {"event", evt},
+                            {"pattern", event_pattern},
+                            {"context", ctx},
+                        };
+                        (void)run_hook_command(cwd_str, command,
+                                               payload.dump());
                     });
             }
         } catch (...) {
@@ -435,6 +474,11 @@ void GatewayRunner::start_reconnect_watcher() {
     });
 }
 
+void GatewayRunner::set_process_registry(
+    hermes::state::ProcessRegistry* reg) {
+    process_registry_ = reg;
+}
+
 void GatewayRunner::start_process_watcher() {
     watcher_threads_.emplace_back([this] {
         while (!stop_watchers_.load(std::memory_order_acquire)) {
@@ -443,10 +487,41 @@ void GatewayRunner::start_process_watcher() {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
             if (stop_watchers_.load()) break;
+            if (!process_registry_ || !hooks_) continue;
 
-            // Poll ProcessRegistry for completed processes and deliver
-            // notifications.  ProcessRegistry integration is deferred —
-            // this watcher is the skeleton.
+            auto finished = process_registry_->list_finished();
+            for (const auto& p : finished) {
+                if (!p.notify_on_complete) continue;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> lock(seen_finished_mu_);
+                    if (seen_finished_processes_.find(p.id) ==
+                        seen_finished_processes_.end()) {
+                        seen_finished_processes_[p.id] = true;
+                        fresh = true;
+                    }
+                }
+                if (!fresh) continue;
+                nlohmann::json ctx = {
+                    {"process_id", p.id},
+                    {"command", p.command},
+                    {"task_id", p.task_id},
+                    {"session_key", p.session_key},
+                    {"exit_code", p.exit_code.has_value()
+                                      ? nlohmann::json(*p.exit_code)
+                                      : nlohmann::json()},
+                    {"state",
+                     p.state == hermes::state::ProcessState::Exited
+                         ? "exited"
+                         : p.state == hermes::state::ProcessState::Killed
+                               ? "killed"
+                               : "finished"},
+                };
+                try {
+                    hooks_->emit(EVT_PROCESS_COMPLETED, ctx);
+                } catch (...) {
+                }
+            }
         }
     });
 }

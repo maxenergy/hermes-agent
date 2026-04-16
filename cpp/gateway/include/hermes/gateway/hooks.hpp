@@ -17,6 +17,7 @@ constexpr auto EVT_SESSION_RESET = "session:reset";
 constexpr auto EVT_AGENT_START = "agent:start";
 constexpr auto EVT_AGENT_STEP = "agent:step";
 constexpr auto EVT_AGENT_END = "agent:end";
+constexpr auto EVT_PROCESS_COMPLETED = "process:completed";
 // command:* wildcard matches command:new, command:reset, etc.
 
 using HookHandler =

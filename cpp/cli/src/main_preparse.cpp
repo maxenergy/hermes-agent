@@ -8,6 +8,7 @@
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/profile/profile.hpp"
+#include "hermes/state/session_db.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -355,10 +356,10 @@ bool has_any_provider_configured() {
 }
 
 // ---------------------------------------------------------------------------
-// Session lookup — placeholders that read <HERMES_HOME>/sessions/*.json.
-// Mirrors the Python helpers in shape but does the lookup directly against
-// the session store directory.  The Python version goes through the
-// SessionDB ORM, which we don't need for a name/id resolver.
+// Session lookup — primary path queries SessionDB (SQLite at
+// <HERMES_HOME>/sessions.db), matching Python's resolvers.  Falls back to
+// scanning <HERMES_HOME>/sessions/*.json so legacy file-based sessions
+// still resolve.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -428,6 +429,16 @@ std::vector<SessionSummary> load_session_summaries(std::size_t max_rows = 512) {
 }  // namespace
 
 std::optional<std::string> resolve_last_cli_session() {
+    // Primary: SessionDB query for the most recent cli-sourced session.
+    try {
+        hermes::state::SessionDB db;
+        auto rows = db.list_sessions(64, 0);
+        for (const auto& r : rows) {
+            if (r.source.empty() || r.source == "cli") return r.id;
+        }
+    } catch (const std::exception&) {
+        // fall through to JSON scan
+    }
     auto summaries = load_session_summaries(32);
     for (const auto& s : summaries) {
         if (s.source.empty() || s.source == "cli") return s.id;
@@ -438,6 +449,29 @@ std::optional<std::string> resolve_last_cli_session() {
 std::optional<std::string> resolve_session_by_name_or_id(
     const std::string& name_or_id) {
     if (name_or_id.empty()) return std::nullopt;
+    // Primary: SessionDB — exact id, then title exact/substring, then id prefix.
+    try {
+        hermes::state::SessionDB db;
+        if (auto direct = db.get_session(name_or_id)) {
+            return direct->id;
+        }
+        auto rows = db.list_sessions(512, 0);
+        auto lower = to_lower(name_or_id);
+        for (const auto& r : rows) {
+            if (r.title && to_lower(*r.title) == lower) return r.id;
+        }
+        for (const auto& r : rows) {
+            if (r.title &&
+                to_lower(*r.title).find(lower) != std::string::npos) {
+                return r.id;
+            }
+        }
+        for (const auto& r : rows) {
+            if (r.id.rfind(name_or_id, 0) == 0) return r.id;
+        }
+    } catch (const std::exception&) {
+        // fall through to JSON scan
+    }
     auto summaries = load_session_summaries(512);
     auto lower = to_lower(name_or_id);
     // 1. Exact id match wins.

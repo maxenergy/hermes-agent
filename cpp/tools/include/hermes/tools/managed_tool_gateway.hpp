@@ -1,9 +1,10 @@
-// Stub for the Nous-hosted vendor gateway resolver.
+// Nous-hosted vendor gateway resolver.
 //
-// Phase 5 only ships the configuration plumbing — the actual HTTP calls
-// happen inside the Phase 8 vendor tools (firecrawl, modal, exa, ...).
-// Each vendor tool calls resolve_vendor_gateway() at request time and
-// substitutes the proxy URL when the gateway is enabled.
+// Each vendor tool (firecrawl, modal, exa, …) calls
+// resolve_vendor_gateway() at request time.  When the managed gateway is
+// enabled in config, the tool's base URL is rewritten to the returned
+// proxy URL (derived from `<scheme>://<vendor>-gateway.<domain>` unless
+// explicitly overridden with `managed_tool_gateway.<vendor>.url`).
 #pragma once
 
 #include <nlohmann/json.hpp>

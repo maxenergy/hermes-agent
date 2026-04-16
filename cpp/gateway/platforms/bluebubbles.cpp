@@ -10,9 +10,11 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <fstream>
 #include <iomanip>
 #include <regex>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace hermes::gateway::platforms {
@@ -473,18 +475,76 @@ BlueBubblesAdapter::SendResult BlueBubblesAdapter::send_attachment(
         sr.error = "Chat not found: " + chat_id;
         return sr;
     }
-    // Multipart upload not implemented in this transport — record the request
-    // shape for callers/tests so they can verify the payload assembly.
-    nlohmann::json payload = {
-        {"chatGuid", *guid},
-        {"file_path", file_path},
-        {"name", filename.empty() ? file_path : filename},
-        {"isAudioMessage", is_audio_message},
+    auto* t = get_transport();
+    if (!t) {
+        sr.error = "HTTP transport unavailable";
+        return sr;
+    }
+    // Read the file into memory.  BlueBubbles attachment endpoint caps at
+    // ~25 MiB for iMessage; oversized uploads will be rejected server-side.
+    std::ifstream in(file_path, std::ios::binary);
+    if (!in) {
+        sr.error = "Cannot open file: " + file_path;
+        return sr;
+    }
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    std::string file_bytes = buf.str();
+
+    std::string effective_name = filename;
+    if (effective_name.empty()) {
+        auto pos = file_path.find_last_of("/\\");
+        effective_name = (pos == std::string::npos) ? file_path
+                                                    : file_path.substr(pos + 1);
+    }
+
+    // Build multipart/form-data body.  Boundary is derived from the temp
+    // GUID so it can never appear in the binary payload.
+    const std::string temp_guid =
+        BlueBubblesAdapter::temp_guid_for(std::chrono::system_clock::now());
+    const std::string boundary = "----hermes-bb-" + temp_guid;
+    const std::string crlf = "\r\n";
+
+    auto add_field = [&](std::ostringstream& o, const std::string& name,
+                         const std::string& value) {
+        o << "--" << boundary << crlf
+          << "Content-Disposition: form-data; name=\"" << name << "\""
+          << crlf << crlf
+          << value << crlf;
     };
-    if (!caption.empty()) payload["caption"] = caption;
+
+    std::ostringstream body;
+    add_field(body, "chatGuid", *guid);
+    add_field(body, "tempGuid", temp_guid);
+    add_field(body, "name", effective_name);
+    if (is_audio_message) add_field(body, "isAudioMessage", "1");
+    if (!caption.empty()) add_field(body, "message", caption);
+    body << "--" << boundary << crlf
+         << "Content-Disposition: form-data; name=\"attachment\"; filename=\""
+         << effective_name << "\"" << crlf
+         << "Content-Type: application/octet-stream" << crlf << crlf;
+    body.write(file_bytes.data(),
+               static_cast<std::streamsize>(file_bytes.size()));
+    body << crlf << "--" << boundary << "--" << crlf;
+
+    std::unordered_map<std::string, std::string> headers = {
+        {"Content-Type", "multipart/form-data; boundary=" + boundary},
+    };
+    auto resp = t->post_json(api_url("/api/v1/message/attachment"),
+                             headers, body.str());
+    if (resp.status_code < 200 || resp.status_code >= 300) {
+        sr.error = "upload failed: HTTP " + std::to_string(resp.status_code);
+        return sr;
+    }
+    auto js = nlohmann::json::parse(resp.body, nullptr, false);
+    if (!js.is_discarded() && js.is_object()) {
+        if (auto d = js.find("data"); d != js.end() && d->is_object()) {
+            sr.message_id = first_str(*d, {"guid", "messageGuid"});
+        }
+        sr.raw = js;
+    }
+    if (sr.message_id.empty()) sr.message_id = temp_guid;
     sr.success = true;
-    sr.raw = payload;
-    sr.message_id = "pending";
     return sr;
 }
 

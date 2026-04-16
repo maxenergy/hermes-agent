@@ -212,12 +212,19 @@ int Dispatcher::dispatch_line(const std::string& line) const {
     return dispatch(parse_command_line(line));
 }
 
+// Build a dispatcher pre-populated with a no-op handler for every
+// registered slash command.  Real slash handling is installed by
+// HermesCLI at startup (`register_handler` overrides these entries).
+// This factory exists so tests and auxiliary tooling can query the
+// command registry through a Dispatcher without setting up the full
+// REPL.  The no-op handler reports success so callers can distinguish
+// "unknown command" (-1) from "known but not wired" (0).
 Dispatcher make_default_dispatcher() {
     Dispatcher d;
     for (const auto& c : slash_registry()) {
         d.register_handler(c.name, [name = c.name](const ParsedCommand&) {
             (void)name;
-            return 0;  // stub
+            return 0;
         });
     }
     return d;
