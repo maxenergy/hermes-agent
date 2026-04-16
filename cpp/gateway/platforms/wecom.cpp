@@ -530,20 +530,11 @@ void WeComAdapter::send_typing(const std::string& /*chat_id*/) {
 // ----- WebSocket payload builders ------------------------------------------
 
 nlohmann::json WeComAdapter::build_subscribe_payload() const {
-    auto ts = std::chrono::duration_cast<std::chrono::seconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
-                  .count();
-    nlohmann::json p = {
+    return {
         {"cmd", kWeComCmdSubscribe},
-        {"req_id", new_req_id("sub")},
-        {"bot_id", cfg_.bot_id},
-        {"timestamp", ts},
+        {"headers", {{"req_id", new_req_id("subscribe")}}},
+        {"body", {{"bot_id", cfg_.bot_id}, {"secret", cfg_.secret}}},
     };
-    if (!cfg_.secret.empty()) {
-        // HMAC would be computed by the runner; we only emit the stub.
-        p["secret_hint"] = std::string(cfg_.secret.size(), '*');
-    }
-    return p;
 }
 
 nlohmann::json WeComAdapter::build_send_payload(const std::string& chat_id,
@@ -551,25 +542,25 @@ nlohmann::json WeComAdapter::build_send_payload(const std::string& chat_id,
                                                 const std::string& msgtype) const {
     return {
         {"cmd", kWeComCmdSend},
-        {"req_id", new_req_id("send")},
-        {"bot_id", cfg_.bot_id},
-        {"chat_id", chat_id},
-        {"msgtype", msgtype},
-        {msgtype, {{"content", content}}},
+        {"headers", {{"req_id", new_req_id("send")}}},
+        {"body", {
+            {"chatid", chat_id},
+            {"msgtype", msgtype},
+            {msgtype, {{"content", content}}},
+        }},
     };
 }
 
 nlohmann::json WeComAdapter::build_ping_payload() {
-    return {{"cmd", kWeComCmdPing}, {"req_id", new_req_id("ping")}};
+    return {{"cmd", kWeComCmdPing}};
 }
 
 nlohmann::json WeComAdapter::build_response_payload(const std::string& req_id,
                                                     const std::string& payload) {
     return {
         {"cmd", kWeComCmdRespond},
-        {"req_id", req_id},
-        {"bot_id", cfg_.bot_id},
-        {"body", payload},
+        {"headers", {{"req_id", req_id}}},
+        {"body", {{"bot_id", cfg_.bot_id}, {"payload", payload}}},
     };
 }
 

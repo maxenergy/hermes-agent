@@ -1,9 +1,13 @@
 #include "hermes/tools/skill_manager_tool.hpp"
 
 #include "hermes/core/path.hpp"
+#include "hermes/llm/llm_client.hpp"
+#include "hermes/skills/skills_hub.hpp"
 #include "hermes/tools/registry.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include <cstdlib>
 
 #include <algorithm>
 #include <cctype>
@@ -322,25 +326,88 @@ void register_skill_manager_tools(ToolRegistry& registry) {
         }
 
         if (action == "list_available") {
-            return tool_error("Skills Hub not connected");
+            const char* hub_url = std::getenv("HERMES_SKILLS_HUB_URL");
+            const char* hub_token = std::getenv("HERMES_SKILLS_HUB_TOKEN");
+            if (!hub_url || !*hub_url) {
+                return tool_error("HERMES_SKILLS_HUB_URL not set");
+            }
+            hermes::skills::SkillsHub hub(hermes::skills::HubPaths::discover());
+            hub.set_base_url(hub_url);
+            int page = args.value("page", 1);
+            int page_size = args.value("page_size", 50);
+            std::string err;
+            auto entries = hub.list_all(hub_token ? hub_token : "",
+                                        page, page_size, &err);
+            if (!err.empty()) return tool_error(err);
+            json arr = json::array();
+            for (const auto& e : entries) {
+                arr.push_back(json{{"name", e.name},
+                                   {"version", e.version},
+                                   {"description", e.description},
+                                   {"author", e.author},
+                                   {"tags", e.tags},
+                                   {"size_bytes", e.size_bytes},
+                                   {"updated_at", e.updated_at}});
+            }
+            return tool_result(json{{"skills", arr},
+                                    {"count", static_cast<int>(arr.size())},
+                                    {"page", page},
+                                    {"source", "hub"}});
         }
 
         if (action == "search") {
-            // Local search across installed skills — Hub still stubbed.
-            auto installed = enumerate_installed_skills(skills_root());
             auto query = args.value("query", "");
-            if (query.empty()) {
-                return tool_error("Skills Hub not connected");
+            if (query.empty()) return tool_error("missing required parameter: query");
+            // Hub first when HERMES_SKILLS_HUB_URL is set; fall back to local.
+            const char* hub_url = std::getenv("HERMES_SKILLS_HUB_URL");
+            const char* hub_token = std::getenv("HERMES_SKILLS_HUB_TOKEN");
+            auto* transport = hub_url && *hub_url
+                                  ? hermes::llm::get_default_transport()
+                                  : nullptr;
+            if (transport) {
+                std::unordered_map<std::string, std::string> h{{"Accept", "application/json"}};
+                if (hub_token && *hub_token) h["Authorization"] = std::string("Bearer ") + hub_token;
+                try {
+                    auto resp = transport->get(std::string(hub_url) + "/skills/search?q=" + query, h);
+                    if (resp.status_code >= 200 && resp.status_code < 300) {
+                        auto root = json::parse(resp.body, nullptr, false);
+                        if (!root.is_discarded()) {
+                            json items = root.is_array() ? root
+                                : (root.contains("items") ? root["items"] : json::array());
+                            return tool_result(json{{"skills", items},
+                                                    {"count", static_cast<int>(items.size())},
+                                                    {"source", "hub"}});
+                        }
+                    }
+                } catch (...) { /* fall through to local */ }
             }
-            auto matches = search_installed_skills(installed, query);
-            if (matches.empty()) {
-                return tool_error("Skills Hub not connected");
-            }
-            return tool_result(render_installed_list(matches));
+            auto installed = enumerate_installed_skills(skills_root());
+            return tool_result(render_installed_list(search_installed_skills(installed, query)));
         }
 
         if (action == "install") {
-            return tool_error("Skills Hub not connected — cannot install skills");
+            auto name = args.value("name", "");
+            if (name.empty()) return tool_error("missing required parameter: name");
+            if (name.find('/') != std::string::npos ||
+                name.find('\\') != std::string::npos ||
+                name == ".." || name == ".") {
+                return tool_error("invalid skill name: " + name);
+            }
+            const char* hub_url = std::getenv("HERMES_SKILLS_HUB_URL");
+            const char* hub_token = std::getenv("HERMES_SKILLS_HUB_TOKEN");
+            if (!hub_url || !*hub_url) {
+                return tool_error("HERMES_SKILLS_HUB_URL not set");
+            }
+            hermes::skills::SkillsHub hub(hermes::skills::HubPaths::discover());
+            hub.set_base_url(hub_url);
+            std::string err;
+            auto installed = hub.install(name, skills_root(),
+                                         hub_token ? hub_token : "",
+                                         &err);
+            if (!installed) return tool_error(err.empty() ? "install failed" : err);
+            return tool_result(json{{"installed", true},
+                                    {"name", name},
+                                    {"path", installed->string()}});
         }
 
         if (action == "uninstall") {
@@ -371,7 +438,28 @@ void register_skill_manager_tools(ToolRegistry& registry) {
         }
 
         if (action == "update") {
-            return tool_error("Skills Hub not connected — cannot update skills");
+            auto name = args.value("name", "");
+            if (name.empty()) return tool_error("missing required parameter: name");
+            if (name.find('/') != std::string::npos ||
+                name.find('\\') != std::string::npos ||
+                name == ".." || name == ".") {
+                return tool_error("invalid skill name: " + name);
+            }
+            const char* hub_url = std::getenv("HERMES_SKILLS_HUB_URL");
+            const char* hub_token = std::getenv("HERMES_SKILLS_HUB_TOKEN");
+            if (!hub_url || !*hub_url) {
+                return tool_error("HERMES_SKILLS_HUB_URL not set");
+            }
+            hermes::skills::SkillsHub hub(hermes::skills::HubPaths::discover());
+            hub.set_base_url(hub_url);
+            std::string err;
+            auto installed = hub.install(name, skills_root(),
+                                         hub_token ? hub_token : "",
+                                         &err);
+            if (!installed) return tool_error(err.empty() ? "update failed" : err);
+            return tool_result(json{{"updated", true},
+                                    {"name", name},
+                                    {"path", installed->string()}});
         }
 
         return tool_error("unknown action: " + action);

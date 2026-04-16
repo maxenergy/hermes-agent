@@ -85,8 +85,8 @@ Dispatcher make_default_dispatcher();
 // Given a partial prefix like "/he", return matching command names.
 std::vector<std::string> complete_slash(const std::string& prefix);
 
-// Given a full command + partial argument, return suggestions (stubs for
-// commands that know their domain: /model, /skill, /toolset, /session).
+// Given a full command + partial argument, return suggestions for
+// commands that know their domain: /model, /skill, /toolset, /session.
 std::vector<std::string> complete_argument(const std::string& command,
                                             const std::string& partial);
 

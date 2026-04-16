@@ -93,6 +93,7 @@ target_link_libraries(hermes_tools
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::state
+        hermes::skills
         hermes_warnings
 )
 

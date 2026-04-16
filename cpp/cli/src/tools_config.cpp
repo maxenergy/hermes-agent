@@ -823,9 +823,10 @@ int cmd_providers_cli(int /*argc*/, char** /*argv*/) {
 }
 
 int cmd_edit_cli(int argc, char** argv) {
-    // Non-TTY: fall back to list. The interactive path is stubbed here
-    // because the full curses integration is wired via curses_ui but
-    // isn't a hard dependency for unit tests.
+    // Non-TTY fallback: render the editor layout as flat text.  The
+    // interactive curses UI lives in curses_ui and is the default when a
+    // TTY is attached; this path exercises the same state machine for
+    // scripts and unit tests.
     std::string platform = platform_from_args(argc, argv, 3);
     auto config = hermes::config::load_config();
     auto state = make_editor(config, platform);

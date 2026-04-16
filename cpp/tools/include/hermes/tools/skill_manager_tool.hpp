@@ -1,10 +1,11 @@
 // Skill manager tool — list/search/install/uninstall/update + create/delete.
 //
-// Mirrors ``tools/skill_manager_tool.py`` for the local-only operations
-// (the Hub install/search paths still return Hub-not-connected stubs in
-// the C++ port).  Helpers below are pulled out of the dispatch handler so
-// the validation and frontmatter-parsing logic can be unit-tested
-// independently.
+// Mirrors ``tools/skill_manager_tool.py`` for local operations and wires
+// the remote Hub actions (list_available / search / install / update)
+// through ``hermes::skills::SkillsHub`` when HERMES_SKILLS_HUB_URL is
+// configured, falling back to the installed skill directory otherwise.
+// Helpers below are pulled out of the dispatch handler so the validation
+// and frontmatter-parsing logic can be unit-tested independently.
 #pragma once
 
 #include "hermes/tools/registry.hpp"

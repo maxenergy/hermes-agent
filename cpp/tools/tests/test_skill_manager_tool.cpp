@@ -67,12 +67,21 @@ TEST_F(SkillManagerToolTest, UninstallSafetyCheck) {
     EXPECT_TRUE(r3.contains("error"));
 }
 
-TEST_F(SkillManagerToolTest, SearchStubReturnsError) {
+TEST_F(SkillManagerToolTest, SearchFallsBackToLocalScan) {
+    // With no HERMES_SKILLS_HUB_URL configured the handler now falls
+    // back to a local installed-skills scan; it should return a
+    // well-formed (possibly empty) list rather than an error.
     auto r = json::parse(dispatch("skill_manage",
-        {{"action", "search"}, {"query", "something"}}));
+        {{"action", "search"}, {"query", "something-unlikely-xyz"}}));
+    EXPECT_FALSE(r.contains("error"));
+    EXPECT_TRUE(r.contains("skills"));
+    EXPECT_TRUE(r.contains("count"));
+}
+
+TEST_F(SkillManagerToolTest, SearchRejectsEmptyQuery) {
+    auto r = json::parse(dispatch("skill_manage",
+        {{"action", "search"}, {"query", ""}}));
     EXPECT_TRUE(r.contains("error"));
-    EXPECT_NE(r["error"].get<std::string>().find("Hub not connected"),
-              std::string::npos);
 }
 
 TEST_F(SkillManagerToolTest, UninstallExistingSkill) {
