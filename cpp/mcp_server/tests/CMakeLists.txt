@@ -17,6 +17,7 @@ include(GoogleTest)
 
 add_executable(hermes_mcp_server_tests
     test_mcp_server.cpp
+    test_mcp_roundtrip.cpp
 )
 
 target_link_libraries(hermes_mcp_server_tests
