@@ -57,6 +57,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_dump_cmd.cpp
     test_memory_setup.cpp
     test_webhook_cmd.cpp
+    test_acp_cmd.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
@@ -68,6 +69,7 @@ target_link_libraries(hermes_cli_tests
         hermes::tools
         hermes::auth
         hermes::llm
+        hermes::acp
         nlohmann_json::nlohmann_json
         GTest::gtest_main
         hermes_warnings

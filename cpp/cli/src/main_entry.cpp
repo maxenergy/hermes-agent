@@ -1,5 +1,6 @@
 #include "hermes/cli/main_entry.hpp"
 
+#include "hermes/cli/acp_cmd.hpp"
 #include "hermes/cli/doctor.hpp"
 #include "hermes/auth/copilot_oauth.hpp"
 #include "hermes/auth/credentials.hpp"
@@ -85,6 +86,7 @@ void print_global_help() {
               << "  memory      Configure memory backend (Honcho)\n"
               << "  rl          RL training / eval CLI — rl train|eval|list-environments\n"
               << "  plugins     Manage plugins — list|install|uninstall|enable|disable|info|update|search|reload\n"
+              << "  acp         Run as an ACP server for editor integration (Zed / VS Code)\n"
               << "\n"
               << "Run 'hermes <subcommand> --help' for details.\n";
 }
@@ -1880,6 +1882,9 @@ int main_entry(int argc, char* argv[]) {
     }
     if (sub == "plugins") {
         return hermes::plugins::cmd_plugins(argc, argv);
+    }
+    if (sub == "acp") {
+        return cmd_acp(argc, argv);
     }
     if (sub == "rl") {
         std::vector<std::string> rl_argv;

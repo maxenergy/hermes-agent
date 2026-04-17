@@ -79,6 +79,7 @@ add_library(hermes_cli_lib STATIC
     src/dump_cmd.cpp
     src/memory_setup.cpp
     src/webhook_cmd.cpp
+    src/acp_cmd.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state
@@ -126,6 +127,7 @@ target_link_libraries(hermes_cli_lib
         nlohmann_json::nlohmann_json
     PRIVATE
         hermes::gateway
+        hermes::acp
         hermes::state
         hermes_warnings
         yaml-cpp::yaml-cpp
