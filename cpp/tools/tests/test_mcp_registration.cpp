@@ -249,6 +249,39 @@ TEST(McpRegistrationPlan, ApplyPopulatesRegistry) {
     EXPECT_NE(res.find("ok"), std::string::npos);
 }
 
+TEST(McpRegistrationPlan, NullFactoryFallbackIsInformative) {
+    // Covers the defensive branch in apply_registration() where a caller
+    // passes a null McpHandlerFactory.  The handler must not return the
+    // opaque legacy "no handler bound" message — it should report the
+    // actual root cause (client not connected) along with the server /
+    // tool identity so logs and the model both see a useful error.
+    auto& reg = ToolRegistry::instance();
+    reg.deregister("mcp_proxy_ping");
+    reg.deregister("mcp_proxy_list_resources");
+    ServerToolLedger ledger;
+    std::vector<json> tools = {
+        {{"name", "ping"}, {"description", "ping"}},
+    };
+    std::unordered_set<std::string> caps = {"list_resources"};
+    auto plan = plan_registration("proxy", tools, ToolFilter{}, caps);
+    auto n = apply_registration(plan, reg, ledger, /*make_handler=*/{});
+    EXPECT_EQ(n, 2u);  // 1 tool + 1 utility (list_resources)
+
+    auto tool_res = reg.dispatch("mcp_proxy_ping", json::object(),
+                                 ToolContext{});
+    // Must NOT contain the legacy opaque string.
+    EXPECT_EQ(tool_res.find("no handler bound"), std::string::npos);
+    EXPECT_NE(tool_res.find("not connected"), std::string::npos);
+    EXPECT_NE(tool_res.find("proxy"), std::string::npos);
+    EXPECT_NE(tool_res.find("ping"), std::string::npos);
+
+    auto util_res = reg.dispatch("mcp_proxy_list_resources",
+                                 json::object(), ToolContext{});
+    EXPECT_EQ(util_res.find("no handler bound"), std::string::npos);
+    EXPECT_NE(util_res.find("not connected"), std::string::npos);
+    EXPECT_NE(util_res.find("list_resources"), std::string::npos);
+}
+
 // -------------------------------------------------------------------------
 // Diff
 // -------------------------------------------------------------------------

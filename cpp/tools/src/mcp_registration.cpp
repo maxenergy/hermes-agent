@@ -361,8 +361,24 @@ std::size_t apply_registration(const RegistrationPlan& plan,
             entry.handler = make_handler(plan.server_name, entry.name,
                                          original);
         } else {
-            entry.handler = [](const json&, const ToolContext&) {
-                return tool_error("no handler bound");
+            // No factory supplied — the production path (McpClientManager
+            // ::register_server_tools) never takes this branch because it
+            // binds its own handler directly.  This defensive fallback
+            // exists only for callers that build a plan without a
+            // connected transport; it reports the actual root cause
+            // ("client not connected") rather than the unhelpful legacy
+            // "no handler bound" string.  If this branch ever fires in
+            // production it is a bug — the parent must bind a real
+            // factory via apply_registration's 4th argument.
+            const std::string server = plan.server_name;
+            const std::string original_tool = original;
+            entry.handler = [server, original_tool](const json&,
+                                                    const ToolContext&) {
+                return tool_error(
+                    "MCP client not connected for server '" + server +
+                    "' (tool '" + original_tool +
+                    "'); apply_registration was called without an "
+                    "McpHandlerFactory binding");
             };
         }
         registry.register_tool(std::move(entry));
@@ -381,8 +397,17 @@ std::size_t apply_registration(const RegistrationPlan& plan,
             entry.handler = make_handler(plan.server_name, entry.name,
                                          u.handler_key);
         } else {
-            entry.handler = [](const json&, const ToolContext&) {
-                return tool_error("no handler bound");
+            // See explanation above — same defensive path for utility
+            // schemas (list_resources / read_resource / ...).
+            const std::string server = plan.server_name;
+            const std::string handler_key = u.handler_key;
+            entry.handler = [server, handler_key](const json&,
+                                                  const ToolContext&) {
+                return tool_error(
+                    "MCP client not connected for server '" + server +
+                    "' (utility '" + handler_key +
+                    "'); apply_registration was called without an "
+                    "McpHandlerFactory binding");
             };
         }
         registry.register_tool(std::move(entry));

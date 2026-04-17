@@ -43,6 +43,37 @@ gtest_discover_tests(hermes_integration_tests
     DISCOVERY_MODE PRE_TEST
 )
 
+# --- Equivalence suite (JSONL-driven module parity) ----------------------
+
+add_executable(hermes_equivalence_tests
+    test_equivalence.cpp
+    equivalence_test_framework.cpp
+)
+
+target_link_libraries(hermes_equivalence_tests
+    PRIVATE
+        hermes::agent
+        hermes::approval
+        hermes::skills
+        hermes::tools
+        hermes::llm
+        hermes::core
+        GTest::gtest_main
+        hermes_warnings
+)
+
+target_include_directories(hermes_equivalence_tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(hermes_equivalence_tests PRIVATE
+    HERMES_EQUIVALENCE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/equivalence_cases.jsonl"
+)
+
+gtest_discover_tests(hermes_equivalence_tests
+    DISCOVERY_MODE PRE_TEST
+)
+
 # --- Default asset sanity tests ------------------------------------------
 
 add_executable(hermes_default_assets_tests test_default_assets.cpp)
