@@ -17,6 +17,7 @@
 #include "hermes/agent/iteration_budget.hpp"
 #include "hermes/agent/memory_manager.hpp"
 #include "hermes/agent/prompt_builder.hpp"
+#include "hermes/agent/rate_limit_tracker.hpp"
 #include "hermes/llm/llm_client.hpp"
 #include "hermes/llm/usage.hpp"
 #include "hermes/state/memory_store.hpp"
@@ -29,6 +30,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -42,11 +45,63 @@ using ToolDispatcher = std::function<std::string(
     const nlohmann::json& args,
     const std::string& task_id)>;
 
+// Port of run_agent.py::AIAgent._emit_status — lifecycle messages
+// (e.g. "Rate limited — switching to fallback", "Context too large —
+// compressing").  The phase identifies the originating call site so the
+// gateway / CLI can render accordingly; the message is free-form and
+// already formatted for display.
+using StatusCallback =
+    std::function<void(std::string_view phase, std::string_view message)>;
+
+// Port of run_agent.py::AIAgent._emit_context_pressure — notifies the
+// consumer that context is approaching the compaction threshold.
+// compaction_progress is in the range [0.0, 1.0] (1.0 = firing).
+using ContextPressureCallback = std::function<void(
+    double compaction_progress,
+    std::int64_t threshold_tokens,
+    double threshold_percent,
+    bool compression_enabled)>;
+
+// Port of run_agent.py::AIAgent._emit_telemetry — generic event
+// sink for instrumentation.  Payload is an opaque JSON object.
+using TelemetryCallback =
+    std::function<void(std::string_view event, const nlohmann::json& payload)>;
+
+// Port of run_agent.py::AIAgent._persist_user_message_override — allows
+// the caller to rewrite the just-appended user message before it is
+// persisted to SessionDB, without letting the rewritten text leak into
+// the on-wire API request.  Returning std::nullopt leaves the original
+// message unchanged.
+using PersistUserMessageOverride =
+    std::function<std::optional<std::string>(const std::string& original)>;
+
 struct AgentCallbacks {
     std::function<void(const hermes::llm::Message&)> on_assistant_message;
     std::function<void(const std::string&, const nlohmann::json&)> on_tool_call;
     std::function<void(const std::string&, const std::string&)> on_tool_result;
     std::function<void(int64_t, int64_t, double)> on_usage;
+
+    // Phase 4 observability/correctness callbacks (all optional; default
+    // to no-op).  Defining these as members of AgentCallbacks keeps the
+    // constructor signature unchanged.
+    StatusCallback on_status;
+    ContextPressureCallback on_context_pressure;
+    TelemetryCallback on_telemetry;
+    PersistUserMessageOverride persist_user_message_override;
+};
+
+// Activity summary returned by AIAgent::activity_summary() — mirrors
+// run_agent.py::AIAgent.get_activity_summary().  Used by the gateway
+// timeout handler and the "still working" heartbeat.
+struct AgentActivitySummary {
+    double last_activity_ts = 0.0;
+    std::string last_activity_desc;
+    double seconds_since_activity = 0.0;
+    std::string current_tool;
+    int api_call_count = 0;
+    int max_iterations = 0;
+    int budget_used = 0;
+    int budget_max = 0;
 };
 
 struct AgentConfig {
@@ -124,6 +179,44 @@ public:
     // Test hook: allow tests to swap in a no-op sleep so backoff
     // retries don't actually wait.
     void set_sleep_function(std::function<void(std::chrono::milliseconds)> fn);
+
+    // ── Observability / diagnostics ──────────────────────────────────
+    //
+    // Port of run_agent.py::AIAgent.get_activity_summary — snapshot of
+    // what the agent is currently doing.  Thread-safe with respect to
+    // the running loop (values are atomics / single-reader copies).
+    AgentActivitySummary activity_summary() const;
+
+    // Port of run_agent.py::AIAgent.get_rate_limit_state — returns the
+    // most recently captured RateLimitState (after the last successful
+    // API call), or std::nullopt if none has been captured.
+    std::optional<RateLimitState> rate_limit_state() const;
+
+    // Port of run_agent.py::AIAgent._capture_rate_limits — feed a
+    // provider HTTP response's header map and provider name to update
+    // the internal RateLimitState snapshot.  Typically invoked by the
+    // LLM client after each request; exposed here so tests and gateway
+    // integrations can drive it directly.
+    void capture_rate_limits(
+        const std::unordered_map<std::string, std::string>& headers,
+        std::string_view provider);
+
+    // Port of run_agent.py::AIAgent._invalidate_system_prompt — drops
+    // any cached system prompt so the next run_conversation() rebuilds
+    // it from the current memory snapshot.  Called by the loop after
+    // compression events; exposed for callers that rewrite memory out
+    // of band and want the next turn to pick it up.  Note: the current
+    // C++ loop does not cache the system prompt between turns, so this
+    // is a no-op today — it exists so call sites can express intent
+    // symmetrically with Python.
+    void invalidate_system_prompt();
+
+    // Runtime mutators for the observability callbacks.  All tolerate
+    // empty functors (treated as "no callback").
+    void set_status_callback(StatusCallback cb);
+    void set_context_pressure_callback(ContextPressureCallback cb);
+    void set_telemetry_callback(TelemetryCallback cb);
+    void set_persist_user_message_override(PersistUserMessageOverride cb);
 
 private:
     struct Impl;

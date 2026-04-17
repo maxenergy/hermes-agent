@@ -1,5 +1,6 @@
 #include "hermes/agent/ai_agent.hpp"
 
+#include "hermes/agent/rate_limit_tracker.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/llm/error_classifier.hpp"
 #include "hermes/llm/model_metadata.hpp"
@@ -9,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -70,6 +72,92 @@ struct AIAgent::Impl {
 
     // Agent-level todo state — opaque key/value list of items.
     nlohmann::json todos = nlohmann::json::array();
+
+    // ── Observability state ───────────────────────────────────────────
+    // Last-activity tracking for the gateway timeout + heartbeat.
+    // Values are written from the loop thread and read from a secondary
+    // thread (the timeout watcher), so we gate them on a mutex.  The
+    // writes happen at coarse granularity (per iteration / tool call)
+    // and reads happen at most every few seconds, so contention is
+    // negligible.
+    mutable std::mutex activity_mutex;
+    double last_activity_ts = 0.0;
+    std::string last_activity_desc;
+    std::string current_tool;
+    int api_call_count = 0;
+
+    // Captured rate-limit state from the most recent API call.
+    mutable std::mutex rl_mutex;
+    std::optional<RateLimitState> rate_limit_state;
+
+    // True after any code path has called invalidate_system_prompt().
+    // Today the C++ loop rebuilds the prompt every turn, so this is
+    // advisory only — it is exposed for tests and future caching work.
+    std::atomic<bool> system_prompt_invalidated{false};
+
+    static double now_seconds() {
+        using namespace std::chrono;
+        return duration_cast<duration<double>>(
+                   system_clock::now().time_since_epoch())
+            .count();
+    }
+
+    void touch_activity(std::string desc) {
+        std::lock_guard<std::mutex> lk(activity_mutex);
+        last_activity_ts = now_seconds();
+        last_activity_desc = std::move(desc);
+    }
+
+    void set_current_tool(std::string name) {
+        std::lock_guard<std::mutex> lk(activity_mutex);
+        current_tool = std::move(name);
+    }
+
+    // ── Callback emitters ────────────────────────────────────────────
+    void emit_status(std::string_view phase, std::string_view msg) {
+        if (!callbacks.on_status) return;
+        try { callbacks.on_status(phase, msg); } catch (...) {}
+    }
+
+    void emit_context_pressure(double progress,
+                               std::int64_t threshold_tokens,
+                               double threshold_pct,
+                               bool compression_enabled) {
+        if (!callbacks.on_context_pressure) return;
+        try {
+            callbacks.on_context_pressure(progress, threshold_tokens,
+                                          threshold_pct, compression_enabled);
+        } catch (...) {}
+    }
+
+    void emit_telemetry(std::string_view event, const nlohmann::json& payload) {
+        if (!callbacks.on_telemetry) return;
+        try { callbacks.on_telemetry(event, payload); } catch (...) {}
+    }
+
+    // Port of run_agent.py::AIAgent._apply_persist_user_message_override.
+    // Rewrites the most recently appended user message (if any) in place
+    // before it is persisted.  Returns true iff a rewrite happened.
+    bool apply_persist_user_message_override() {
+        if (!callbacks.persist_user_message_override) return false;
+        for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+            if (it->role == Role::User) {
+                try {
+                    auto replacement =
+                        callbacks.persist_user_message_override(
+                            it->content_text);
+                    if (replacement.has_value()) {
+                        it->content_text = std::move(*replacement);
+                        return true;
+                    }
+                } catch (...) {
+                    // Swallow — never let an override hook break the loop.
+                }
+                return false;
+            }
+        }
+        return false;
+    }
 
     void persist_message(const Message& m, int turn_index) {
         if (!session_db || config.session_id.empty()) return;
@@ -331,9 +419,20 @@ struct AIAgent::Impl {
             Message u;
             u.role = Role::User;
             u.content_text = std::move(user_message);
-            persist_message(u, static_cast<int>(messages.size()));
             messages.push_back(std::move(u));
+            // Apply the persist-override hook before saving — mirrors
+            // run_agent.py::_apply_persist_user_message_override being
+            // called inside _persist_session / _flush_messages_to_session_db.
+            apply_persist_user_message_override();
+            persist_message(messages.back(),
+                            static_cast<int>(messages.size()) - 1);
         }
+
+        touch_activity("run_conversation: loop started");
+        emit_status("start", "run_conversation entered");
+        emit_telemetry("run_conversation_start",
+                       nlohmann::json{{"model", config.model},
+                                      {"session_id", config.session_id}});
 
         IterationBudget budget(config.max_iterations);
         int api_calls = 0;
@@ -349,8 +448,38 @@ struct AIAgent::Impl {
             if (context_engine) {
                 int64_t cur =
                     hermes::llm::estimate_messages_tokens_rough(messages);
+                // Emit context-pressure when we are above 70% of the
+                // budget — mirrors Python's _emit_context_pressure which
+                // fires as compaction approaches.
+                if (config.max_context_tokens > 0) {
+                    double pct =
+                        static_cast<double>(cur) /
+                        static_cast<double>(config.max_context_tokens);
+                    if (pct >= 0.70) {
+                        emit_context_pressure(
+                            pct,
+                            config.max_context_tokens,
+                            0.70,
+                            /*compression_enabled=*/true);
+                    }
+                }
+                std::size_t before = messages.size();
                 messages = context_engine->compress(
                     std::move(messages), cur, config.max_context_tokens);
+                if (messages.size() < before) {
+                    // Compression fired — invalidate the cached system
+                    // prompt (no-op today, advisory) and tell consumers.
+                    system_prompt_invalidated.store(true);
+                    emit_status("compress",
+                                "context compressed to fit budget");
+                    emit_telemetry(
+                        "context_compressed",
+                        nlohmann::json{
+                            {"before_messages", before},
+                            {"after_messages", messages.size()},
+                            {"token_estimate", cur},
+                            {"budget", config.max_context_tokens}});
+                }
             }
 
             // 2. Apply prompt-cache markers (only meaningful for
@@ -388,24 +517,42 @@ struct AIAgent::Impl {
                         int64_t budget_tokens = cls.context_limit_hint
                                                     ? *cls.context_limit_hint
                                                     : config.max_context_tokens;
+                        emit_status(
+                            "compress",
+                            "context overflow — forcing compression retry");
                         messages = context_engine->compress(
                             std::move(messages), budget_tokens * 2,
                             budget_tokens);
                         req.messages = messages;
                         retried_compression = true;
+                        system_prompt_invalidated.store(true);
                         continue;
                     }
                     if (cls.reason == FailoverReason::RateLimit) {
+                        emit_status("rate_limit",
+                                    "rate limited — backing off");
+                        emit_telemetry(
+                            "retry",
+                            nlohmann::json{{"reason", "rate_limit"},
+                                           {"attempt", attempt}});
                         do_sleep(hermes::llm::backoff_for_error(attempt, cls));
                         continue;
                     }
                     if (cls.reason == FailoverReason::ServerError ||
                         cls.reason == FailoverReason::Timeout ||
                         cls.reason == FailoverReason::NetworkError) {
+                        emit_status("retry",
+                                    "transient API error — retrying");
+                        emit_telemetry(
+                            "retry",
+                            nlohmann::json{{"reason", "transient"},
+                                           {"attempt", attempt}});
                         do_sleep(hermes::llm::backoff_for_error(attempt, cls));
                         continue;
                     }
                     // Auth / unknown / model unavailable: fatal.
+                    emit_status("error",
+                                std::string("fatal API error: ") + e.what());
                     result.completed = false;
                     result.error = std::string("API error: ") + e.what();
                     result.iterations_used = api_calls;
@@ -459,6 +606,13 @@ struct AIAgent::Impl {
                 result.iterations_used = api_calls + 1;
                 result.usage = total_usage;
                 result.messages = messages;
+                emit_status("done", "final response produced");
+                emit_telemetry(
+                    "run_conversation_done",
+                    nlohmann::json{
+                        {"iterations", result.iterations_used},
+                        {"input_tokens", total_usage.input_tokens},
+                        {"output_tokens", total_usage.output_tokens}});
                 save_trajectory(result);
                 return result;
             }
@@ -467,7 +621,11 @@ struct AIAgent::Impl {
             for (const auto& tc : resp.assistant_message.tool_calls) {
                 if (stop_requested.load()) break;
                 emit_tool_call(tc.name, tc.arguments);
+                set_current_tool(tc.name);
+                touch_activity("running tool: " + tc.name);
                 std::string tool_result = dispatch_tool(tc, task_id);
+                touch_activity("tool completed: " + tc.name);
+                set_current_tool("");
                 Message tr = make_tool_result_message(tc.id, tool_result);
                 emit_tool_result(tc.name, tool_result);
                 persist_message(tr, static_cast<int>(messages.size()));
@@ -475,6 +633,10 @@ struct AIAgent::Impl {
             }
 
             ++api_calls;
+            {
+                std::lock_guard<std::mutex> lk(activity_mutex);
+                api_call_count = api_calls;
+            }
             budget.consume(1);
         }
 
@@ -570,6 +732,63 @@ const AgentConfig& AIAgent::config() const { return impl_->config; }
 const std::vector<Message>& AIAgent::messages() const { return impl_->messages; }
 const CanonicalUsage& AIAgent::total_usage() const {
     return impl_->total_usage;
+}
+
+AgentActivitySummary AIAgent::activity_summary() const {
+    std::lock_guard<std::mutex> lk(impl_->activity_mutex);
+    AgentActivitySummary s;
+    s.last_activity_ts = impl_->last_activity_ts;
+    s.last_activity_desc = impl_->last_activity_desc;
+    double now = Impl::now_seconds();
+    s.seconds_since_activity =
+        impl_->last_activity_ts > 0.0 ? (now - impl_->last_activity_ts) : 0.0;
+    s.current_tool = impl_->current_tool;
+    s.api_call_count = impl_->api_call_count;
+    s.max_iterations = impl_->config.max_iterations;
+    s.budget_used = impl_->api_call_count;
+    s.budget_max = impl_->config.max_iterations;
+    return s;
+}
+
+std::optional<RateLimitState> AIAgent::rate_limit_state() const {
+    std::lock_guard<std::mutex> lk(impl_->rl_mutex);
+    return impl_->rate_limit_state;
+}
+
+void AIAgent::capture_rate_limits(
+    const std::unordered_map<std::string, std::string>& headers,
+    std::string_view provider) {
+    auto state =
+        parse_rate_limit_headers(headers, std::string(provider));
+    if (state) {
+        std::lock_guard<std::mutex> lk(impl_->rl_mutex);
+        impl_->rate_limit_state = std::move(state);
+    }
+}
+
+void AIAgent::invalidate_system_prompt() {
+    impl_->system_prompt_invalidated.store(true);
+    // Python also reloads memory from disk here so the next prompt
+    // build sees any out-of-band writes.  C++ MemoryStore exposes
+    // invalidate_cache() which achieves the same effect — subsequent
+    // read_all() re-parses the backing files.
+    if (impl_->memory_store) {
+        try { impl_->memory_store->invalidate_cache(); } catch (...) {}
+    }
+}
+
+void AIAgent::set_status_callback(StatusCallback cb) {
+    impl_->callbacks.on_status = std::move(cb);
+}
+void AIAgent::set_context_pressure_callback(ContextPressureCallback cb) {
+    impl_->callbacks.on_context_pressure = std::move(cb);
+}
+void AIAgent::set_telemetry_callback(TelemetryCallback cb) {
+    impl_->callbacks.on_telemetry = std::move(cb);
+}
+void AIAgent::set_persist_user_message_override(
+    PersistUserMessageOverride cb) {
+    impl_->callbacks.persist_user_message_override = std::move(cb);
 }
 
 }  // namespace hermes::agent

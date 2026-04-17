@@ -239,3 +239,213 @@ TEST(AIAgent, CallbacksFire) {
     EXPECT_TRUE(on_tool_result_fired);
     EXPECT_TRUE(on_usage_fired);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase-4 helper-method coverage (Python parity port)
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(AIAgent, StatusCallbackFiresOnLifecycle) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("done"));
+
+    std::vector<std::pair<std::string, std::string>> events;
+    auto agent = f.make_agent();
+    agent->set_status_callback(
+        [&](std::string_view phase, std::string_view msg) {
+            events.emplace_back(std::string(phase), std::string(msg));
+        });
+
+    agent->chat("hi");
+
+    // At minimum we expect a "start" and a "done" phase.
+    bool saw_start = false, saw_done = false;
+    for (const auto& [phase, msg] : events) {
+        (void)msg;
+        if (phase == "start") saw_start = true;
+        if (phase == "done") saw_done = true;
+    }
+    EXPECT_TRUE(saw_start);
+    EXPECT_TRUE(saw_done);
+}
+
+TEST(AIAgent, TelemetryCallbackFiresOnStartAndDone) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("done"));
+
+    std::vector<std::pair<std::string, json>> events;
+    auto agent = f.make_agent();
+    agent->set_telemetry_callback(
+        [&](std::string_view event, const json& payload) {
+            events.emplace_back(std::string(event), payload);
+        });
+
+    agent->chat("hi");
+
+    bool saw_start = false, saw_done = false;
+    for (const auto& [ev, payload] : events) {
+        if (ev == "run_conversation_start") {
+            saw_start = true;
+            EXPECT_TRUE(payload.contains("model"));
+        }
+        if (ev == "run_conversation_done") {
+            saw_done = true;
+            EXPECT_TRUE(payload.contains("iterations"));
+        }
+    }
+    EXPECT_TRUE(saw_start);
+    EXPECT_TRUE(saw_done);
+}
+
+TEST(AIAgent, PersistUserMessageOverrideRewritesLastUser) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    auto agent = f.make_agent();
+    agent->set_persist_user_message_override(
+        [](const std::string& original) -> std::optional<std::string> {
+            return "REDACTED:" + original;
+        });
+
+    agent->chat("secret");
+
+    // After run_conversation, the user message in the returned history
+    // should be the rewritten form.  The C++ history preserves messages
+    // in insertion order: [system?, user].
+    const auto& msgs = agent->messages();
+    bool found = false;
+    for (const auto& m : msgs) {
+        if (m.role == hermes::llm::Role::User) {
+            EXPECT_EQ(m.content_text, std::string("REDACTED:secret"));
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(AIAgent, PersistUserMessageOverrideCanOptOut) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    auto agent = f.make_agent();
+    agent->set_persist_user_message_override(
+        [](const std::string&) -> std::optional<std::string> {
+            return std::nullopt;  // keep original
+        });
+
+    agent->chat("plain");
+
+    const auto& msgs = agent->messages();
+    bool found = false;
+    for (const auto& m : msgs) {
+        if (m.role == hermes::llm::Role::User) {
+            EXPECT_EQ(m.content_text, std::string("plain"));
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(AIAgent, ActivitySummaryPopulatedAfterRun) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("done"));
+    auto agent = f.make_agent();
+
+    // Before any run: zero-ish state.
+    auto before = agent->activity_summary();
+    EXPECT_EQ(before.api_call_count, 0);
+    EXPECT_EQ(before.current_tool, std::string{});
+    EXPECT_EQ(before.max_iterations, f.config.max_iterations);
+
+    agent->chat("hi");
+
+    auto after = agent->activity_summary();
+    EXPECT_GT(after.last_activity_ts, 0.0);
+    EXPECT_FALSE(after.last_activity_desc.empty());
+    EXPECT_EQ(after.max_iterations, f.config.max_iterations);
+    EXPECT_EQ(after.budget_max, f.config.max_iterations);
+}
+
+TEST(AIAgent, ActivitySummaryTracksCurrentTool) {
+    AgentFixture f;
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/x"}}));
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    // Capture current_tool observed from within the dispatcher — exactly
+    // how the gateway timeout watcher reads it in production.
+    std::string seen_tool_during_dispatch;
+    AIAgent* agent_ptr = nullptr;
+    ToolDispatcher dispatcher =
+        [&](const std::string&, const json&,
+            const std::string&) -> std::string {
+        if (agent_ptr) {
+            seen_tool_during_dispatch =
+                agent_ptr->activity_summary().current_tool;
+        }
+        return R"({"ok":true})";
+    };
+
+    auto agent = std::make_unique<AIAgent>(
+        f.config, &f.client, nullptr, nullptr, nullptr, &f.builder,
+        dispatcher, std::vector<hermes::llm::ToolSchema>{}, AgentCallbacks{});
+    agent->set_sleep_function([](std::chrono::milliseconds) {});
+    agent_ptr = agent.get();
+
+    agent->chat("trigger");
+    EXPECT_EQ(seen_tool_during_dispatch, std::string("read_file"));
+
+    // After the loop completes the current_tool is cleared.
+    EXPECT_EQ(agent->activity_summary().current_tool, std::string{});
+}
+
+TEST(AIAgent, RateLimitStateInitiallyEmpty) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    EXPECT_FALSE(agent->rate_limit_state().has_value());
+}
+
+TEST(AIAgent, CaptureRateLimitsStoresParsedState) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+
+    std::unordered_map<std::string, std::string> headers{
+        {"x-ratelimit-limit-requests", "100"},
+        {"x-ratelimit-remaining-requests", "50"},
+        {"x-ratelimit-reset-requests", "60"},
+        {"x-ratelimit-limit-tokens", "10000"},
+        {"x-ratelimit-remaining-tokens", "5000"},
+        {"x-ratelimit-reset-tokens", "60"},
+    };
+    agent->capture_rate_limits(headers, "openai");
+
+    auto state = agent->rate_limit_state();
+    ASSERT_TRUE(state.has_value());
+    EXPECT_TRUE(state->has_data());
+    EXPECT_EQ(state->provider, std::string("openai"));
+}
+
+TEST(AIAgent, InvalidateSystemPromptIsNoOpForBareAgent) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    // Should not throw even when no memory store is configured.
+    agent->invalidate_system_prompt();
+    SUCCEED();
+}
+
+TEST(AIAgent, SetCallbacksAfterConstructionTakesEffect) {
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("done"));
+    auto agent = f.make_agent();
+
+    int status_count = 0;
+    int telemetry_count = 0;
+    agent->set_status_callback(
+        [&](std::string_view, std::string_view) { ++status_count; });
+    agent->set_telemetry_callback(
+        [&](std::string_view, const json&) { ++telemetry_count; });
+
+    agent->chat("hi");
+
+    EXPECT_GT(status_count, 0);
+    EXPECT_GT(telemetry_count, 0);
+}
