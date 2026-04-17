@@ -8,6 +8,7 @@
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/cron_cmd.hpp"
 #include "hermes/cli/display.hpp"
+#include "hermes/cli/image_attachment.hpp"
 #include "hermes/cli/skin_engine.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/platform/subprocess.hpp"
@@ -23,6 +24,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <system_error>
 
 #if !defined(_WIN32)
@@ -375,6 +377,39 @@ void HermesCLI::ensure_agent() {
 
 std::string HermesCLI::query(const std::string& message) {
     ensure_agent();
+
+    // Consume any image attachment queued by /paste or /image.  On any
+    // error we clear the pending path (single-shot semantics) and fall
+    // back to text-only so the turn still proceeds.  This runs BEFORE
+    // the no-provider bailout so the user still sees a helpful warning
+    // when e.g. the file they pasted was deleted mid-turn.
+    std::optional<hermes::llm::Message> image_user_turn;
+    if (!pending_image_path_.empty()) {
+        auto attach = build_image_user_message(message, pending_image_path_);
+        switch (attach.error) {
+            case AttachmentError::Ok:
+                image_user_turn = std::move(attach.message);
+                break;
+            case AttachmentError::NotFound:
+                std::cout << "[image missing: " << pending_image_path_
+                          << "]\n";
+                break;
+            case AttachmentError::TooLarge:
+                std::cout << "[image too large (>20MB): "
+                          << pending_image_path_ << "]\n";
+                break;
+            case AttachmentError::ReadFailed:
+                std::cout << "[image read failed: " << pending_image_path_
+                          << " — " << attach.detail << "]\n";
+                break;
+            case AttachmentError::EmptyPath:
+                // Unreachable given the outer guard, but kept explicit so
+                // future callers don't silently drop an enumerant.
+                break;
+        }
+        pending_image_path_.clear();
+    }
+
     if (!agent_) {
         return "[no provider configured — run `hermes login` or set "
                "OPENAI_API_KEY] " + message;
@@ -397,7 +432,17 @@ std::string HermesCLI::query(const std::string& message) {
             history.push_back(std::move(m));
         }
 
-        auto result = agent_->run_conversation(message, std::nullopt, history);
+        // If we built a multimodal user turn, append it to the history
+        // and pass an empty user_message so AIAgent::run() doesn't tack
+        // on a second text-only User message.  The text content already
+        // lives inside the first content block.
+        hermes::agent::ConversationResult result;
+        if (image_user_turn) {
+            history.push_back(std::move(*image_user_turn));
+            result = agent_->run_conversation(std::string{}, std::nullopt, history);
+        } else {
+            result = agent_->run_conversation(message, std::nullopt, history);
+        }
         std::string text = result.final_response;
         // Qwen's thinking model can put the actual answer in reasoning when
         // the model decides to "think aloud" instead of emitting content.

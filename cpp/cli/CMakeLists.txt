@@ -80,6 +80,7 @@ add_library(hermes_cli_lib STATIC
     src/memory_setup.cpp
     src/webhook_cmd.cpp
     src/acp_cmd.cpp
+    src/image_attachment.cpp
 )
 
 # Optional FTXUI binding for the multi-line editor. The FtxuiEditor state

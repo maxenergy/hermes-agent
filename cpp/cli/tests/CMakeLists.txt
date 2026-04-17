@@ -58,6 +58,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_memory_setup.cpp
     test_webhook_cmd.cpp
     test_acp_cmd.cpp
+    test_image_attachment.cpp
 )
 
 add_executable(hermes_cli_tests ${HERMES_CLI_TEST_SOURCES})
