@@ -14,7 +14,7 @@
 
 namespace hermes::agent { class AIAgent; class PromptBuilder; }
 namespace hermes::llm { class LlmClient; }
-namespace hermes::state { class SessionDB; }
+namespace hermes::state { class SessionDB; class MemoryStore; }
 
 namespace hermes::cli {
 
@@ -48,6 +48,9 @@ public:
 private:
     void handle_new();
     void handle_reset();
+    void handle_clear();
+    void handle_history();
+    void handle_save(const std::string& args);
     void handle_model(const std::string& args);
     void handle_skills();
     void handle_usage();
@@ -55,7 +58,14 @@ private:
     void handle_status();
     void handle_commands();
     void handle_tools();
+    void handle_toolsets();
+    void handle_cron(const std::string& args);
+    void handle_browser(const std::string& args);
+    void handle_plugins();
     void handle_verbose();
+    void handle_config();
+    void handle_statusbar(const std::string& args);
+    void handle_skin_cmd(const std::string& args);
     void handle_personality(const std::string& args);
     void handle_voice(const std::string& args);
     void handle_reasoning(const std::string& args);
@@ -68,6 +78,8 @@ private:
     void handle_sessions();
     void handle_resume(const std::string& args);
     void handle_continue();
+    void handle_paste();
+    void handle_image(const std::string& args);
 
     void ensure_session_db();
     void ensure_session_id();
@@ -84,11 +96,17 @@ private:
     bool verbose_ = false;
     bool yolo_ = false;
     double temperature_ = 1.0;
+    // Attachment queued by /paste or /image for the next user message.
+    // Empty when no attachment is pending.  Format: absolute path to an
+    // image file on disk (PNG/JPEG).  Consumed + cleared when the next
+    // plain-text message is dispatched to the agent.
+    std::string pending_image_path_;
 
     // Lazily constructed on first plain-text input so the cost is only paid
     // when the user actually wants to chat (not for /status, /tools, etc.).
     std::unique_ptr<hermes::llm::LlmClient> llm_client_;
     std::unique_ptr<hermes::agent::PromptBuilder> prompt_builder_;
+    std::unique_ptr<hermes::state::MemoryStore> memory_store_;
     std::unique_ptr<hermes::agent::AIAgent> agent_;
     void ensure_agent();
 };

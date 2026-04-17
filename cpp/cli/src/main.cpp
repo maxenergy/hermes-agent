@@ -1,7 +1,16 @@
 #include "hermes/cli/main_entry.hpp"
 #include "hermes/profile/profile.hpp"
 
+#include <clocale>
+
 int main(int argc, char* argv[]) {
+    // Inherit the user's locale (e.g. en_US.UTF-8 / zh_CN.UTF-8) so
+    // libc, iostreams and GNU readline treat input as UTF-8 multibyte
+    // rather than ASCII bytes.  Without this, CJK characters in the
+    // REPL cannot be deleted correctly — backspace removes one byte
+    // of a 3-byte rune and leaves a phantom block on screen.
+    std::setlocale(LC_ALL, "");
+
     // CRITICAL: pre-parse `--profile=NAME` / `--profile NAME` / `-p NAME`
     // and apply it BEFORE main_entry() — and therefore before any code
     // that reads HERMES_HOME via `hermes::core::path::get_hermes_home()`.

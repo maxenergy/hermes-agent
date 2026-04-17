@@ -24,6 +24,10 @@ struct PromptContext {
     std::vector<std::string> recent_subdirs;   // from SubdirectoryHintTracker
     bool nous_subscription = false;
     std::string timezone;                // e.g. "Asia/Shanghai"
+    // Model identifier — used to decide whether to inject tool-use
+    // enforcement guidance (required for GPT/Codex/Gemini/Gemma/Grok,
+    // which otherwise stop mid-task to ask the user for confirmation).
+    std::string model;
 };
 
 class PromptBuilder {

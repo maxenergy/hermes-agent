@@ -74,3 +74,76 @@ TEST(Commands, CommandsFlatIncludesAliases) {
     EXPECT_TRUE(flat.count("background") > 0);
     EXPECT_EQ(flat["bg"].name, "background");
 }
+
+// ---------------------------------------------------------------------
+// Newly-ported commands: /clear /history /save /config /statusbar /skin
+// /toolsets /cron /browser /plugins /paste /image.  Each must resolve
+// through `resolve_command` so they can be dispatched and appear in
+// `/help` output.
+// ---------------------------------------------------------------------
+
+TEST(Commands, PortedSessionCommandsResolve) {
+    for (const char* name : {"clear", "history", "save"}) {
+        auto cmd = resolve_command(name);
+        ASSERT_TRUE(cmd.has_value()) << name;
+        EXPECT_EQ(cmd->category, "Session") << name;
+        EXPECT_TRUE(cmd->cli_only) << name;
+    }
+}
+
+TEST(Commands, PortedConfigCommandsResolve) {
+    auto c = resolve_command("config");
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->category, "Configuration");
+    EXPECT_TRUE(c->cli_only);
+
+    auto sb = resolve_command("statusbar");
+    ASSERT_TRUE(sb.has_value());
+    // Alias "sb" must resolve to the same canonical command.
+    auto sb_alias = resolve_command("sb");
+    ASSERT_TRUE(sb_alias.has_value());
+    EXPECT_EQ(sb_alias->name, "statusbar");
+
+    auto skin = resolve_command("skin");
+    ASSERT_TRUE(skin.has_value());
+    EXPECT_TRUE(skin->cli_only);
+}
+
+TEST(Commands, PortedToolsSkillsCommandsResolve) {
+    for (const char* name : {"toolsets", "cron", "browser", "plugins"}) {
+        auto cmd = resolve_command(name);
+        ASSERT_TRUE(cmd.has_value()) << name;
+        EXPECT_EQ(cmd->category, "Tools & Skills") << name;
+        EXPECT_TRUE(cmd->cli_only) << name;
+    }
+}
+
+TEST(Commands, PortedInfoCommandsResolve) {
+    for (const char* name : {"paste", "image"}) {
+        auto cmd = resolve_command(name);
+        ASSERT_TRUE(cmd.has_value()) << name;
+        EXPECT_EQ(cmd->category, "Info") << name;
+        EXPECT_TRUE(cmd->cli_only) << name;
+    }
+    // /image expects an argument hint.
+    auto image = resolve_command("image");
+    ASSERT_TRUE(image.has_value());
+    EXPECT_NE(image->args_hint.find("<path>"), std::string::npos);
+}
+
+TEST(Commands, PlatformsHasGatewayAlias) {
+    // Python: CommandDef("platforms", ..., aliases=("gateway",)).
+    auto cmd = resolve_command("gateway");
+    ASSERT_TRUE(cmd.has_value());
+    EXPECT_EQ(cmd->name, "platforms");
+}
+
+TEST(Commands, CliOnlyCommandsExcludedFromGateway) {
+    const auto& gw = gateway_known_commands();
+    // Newly-added cli_only entries must not leak to the gateway known set.
+    for (const char* name : {"clear", "history", "save", "config",
+                             "statusbar", "skin", "toolsets", "cron",
+                             "browser", "plugins", "paste", "image"}) {
+        EXPECT_EQ(gw.count(name), 0u) << "cli_only leaked: " << name;
+    }
+}

@@ -83,6 +83,9 @@ std::vector<CommandDef> build_registry() {
         // ── Session ──────────────────────────────────────────────────
         {"new",        "Start a new conversation",              "Session",       {},                   "",          true,  false, ""},
         {"reset",      "Clear conversation history",            "Session",       {},                   "",          true,  false, ""},
+        {"clear",      "Clear screen and start a new session",  "Session",       {},                   "",          true,  false, ""},
+        {"history",    "Show conversation history",             "Session",       {},                   "",          true,  false, ""},
+        {"save",       "Save the current conversation",         "Session",       {},                   "[path]",    true,  false, ""},
         {"retry",      "Retry the last message",                "Session",       {},                   "",          true,  false, ""},
         {"undo",       "Remove the last exchange",              "Session",       {},                   "",          true,  false, ""},
         {"title",      "Set or show session title",             "Session",       {},                   "[title]",   false, false, ""},
@@ -96,9 +99,12 @@ std::vector<CommandDef> build_registry() {
         {"continue",   "Resume the most recent session",        "Session",       {"cont"},             "",          true,  false, ""},
 
         // ── Configuration ────────────────────────────────────────────
+        {"config",      "Show current configuration",            "Configuration", {},                   "",          true,  false, ""},
         {"model",       "Show or switch the active model",       "Configuration", {"m"},                "[model]",   false, false, ""},
         {"provider",    "Show or switch the active provider",    "Configuration", {},                   "[provider]",false, false, ""},
         {"personality", "Set agent personality",                 "Configuration", {"persona"},          "[style]",   false, false, ""},
+        {"statusbar",   "Toggle the context/model status bar",   "Configuration", {"sb"},               "[on|off]",  true,  false, ""},
+        {"skin",        "Show or change the display skin/theme", "Configuration", {},                   "[name]",    true,  false, ""},
         {"voice",       "Set TTS voice",                         "Configuration", {},                   "[voice]",   false, false, ""},
         {"reasoning",   "Toggle extended thinking",              "Configuration", {"think"},            "[on|off]",  false, false, ""},
         {"fast",        "Switch to the fast model preset",       "Configuration", {},                   "",          false, false, ""},
@@ -109,7 +115,11 @@ std::vector<CommandDef> build_registry() {
 
         // ── Tools & Skills ───────────────────────────────────────────
         {"skills",      "List available skills",                 "Tools & Skills", {},                  "",          false, false, ""},
-        {"tools",       "List available tools",                  "Tools & Skills", {},                  "",          false, false, ""},
+        {"tools",       "List available tools",                  "Tools & Skills", {},                  "[list|disable|enable] [name...]", false, false, ""},
+        {"toolsets",    "List available toolsets",               "Tools & Skills", {},                  "",          true,  false, ""},
+        {"cron",        "Manage scheduled tasks",                "Tools & Skills", {},                  "[list|pause|resume|remove|run]", true,  false, ""},
+        {"browser",     "Connect browser tools to live Chrome",  "Tools & Skills", {},                  "[connect|disconnect|status]", true,  false, ""},
+        {"plugins",     "List installed plugins",                "Tools & Skills", {},                  "",          true,  false, ""},
         {"reload-mcp",  "Reload MCP tool servers",               "Tools & Skills", {},                  "",          true,  false, ""},
 
         // ── Info ─────────────────────────────────────────────────────
@@ -119,14 +129,17 @@ std::vector<CommandDef> build_registry() {
         {"insights",   "Show agent reasoning insights",          "Info",          {},                   "",          false, false, ""},
         {"status",     "Show agent and session status",          "Info",          {},                   "",          false, false, ""},
         {"profile",    "Show user profile",                      "Info",          {},                   "",          false, false, ""},
-        {"platforms",  "Show connected platforms",               "Info",          {},                   "",          false, false, ""},
+        {"platforms",  "Show connected platforms",               "Info",          {"gateway"},          "",          true,  false, ""},
+        {"prompt",     "Dump the live system prompt",            "Info",          {"sys"},              "",          false, false, ""},
+        {"paste",      "Attach an image from the clipboard",     "Info",          {},                   "",          true,  false, ""},
+        {"image",      "Attach a local image file",              "Info",          {},                   "<path>",    true,  false, ""},
 
         // ── Exit ─────────────────────────────────────────────────────
         {"exit",       "Exit the CLI",                           "Exit",          {},                   "",          true,  false, ""},
         {"quit",       "Exit the CLI",                           "Exit",          {"q!"},               "",          true,  false, ""},
 
         // ── Gateway-only ─────────────────────────────────────────────
-        {"approve",    "Approve a pending tool call",            "Gateway",       {"ok"},               "",          false, true,  ""},
+        {"approve",    "Approve a pending tool call",            "Gateway",       {"ok"},               "[session|always]", false, true,  ""},
         {"deny",       "Deny a pending tool call",               "Gateway",       {},                   "",          false, true,  ""},
         {"sethome",    "Set gateway home channel",               "Gateway",       {},                   "",          false, true,  "gateway.enable_sethome"},
         {"resume",     "Resume a paused session",                "Gateway",       {},                   "",          false, true,  ""},

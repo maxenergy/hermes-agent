@@ -36,7 +36,140 @@ const std::string SKILLS_GUIDANCE =
     "request matches a skill's trigger, prefer the skill's documented "
     "workflow over ad-hoc tool calls.\n";
 
+// Strong autonomy guidance — ported from agent/prompt_builder.py.
+// Without this, GPT/Codex/Gemini/Gemma/Grok tend to stop mid-task and
+// ask the user "shall I continue?" after every substantive step.
+const std::string TOOL_USE_ENFORCEMENT_GUIDANCE =
+    "# Tool-use enforcement\n"
+    "You MUST use your tools to take action — do not describe what you "
+    "would do or plan to do without actually doing it. When you say you "
+    "will perform an action (e.g. 'I will run the tests', 'Let me check "
+    "the file', 'I will create the project'), you MUST immediately make "
+    "the corresponding tool call in the same response. Never end your "
+    "turn with a promise of future action — execute it now.\n"
+    "Keep working until the task is actually complete. Do not stop with "
+    "a summary of what you plan to do next time. If you have tools "
+    "available that can accomplish the task, use them instead of telling "
+    "the user what you would do.\n"
+    "Every response should either (a) contain tool calls that make "
+    "progress, or (b) deliver a final result to the user. Responses that "
+    "only describe intentions without acting are not acceptable.\n";
+
+// GPT/Codex-specific execution discipline.  Addresses GPT-5.x failure
+// modes: bailing on partial results, skipping prerequisite lookups,
+// hallucinating instead of using tools, and declaring "done" without
+// verification.
+const std::string OPENAI_MODEL_EXECUTION_GUIDANCE =
+    "# Execution discipline\n"
+    "<tool_persistence>\n"
+    "- Use tools whenever they improve correctness, completeness, or "
+    "grounding.\n"
+    "- Do not stop early when another tool call would materially improve "
+    "the result.\n"
+    "- If a tool returns empty or partial results, retry with a different "
+    "query or strategy before giving up.\n"
+    "- Keep calling tools until: (1) the task is complete, AND (2) you "
+    "have verified the result.\n"
+    "</tool_persistence>\n"
+    "\n"
+    "<act_dont_ask>\n"
+    "When a question has an obvious default interpretation, act on it "
+    "immediately instead of asking for clarification. Examples:\n"
+    "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
+    "- 'What OS am I running?' → check the live system (don't use user "
+    "profile)\n"
+    "- 'What time is it?' → run `date` (don't guess)\n"
+    "Only ask for clarification when the ambiguity genuinely changes "
+    "what tool you would call.\n"
+    "</act_dont_ask>\n"
+    "\n"
+    "<mandatory_tool_use>\n"
+    "NEVER answer these from memory — ALWAYS use a tool:\n"
+    "- Arithmetic, math, calculations → terminal or execute_code\n"
+    "- Hashes, encodings, checksums → terminal (sha256sum, base64, etc.)\n"
+    "- Current time, date, timezone → terminal (`date`)\n"
+    "- System state: OS, CPU, memory, disk, ports, processes → terminal\n"
+    "- File contents, sizes, line counts → read_file / search_files / "
+    "terminal\n"
+    "- Git history, branches, diffs → terminal\n"
+    "- Current facts (weather, news, versions) → web_search\n"
+    "Your memory and user profile describe the USER, not the system you "
+    "are running on.\n"
+    "</mandatory_tool_use>\n"
+    "\n"
+    "<verification>\n"
+    "Before finalizing:\n"
+    "- Correctness: does the output satisfy every stated requirement?\n"
+    "- Grounding: are factual claims backed by tool outputs?\n"
+    "- Formatting: does the output match the requested schema?\n"
+    "- Safety: if the next step has side effects, confirm scope before "
+    "executing destructive operations.\n"
+    "</verification>\n";
+
+// Gemini/Gemma-specific operational guidance, adapted from OpenCode's
+// gemini.txt.  Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the
+// model is Gemini or Gemma.  Grok is not Google — it only gets the base
+// enforcement text.
+const std::string GOOGLE_MODEL_OPERATIONAL_GUIDANCE =
+    "# Google model operational directives\n"
+    "Follow these operational rules strictly:\n"
+    "- **Absolute paths:** Always construct and use absolute file paths for all "
+    "file system operations. Combine the project root with relative paths.\n"
+    "- **Verify first:** Use read_file/search_files to check file contents and "
+    "project structure before making changes. Never guess at file contents.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
+    "paragraphs. Focus on actions and results over narration.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations (e.g. reading several files), make all the tool calls in a "
+    "single response rather than sequentially.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
+    "to prevent CLI tools from hanging on prompts.\n"
+    "- **Keep going:** Work autonomously until the task is fully resolved. "
+    "Don't stop with a plan — execute it.\n";
+
 namespace {
+
+// Return true if `model` looks like a family that needs explicit
+// tool-use enforcement.  Matches the Python
+// ``TOOL_USE_ENFORCEMENT_MODELS`` tuple.
+bool model_needs_enforcement(const std::string& model) {
+    if (model.empty()) return false;
+    std::string m = model;
+    for (auto& c : m) c = static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c)));
+    static const char* kPatterns[] = {"gpt", "codex", "gemini", "gemma",
+                                       "grok"};
+    for (const char* p : kPatterns) {
+        if (m.find(p) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// True when the model is in the OpenAI GPT / Codex family — gets the
+// extra OPENAI_MODEL_EXECUTION_GUIDANCE block on top of the base
+// enforcement text.
+bool model_is_openai_family(const std::string& model) {
+    if (model.empty()) return false;
+    std::string m = model;
+    for (auto& c : m) c = static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c)));
+    return m.find("gpt") != std::string::npos ||
+           m.find("codex") != std::string::npos;
+}
+
+// True when the model is in the Google Gemini / Gemma family — gets the
+// extra GOOGLE_MODEL_OPERATIONAL_GUIDANCE block on top of the base
+// enforcement text.  Grok is xAI, not Google, so it is excluded.
+bool model_is_google_family(const std::string& model) {
+    if (model.empty()) return false;
+    std::string m = model;
+    for (auto& c : m) c = static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c)));
+    return m.find("gemini") != std::string::npos ||
+           m.find("gemma") != std::string::npos;
+}
 
 const std::map<std::string, std::string> kPlatformHints = {
     {"cli",
@@ -335,6 +468,23 @@ std::string PromptBuilder::build_system_prompt(const PromptContext& ctx) const {
 
     // 8. Always-on guidance
     out += SESSION_SEARCH_GUIDANCE;
+
+    // 9. Model-specific autonomy enforcement.  Without these, GPT/Codex/
+    // Gemini/Gemma/Grok stop mid-task and ask the user "shall I
+    // continue?" after every substantive step.  Injected last so it
+    // anchors closest to the first user turn in the context window.
+    if (model_needs_enforcement(ctx.model)) {
+        out += '\n';
+        out += TOOL_USE_ENFORCEMENT_GUIDANCE;
+        if (model_is_openai_family(ctx.model)) {
+            out += '\n';
+            out += OPENAI_MODEL_EXECUTION_GUIDANCE;
+        }
+        if (model_is_google_family(ctx.model)) {
+            out += '\n';
+            out += GOOGLE_MODEL_OPERATIONAL_GUIDANCE;
+        }
+    }
 
     return out;
 }

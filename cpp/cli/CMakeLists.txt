@@ -135,6 +135,23 @@ target_link_libraries(hermes_cli_lib
         OpenSSL::Crypto
 )
 
+# GNU readline for the interactive REPL — enables arrow-key editing,
+# Ctrl+A/E, ↑↓ history scroll, and ~/.hermes/input_history persistence.
+# Falls back to std::getline (raw, no editing) when libreadline-dev is
+# not installed.
+find_library(READLINE_LIB readline)
+find_path(READLINE_INCLUDE readline/readline.h)
+if(READLINE_LIB AND READLINE_INCLUDE)
+    target_compile_definitions(hermes_cli_lib PRIVATE HERMES_HAS_READLINE=1)
+    target_include_directories(hermes_cli_lib PRIVATE ${READLINE_INCLUDE})
+    target_link_libraries(hermes_cli_lib PRIVATE ${READLINE_LIB})
+    message(STATUS "hermes::cli: readline found — arrow-key editing enabled")
+else()
+    message(STATUS
+        "hermes::cli: readline NOT found — install libreadline-dev for "
+        "arrow-key editing and ↑/↓ history scroll in the REPL")
+endif()
+
 add_library(hermes::cli ALIAS hermes_cli_lib)
 
 # ----- Executable -------------------------------------------------------------

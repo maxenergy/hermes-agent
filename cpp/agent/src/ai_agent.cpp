@@ -168,13 +168,19 @@ struct AIAgent::Impl {
             return R"({"error":"memory store not configured"})";
         }
         const std::string action = args.value("action", "");
-        const std::string scope = args.value("scope", "agent");
-        const auto file = scope == "user"
+        // Accept both `file` (schema in cpp/tools/src/memory_tool.cpp)
+        // and `scope` (legacy alias some callers still emit).  Both
+        // resolve to MemoryFile::{Agent,User}.
+        std::string target = args.value("file", std::string{});
+        if (target.empty()) target = args.value("scope", "agent");
+        const auto file = target == "user"
                               ? hermes::state::MemoryFile::User
                               : hermes::state::MemoryFile::Agent;
         try {
             if (action == "add") {
-                const std::string entry = args.value("content", "");
+                // Schema param is `entry`; accept legacy `content` too.
+                std::string entry = args.value("entry", std::string{});
+                if (entry.empty()) entry = args.value("content", "");
                 memory_store->add(file, entry);
                 return R"({"ok":true,"action":"add"})";
             }
@@ -295,6 +301,21 @@ struct AIAgent::Impl {
             } else if (prompt_builder) {
                 PromptContext ctx;
                 ctx.platform = config.platform;
+                ctx.model = config.model;
+                // Snapshot MEMORY.md / USER.md into the system prompt
+                // so the model sees recalled facts at session start.
+                // Mid-session writes via the `memory` tool update the
+                // files on disk but intentionally do NOT mutate this
+                // snapshot — that preserves the prompt cache; the
+                // refreshed snapshot arrives with the next session.
+                if (memory_store) {
+                    try {
+                        ctx.memory_entries = memory_store->read_all(
+                            hermes::state::MemoryFile::Agent);
+                        ctx.user_entries = memory_store->read_all(
+                            hermes::state::MemoryFile::User);
+                    } catch (...) { /* swallow — memory is best-effort */ }
+                }
                 sys_text = prompt_builder->build_system_prompt(ctx);
             }
             if (!sys_text.empty()) {

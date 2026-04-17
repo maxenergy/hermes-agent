@@ -4,14 +4,37 @@
 #include "hermes/agent/prompt_builder.hpp"
 #include "hermes/auth/codex_oauth.hpp"
 #include "hermes/auth/qwen_client.hpp"
+#include "hermes/cli/clipboard.hpp"
 #include "hermes/cli/commands.hpp"
+#include "hermes/cli/cron_cmd.hpp"
 #include "hermes/cli/display.hpp"
+#include "hermes/cli/skin_engine.hpp"
 #include "hermes/config/loader.hpp"
+#include "hermes/core/platform/subprocess.hpp"
 #include "hermes/llm/llm_client.hpp"
 #include "hermes/llm/message.hpp"
 #include "hermes/llm/openai_client.hpp"
 #include "hermes/skills/skill_utils.hpp"
+#include "hermes/core/path.hpp"
+#include "hermes/state/memory_store.hpp"
 #include "hermes/state/session_db.hpp"
+
+#include <chrono>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <system_error>
+
+#if !defined(_WIN32)
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
+#if defined(HERMES_HAS_READLINE)
+#include <readline/history.h>
+#include <readline/readline.h>
+#include <cstdlib>
+#endif
 #include "hermes/tools/clarify_tool.hpp"
 #include "hermes/tools/delegate_tool.hpp"
 #include "hermes/tools/discover_tools.hpp"
@@ -111,22 +134,67 @@ HermesCLI::~HermesCLI() = default;
 
 void HermesCLI::run() {
     show_banner();
+#if defined(HERMES_HAS_READLINE)
+    // When stdin is a TTY, GNU readline gives us arrow-key editing,
+    // Ctrl+A/E/U/W, ↑↓ history scroll and a ~/.hermes/history file.
+    // When stdin is piped (tests, echo | hermes chat) we fall back to
+    // std::getline so scripted input still works verbatim.
+    const bool use_readline = ::isatty(STDIN_FILENO) != 0;
+    std::string history_path;
+    if (use_readline) {
+        try {
+            auto home = hermes::core::path::get_hermes_home();
+            std::error_code ec;
+            std::filesystem::create_directories(home, ec);
+            history_path = (home / "input_history").string();
+            ::using_history();
+            ::read_history(history_path.c_str());
+            ::stifle_history(1000);
+        } catch (...) { /* non-fatal */ }
+    }
+#else
+    const bool use_readline = false;
+#endif
+
     std::string line;
     while (true) {
         const auto& skin = get_active_skin();
-        std::cout << skin.colors.banner_accent
-                  << skin.branding.prompt_symbol << " "
-                  << skin.colors.banner_text
-                  << std::flush;
-        if (!std::getline(std::cin, line)) break;
+        std::string prompt_text;
+        prompt_text += skin.colors.banner_accent;
+        prompt_text += skin.branding.prompt_symbol;
+        prompt_text += " ";
+        prompt_text += skin.colors.banner_text;
+
+#if defined(HERMES_HAS_READLINE)
+        if (use_readline) {
+            char* raw = ::readline(prompt_text.c_str());
+            if (!raw) break;  // EOF (Ctrl-D)
+            line = raw;
+            std::free(raw);
+        } else
+#endif
+        {
+            std::cout << prompt_text << std::flush;
+            if (!std::getline(std::cin, line)) break;
+        }
         if (line.empty()) continue;
 
         // Multi-line: detect trailing backslash and continue reading.
         while (!line.empty() && line.back() == '\\') {
             line.pop_back();
             std::string continuation;
-            std::cout << "... " << std::flush;
-            if (!std::getline(std::cin, continuation)) break;
+#if defined(HERMES_HAS_READLINE)
+            if (use_readline) {
+                char* raw = ::readline("... ");
+                if (!raw) break;
+                continuation = raw;
+                std::free(raw);
+            } else
+#endif
+            {
+                std::cout << "... " << std::flush;
+                if (!std::getline(std::cin, continuation)) break;
+            }
             line += "\n" + continuation;
         }
 
@@ -135,6 +203,14 @@ void HermesCLI::run() {
         if (input_history_.size() > 100) {
             input_history_.erase(input_history_.begin());
         }
+#if defined(HERMES_HAS_READLINE)
+        if (use_readline && !line.empty()) {
+            ::add_history(line.c_str());
+            if (!history_path.empty()) {
+                ::append_history(1, history_path.c_str());
+            }
+        }
+#endif
 
         if (line[0] == '/') {
             if (!process_command(line)) {
@@ -278,6 +354,14 @@ void HermesCLI::ensure_agent() {
             return hermes::tools::ToolRegistry::instance().dispatch(name, args, ctx);
         };
 
+    // Persistent curated memory — MEMORY.md / USER.md under
+    // <HERMES_HOME>/memories/.  The agent-level `memory` tool (see
+    // AIAgent::handle_memory) writes here synchronously and the
+    // system-prompt snapshot is rebuilt on the next session.
+    if (!memory_store_) {
+        memory_store_ = std::make_unique<hermes::state::MemoryStore>();
+    }
+
     agent_ = std::make_unique<hermes::agent::AIAgent>(
         std::move(acfg), llm_client_.get(),
         /*session_db=*/nullptr,
@@ -286,6 +370,7 @@ void HermesCLI::ensure_agent() {
         prompt_builder_.get(),
         std::move(dispatcher),
         std::move(schemas));
+    agent_->set_memory_store(memory_store_.get());
 }
 
 std::string HermesCLI::query(const std::string& message) {
@@ -372,6 +457,9 @@ bool HermesCLI::process_command(const std::string& input) {
     if (canonical == "help")          { show_help(); }
     else if (canonical == "new")      { handle_new(); }
     else if (canonical == "reset")    { handle_reset(); }
+    else if (canonical == "clear")    { handle_clear(); }
+    else if (canonical == "history")  { handle_history(); }
+    else if (canonical == "save")     { handle_save(args); }
     else if (canonical == "exit" || canonical == "quit") {
         std::cout << "Goodbye!\n";
     }
@@ -381,8 +469,15 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "commands") { handle_commands(); }
     else if (canonical == "skills")   { handle_skills(); }
     else if (canonical == "tools")    { handle_tools(); }
+    else if (canonical == "toolsets") { handle_toolsets(); }
+    else if (canonical == "cron")     { handle_cron(args); }
+    else if (canonical == "browser")  { handle_browser(args); }
+    else if (canonical == "plugins")  { handle_plugins(); }
     else if (canonical == "compress") { handle_compress(); }
     else if (canonical == "verbose")  { handle_verbose(); }
+    else if (canonical == "config")   { handle_config(); }
+    else if (canonical == "statusbar"){ handle_statusbar(args); }
+    else if (canonical == "skin")     { handle_skin_cmd(args); }
     else if (canonical == "personality") { handle_personality(args); }
     else if (canonical == "voice")    { handle_voice(args); }
     else if (canonical == "reasoning"){ handle_reasoning(args); }
@@ -395,6 +490,51 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "sessions") { handle_sessions(); }
     else if (canonical == "resume")   { handle_resume(args); }
     else if (canonical == "continue") { handle_continue(); }
+    else if (canonical == "paste")    { handle_paste(); }
+    else if (canonical == "image")    { handle_image(args); }
+    else if (canonical == "prompt") {
+        // Dump the live system prompt snapshot so the user can verify
+        // which guidance blocks (memory, enforcement, platform hints…)
+        // actually reached the model on this session.
+        ensure_agent();
+        if (!agent_) {
+            std::cout << "(agent not constructed — no provider configured)\n";
+        } else {
+            const auto& msgs = agent_->messages();
+            bool found = false;
+            for (const auto& m : msgs) {
+                if (m.role == hermes::llm::Role::System) {
+                    std::cout << m.content_text << "\n";
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // No turn has run yet — rebuild the snapshot from the
+                // current builder/memory state so /prompt works before
+                // the first message.
+                hermes::agent::PromptContext ctx;
+                ctx.platform = "cli";
+                if (config_.contains("model") && config_["model"].is_string()) {
+                    ctx.model = config_["model"].get<std::string>();
+                }
+                if (memory_store_) {
+                    try {
+                        ctx.memory_entries = memory_store_->read_all(
+                            hermes::state::MemoryFile::Agent);
+                        ctx.user_entries = memory_store_->read_all(
+                            hermes::state::MemoryFile::User);
+                    } catch (...) {}
+                }
+                if (prompt_builder_) {
+                    std::cout << prompt_builder_->build_system_prompt(ctx)
+                              << "\n";
+                } else {
+                    std::cout << "(no prompt builder)\n";
+                }
+            }
+        }
+    }
     else {
         std::cout << "/" << canonical << " is not available in this context\n";
     }
@@ -793,6 +933,306 @@ void HermesCLI::handle_resume(const std::string& args) {
 
 void HermesCLI::handle_continue() {
     continue_last_session();
+}
+
+// ── Session: /clear /history /save ───────────────────────────────────────
+
+void HermesCLI::handle_clear() {
+    // ANSI "erase entire display + home cursor" — same sequence the Python
+    // side emits via `os.system("clear")` under POSIX.  Then reset state
+    // exactly like /new so the user really does start fresh.
+    std::cout << "\033[2J\033[H" << std::flush;
+    handle_new();
+}
+
+void HermesCLI::handle_history() {
+    if (history_.empty()) {
+        std::cout << "(._.) No conversation history yet.\n";
+        return;
+    }
+    std::cout << "\n+--------------------------------------------------+\n"
+              << "|            (^_^) Conversation History            |\n"
+              << "+--------------------------------------------------+\n";
+    constexpr std::size_t preview_limit = 400;
+    int visible_index = 0;
+    for (const auto& msg : history_) {
+        if (!msg.is_object()) continue;
+        auto role = msg.value("role", std::string{});
+        if (role != "user" && role != "assistant") continue;
+        ++visible_index;
+        auto content = msg.value("content", std::string{});
+        std::string preview = content.substr(0, preview_limit);
+        const char* suffix = content.size() > preview_limit ? "..." : "";
+        std::cout << "\n  [" << (role == "user" ? "You" : "Hermes")
+                  << " #" << visible_index << "]\n    "
+                  << preview << suffix << "\n";
+    }
+    std::cout << "\n";
+}
+
+void HermesCLI::handle_save(const std::string& args) {
+    if (history_.empty()) {
+        std::cout << "(;_;) No conversation to save.\n";
+        return;
+    }
+    std::filesystem::path out_path;
+    if (!args.empty()) {
+        out_path = args;
+    } else {
+        auto t = std::chrono::system_clock::to_time_t(
+            std::chrono::system_clock::now());
+        std::tm tm = *std::localtime(&t);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+        out_path = std::string("hermes_conversation_") + buf + ".json";
+    }
+    nlohmann::json doc;
+    doc["model"] = (config_.contains("model") && config_["model"].is_string())
+                       ? config_["model"].get<std::string>()
+                       : std::string("(default)");
+    doc["session_id"] = session_id_;
+    doc["messages"] = history_;
+    try {
+        if (out_path.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(out_path.parent_path(), ec);
+        }
+        std::ofstream f(out_path);
+        if (!f) {
+            std::cout << "(x_x) Failed to open " << out_path.string()
+                      << " for writing.\n";
+            return;
+        }
+        f << doc.dump(2);
+        std::cout << "(^_^)v Conversation saved to: " << out_path.string()
+                  << "\n";
+    } catch (const std::exception& e) {
+        std::cout << "(x_x) Failed to save: " << e.what() << "\n";
+    }
+}
+
+// ── Configuration: /config /statusbar /skin ─────────────────────────────
+
+void HermesCLI::handle_config() {
+    std::cout << "Current configuration:\n" << config_.dump(2) << "\n";
+}
+
+void HermesCLI::handle_statusbar(const std::string& args) {
+    bool want;
+    if (args.empty()) {
+        bool current = false;
+        if (config_.contains("display") && config_["display"].is_object() &&
+            config_["display"].contains("show_statusbar")) {
+            current = config_["display"].value("show_statusbar", false);
+        }
+        want = !current;
+    } else if (args == "on" || args == "true" || args == "1") {
+        want = true;
+    } else if (args == "off" || args == "false" || args == "0") {
+        want = false;
+    } else {
+        std::cout << "Usage: /statusbar [on|off]\n";
+        return;
+    }
+    config_["display"]["show_statusbar"] = want;
+    std::cout << "Status bar: " << (want ? "on" : "off") << "\n";
+}
+
+void HermesCLI::handle_skin_cmd(const std::string& args) {
+    if (args.empty()) {
+        std::string current = "default";
+        if (config_.contains("cli") && config_["cli"].is_object() &&
+            config_["cli"].contains("skin") &&
+            config_["cli"]["skin"].is_string()) {
+            current = config_["cli"]["skin"].get<std::string>();
+        }
+        std::cout << "Active skin: " << current << "\n"
+                  << "Built-in skins:\n";
+        for (const auto& [name, cfg] : builtin_skins()) {
+            std::cout << "  " << std::left << std::setw(12) << name
+                      << cfg.description << "\n";
+        }
+    } else {
+        config_["cli"]["skin"] = args;
+        try { set_active_skin(args); } catch (...) {}
+        std::cout << "Skin set to: " << args << "\n";
+    }
+}
+
+// ── Tools & Skills: /toolsets /cron /browser /plugins ───────────────────
+
+void HermesCLI::handle_toolsets() {
+    const auto& ts = hermes::tools::toolsets();
+    std::cout << "Available toolsets:\n";
+    for (const auto& [name, def] : ts) {
+        std::cout << "  " << std::left << std::setw(14) << name
+                  << "— " << def.description << "\n";
+    }
+}
+
+void HermesCLI::handle_cron(const std::string& args) {
+    // Split args into whitespace-separated tokens.
+    std::vector<std::string> tokens;
+    {
+        std::istringstream iss(args);
+        std::string tok;
+        while (iss >> tok) tokens.push_back(std::move(tok));
+    }
+    if (tokens.empty()) {
+        (void)hermes::cli::cron_cmd::cmd_list({});
+        return;
+    }
+    const std::string& sub = tokens[0];
+    std::vector<std::string> rest(tokens.begin() + 1, tokens.end());
+    int rc = 0;
+    if (sub == "list")            rc = hermes::cli::cron_cmd::cmd_list(rest);
+    else if (sub == "status")     rc = hermes::cli::cron_cmd::cmd_status(rest);
+    else if (sub == "pause")      rc = hermes::cli::cron_cmd::cmd_pause(rest);
+    else if (sub == "resume")     rc = hermes::cli::cron_cmd::cmd_resume(rest);
+    else if (sub == "remove")     rc = hermes::cli::cron_cmd::cmd_remove(rest);
+    else if (sub == "run" || sub == "run-once") {
+        rc = hermes::cli::cron_cmd::cmd_run_once(rest);
+    }
+    else if (sub == "enable")     rc = hermes::cli::cron_cmd::cmd_enable(rest, true);
+    else if (sub == "disable")    rc = hermes::cli::cron_cmd::cmd_enable(rest, false);
+    else if (sub == "install")    rc = hermes::cli::cron_cmd::cmd_install(rest);
+    else if (sub == "uninstall")  rc = hermes::cli::cron_cmd::cmd_uninstall(rest);
+    else if (sub == "tick")       rc = hermes::cli::cron_cmd::cmd_tick(rest);
+    else {
+        std::cout << "Usage: /cron [list|status|pause|resume|remove|run|"
+                     "enable|disable|install|uninstall|tick] [args...]\n";
+        return;
+    }
+    (void)rc;
+}
+
+void HermesCLI::handle_browser(const std::string& args) {
+    // CDP browser bridge is not wired in the C++ CLI runtime yet; the
+    // command surfaces a graceful stub so /help still advertises it and
+    // users get a clear pointer to the Python CLI path.
+    const std::string sub = args.empty() ? std::string("status") : args;
+    if (sub == "status") {
+        std::cout << "Browser bridge: disconnected\n"
+                  << "  (CDP attach is available via the Python CLI;"
+                     " the C++ REPL exposes a stub only.)\n";
+    } else if (sub == "connect") {
+        std::cout << "Browser connect is not available in this CLI context."
+                     " Launch Chrome with --remote-debugging-port=9222 and"
+                     " use the Python CLI.\n";
+    } else if (sub == "disconnect") {
+        std::cout << "Browser disconnect: no active session.\n";
+    } else {
+        std::cout << "Usage: /browser [connect|disconnect|status]\n";
+    }
+}
+
+void HermesCLI::handle_plugins() {
+    // Enumerate <HERMES_HOME>/plugins/* (one directory per plugin).  Full
+    // install / update / remove flows still live in `hermes plugins`.
+    namespace fs = std::filesystem;
+    fs::path plugins_dir = hermes::core::path::get_hermes_home() / "plugins";
+    std::error_code ec;
+    if (!fs::exists(plugins_dir, ec)) {
+        std::cout << "No plugins installed (" << plugins_dir.string() << ").\n";
+        return;
+    }
+    std::vector<std::string> names;
+    for (const auto& entry : fs::directory_iterator(plugins_dir, ec)) {
+        if (!entry.is_directory()) continue;
+        auto name = entry.path().filename().string();
+        if (!name.empty() && name[0] != '.') names.push_back(name);
+    }
+    if (names.empty()) {
+        std::cout << "No plugins installed.\n";
+        return;
+    }
+    std::sort(names.begin(), names.end());
+    std::cout << "Installed plugins (" << names.size() << "):\n";
+    for (const auto& n : names) std::cout << "  " << n << "\n";
+}
+
+// ── Info: /paste /image ──────────────────────────────────────────────────
+
+namespace {
+
+// Generate a reasonably-unique temp path for a pasted image.  We don't
+// need cryptographic strength — just avoid collisions inside /tmp.
+std::filesystem::path make_paste_tmp_path() {
+    auto t = std::chrono::system_clock::now().time_since_epoch();
+    auto micros = std::chrono::duration_cast<std::chrono::microseconds>(t)
+                      .count();
+    std::ostringstream name;
+#if defined(_WIN32)
+    name << "hermes-paste-" << micros << ".png";
+#else
+    name << "hermes-paste-" << micros << "-" << ::getpid() << ".png";
+#endif
+    return std::filesystem::temp_directory_path() / name.str();
+}
+
+}  // namespace
+
+void HermesCLI::handle_paste() {
+    auto tmp = make_paste_tmp_path();
+    namespace platform = hermes::core::platform;
+
+    auto try_tool = [&](std::vector<std::string> argv) -> bool {
+        platform::SubprocessOptions o;
+        o.argv = std::move(argv);
+        o.timeout = std::chrono::milliseconds{3000};
+        auto res = platform::run_capture(o);
+        if (!res.spawn_error.empty() || res.exit_code != 0 ||
+            res.stdout_text.empty()) {
+            return false;
+        }
+        std::ofstream f(tmp, std::ios::binary);
+        if (!f) return false;
+        f.write(res.stdout_text.data(),
+                static_cast<std::streamsize>(res.stdout_text.size()));
+        return static_cast<bool>(f);
+    };
+
+    bool captured = false;
+    captured = try_tool({"xclip", "-selection", "clipboard",
+                         "-t", "image/png", "-o"});
+    if (!captured) {
+        captured = try_tool({"wl-paste", "--type", "image/png"});
+    }
+    if (!captured) {
+        std::cout << "(x_x) No image on the clipboard."
+                     " Install xclip/wl-paste or use /image <path>.\n";
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        return;
+    }
+    pending_image_path_ = tmp.string();
+    std::cout << "Image captured from clipboard: " << pending_image_path_
+              << "\n"
+              << "  Type your prompt on the next line and it will be sent"
+                 " with the image attached.\n";
+}
+
+void HermesCLI::handle_image(const std::string& args) {
+    if (args.empty()) {
+        std::cout << "Usage: /image <path-to-image>\n";
+        return;
+    }
+    std::filesystem::path p = args;
+    if (!args.empty() && args.front() == '~') {
+        if (auto* home = std::getenv("HOME")) {
+            p = std::filesystem::path(home) / args.substr(1);
+        }
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec)) {
+        std::cout << "(x_x) File not found: " << p.string() << "\n";
+        return;
+    }
+    pending_image_path_ = std::filesystem::absolute(p, ec).string();
+    std::cout << "Image queued for the next turn: " << pending_image_path_
+              << "\n"
+              << "  Type your prompt on the next line and it will be sent"
+                 " with the image attached.\n";
 }
 
 }  // namespace hermes::cli
