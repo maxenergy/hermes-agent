@@ -121,6 +121,13 @@ protected:
             out["contents"].push_back({{"uri", uri}, {"text", "hello"}});
             return out;
         };
+        res->list_templates = [] {
+            nlohmann::json r = nlohmann::json::array();
+            r.push_back({{"uriTemplate", "hermes://sessions/{id}"},
+                         {"name", "session"},
+                         {"description", "session transcript"}});
+            return r;
+        };
         server_->register_resource_provider(res);
 
         auto prom = std::make_shared<PromptProvider>();
@@ -279,6 +286,247 @@ TEST_F(McpRoundtripTest, MissingToolNameReturnsInvalidParams) {
     auto j = nlohmann::json::parse(rep.body);
     ASSERT_TRUE(j.contains("error"));
     EXPECT_EQ(j["error"]["code"], rpc_error::kInvalidParams);
+}
+
+// ---------- Resource templates -------------------------------------------
+
+TEST_F(McpRoundtripTest, ResourcesTemplatesListWithProvider) {
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":30,"method":"resources/templates/list"})");
+    ASSERT_EQ(rep.status, 200);
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("result"));
+    ASSERT_TRUE(j["result"].contains("resourceTemplates"));
+    ASSERT_TRUE(j["result"]["resourceTemplates"].is_array());
+    ASSERT_EQ(j["result"]["resourceTemplates"].size(), 1u);
+    EXPECT_EQ(j["result"]["resourceTemplates"][0]["uriTemplate"],
+              "hermes://sessions/{id}");
+}
+
+TEST(ResourcesTemplatesTest, EmptyWhenProviderMissing) {
+    // Dispatcher without any resource provider — templates call should
+    // still succeed with an empty array (never method_not_found).
+    RpcDispatcher::Options o;
+    RpcDispatcher d(o);
+    auto r = d.method_resources_templates_list();
+    ASSERT_TRUE(r.contains("resourceTemplates"));
+    EXPECT_TRUE(r["resourceTemplates"].is_array());
+    EXPECT_EQ(r["resourceTemplates"].size(), 0u);
+}
+
+TEST(ResourcesTemplatesTest, EmptyWhenListTemplatesNotSet) {
+    // Resource provider installed but ``list_templates`` not populated.
+    RpcDispatcher::Options o;
+    o.resources = std::make_shared<ResourceProvider>();
+    o.resources->list = [] { return nlohmann::json::array(); };
+    RpcDispatcher d(o);
+    auto r = d.method_resources_templates_list();
+    ASSERT_TRUE(r.contains("resourceTemplates"));
+    EXPECT_EQ(r["resourceTemplates"].size(), 0u);
+}
+
+// ---------- resources/subscribe + unsubscribe ----------------------------
+
+TEST_F(McpRoundtripTest, ResourcesSubscribeAndUnsubscribeRoundtrip) {
+    // Subscribe
+    auto sub_rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":40,"method":"resources/subscribe","params":{"uri":"hermes://readme"}})");
+    ASSERT_EQ(sub_rep.status, 200);
+    auto j = nlohmann::json::parse(sub_rep.body);
+    ASSERT_TRUE(j.contains("result"));
+    EXPECT_TRUE(j["result"].is_object());
+
+    // Unsubscribe
+    auto un_rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":41,"method":"resources/unsubscribe","params":{"uri":"hermes://readme"}})");
+    ASSERT_EQ(un_rep.status, 200);
+    auto j2 = nlohmann::json::parse(un_rep.body);
+    ASSERT_TRUE(j2.contains("result"));
+}
+
+TEST_F(McpRoundtripTest, ResourcesSubscribeWithoutUriFails) {
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":42,"method":"resources/subscribe","params":{}})");
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("error"));
+    EXPECT_EQ(j["error"]["code"], rpc_error::kInvalidParams);
+}
+
+TEST(SubscriptionTest, DispatcherRecordsSubscriptionOnSession) {
+    // The POST / one-shot path used above does NOT associate a session, so
+    // we exercise the handler directly with a fabricated session.
+    RpcDispatcher::Options o;
+    o.resources = std::make_shared<ResourceProvider>();
+    RpcDispatcher d(o);
+
+    auto session = std::make_shared<McpSession>();
+    nlohmann::json sub_params = {{"uri", "hermes://foo"}};
+    d.method_resources_subscribe(sub_params, session);
+    EXPECT_EQ(session->subscriptions.size(), 1u);
+    EXPECT_TRUE(session->subscriptions.count("hermes://foo"));
+
+    d.method_resources_unsubscribe(sub_params, session);
+    EXPECT_EQ(session->subscriptions.size(), 0u);
+}
+
+// ---------- logging/setLevel ---------------------------------------------
+
+TEST_F(McpRoundtripTest, LoggingSetLevelDebug) {
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":50,"method":"logging/setLevel","params":{"level":"debug"}})");
+    ASSERT_EQ(rep.status, 200);
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("result"));
+    EXPECT_TRUE(j["result"].is_object());
+}
+
+TEST_F(McpRoundtripTest, LoggingSetLevelWarning) {
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":51,"method":"logging/setLevel","params":{"level":"warning"}})");
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("result"));
+}
+
+TEST_F(McpRoundtripTest, LoggingSetLevelInvalidReturnsInvalidParams) {
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":52,"method":"logging/setLevel","params":{"level":"bogus"}})");
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("error"));
+    EXPECT_EQ(j["error"]["code"], rpc_error::kInvalidParams);
+}
+
+TEST(LoggingSinkTest, CustomSinkIsInvoked) {
+    RpcDispatcher::Options o;
+    std::string captured;
+    o.logging_sink = [&](const std::string& l) { captured = l; };
+    RpcDispatcher d(o);
+    d.method_logging_set_level({{"level", "error"}});
+    EXPECT_EQ(captured, "error");
+}
+
+// ---------- completion/complete -------------------------------------------
+
+TEST_F(McpRoundtripTest, CompletionCompleteWithoutProviderReturnsEmpty) {
+    // Base fixture does not install a completion provider — expect the
+    // empty-completion sentinel, NOT method_not_found.
+    auto rep = http_post(
+        port_, "/",
+        R"({"jsonrpc":"2.0","id":60,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"greet"},"argument":{"name":"x","value":""}}})");
+    ASSERT_EQ(rep.status, 200);
+    auto j = nlohmann::json::parse(rep.body);
+    ASSERT_TRUE(j.contains("result"));
+    ASSERT_TRUE(j["result"].contains("completion"));
+    EXPECT_EQ(j["result"]["completion"]["values"].size(), 0u);
+    EXPECT_EQ(j["result"]["completion"]["total"], 0);
+    EXPECT_EQ(j["result"]["completion"]["hasMore"], false);
+}
+
+TEST(CompletionTest, ProviderResultsAreForwarded) {
+    RpcDispatcher::Options o;
+    o.completions = std::make_shared<CompletionProvider>();
+    o.completions->complete = [](const std::string& ref_type,
+                                 const std::string& ref_name,
+                                 const std::string& arg_name,
+                                 const std::string& arg_value) {
+        EXPECT_EQ(ref_type, "ref/prompt");
+        EXPECT_EQ(ref_name, "greet");
+        EXPECT_EQ(arg_name, "name");
+        EXPECT_EQ(arg_value, "al");
+        return nlohmann::json::array({"alice", "alex"});
+    };
+    RpcDispatcher d(o);
+    nlohmann::json params = {
+        {"ref", {{"type", "ref/prompt"}, {"name", "greet"}}},
+        {"argument", {{"name", "name"}, {"value", "al"}}},
+    };
+    auto r = d.method_completion_complete(params);
+    ASSERT_TRUE(r.contains("completion"));
+    EXPECT_EQ(r["completion"]["values"].size(), 2u);
+    EXPECT_EQ(r["completion"]["values"][0], "alice");
+    EXPECT_EQ(r["completion"]["total"], 2);
+}
+
+TEST(CompletionTest, ResourceRefUriAccepted) {
+    RpcDispatcher::Options o;
+    o.completions = std::make_shared<CompletionProvider>();
+    o.completions->complete = [](const std::string& ref_type,
+                                 const std::string& ref_name,
+                                 const std::string&, const std::string&) {
+        EXPECT_EQ(ref_type, "ref/resource");
+        EXPECT_EQ(ref_name, "hermes://xyz");
+        nlohmann::json out;
+        out["completion"] = {{"values", {"a", "b"}}, {"total", 2}, {"hasMore", false}};
+        return out;
+    };
+    RpcDispatcher d(o);
+    nlohmann::json params = {
+        {"ref", {{"type", "ref/resource"}, {"uri", "hermes://xyz"}}},
+        {"argument", {{"name", "q"}, {"value", ""}}},
+    };
+    auto r = d.method_completion_complete(params);
+    EXPECT_EQ(r["completion"]["values"].size(), 2u);
+}
+
+TEST(CompletionTest, BadParamsThrow) {
+    RpcDispatcher::Options o;
+    RpcDispatcher d(o);
+    // Non-object ``argument`` — should throw std::invalid_argument which
+    // the dispatcher converts to -32602.
+    nlohmann::json bad = {
+        {"ref", {{"type", "ref/prompt"}, {"name", "x"}}},
+        {"argument", "not-an-object"},
+    };
+    EXPECT_THROW(d.method_completion_complete(bad), std::invalid_argument);
+    // Non-object params entirely.
+    EXPECT_THROW(d.method_completion_complete(nlohmann::json::array()),
+                 std::invalid_argument);
+}
+
+// ---------- send_notification --------------------------------------------
+
+TEST_F(McpRoundtripTest, SendNotificationEnqueuesSseFrame) {
+    // Create a session directly so we can inspect its queue without
+    // racing an SSE HTTP client.
+    auto s = server_->sessions().create();
+    nlohmann::json params = {{"uri", "hermes://readme"}};
+    EXPECT_TRUE(server_->send_notification(
+        s->id, "notifications/resources/updated", params));
+
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    EXPECT_NE(frame.find("event: message"), std::string::npos);
+    EXPECT_NE(frame.find("notifications/resources/updated"),
+              std::string::npos);
+    EXPECT_NE(frame.find("hermes://readme"), std::string::npos);
+}
+
+TEST_F(McpRoundtripTest, SendNotificationUnknownSessionReturnsFalse) {
+    EXPECT_FALSE(server_->send_notification("no-such-session", "ping"));
+}
+
+TEST_F(McpRoundtripTest, NotifyResourceUpdatedOnlyHitsSubscribers) {
+    auto a = server_->sessions().create();
+    auto b = server_->sessions().create();
+    {
+        std::lock_guard<std::mutex> lk(a->sub_mu);
+        a->subscriptions.insert("hermes://readme");
+    }
+    // ``b`` is not subscribed.
+
+    auto n = server_->notify_resource_updated("hermes://readme");
+    EXPECT_EQ(n, 1u);
+
+    std::string frame;
+    EXPECT_TRUE(a->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    EXPECT_FALSE(
+        b->queue->wait_and_pop(frame, std::chrono::milliseconds(50)));
 }
 
 // ---------- Session GC ----------------------------------------------------

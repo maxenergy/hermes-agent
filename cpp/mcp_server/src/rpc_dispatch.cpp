@@ -1,9 +1,11 @@
 #include "hermes/mcp_server/rpc_dispatch.hpp"
 
+#include "hermes/core/logging.hpp"
 #include "hermes/tools/registry.hpp"
 
 #include <exception>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace hermes::mcp_server {
@@ -105,11 +107,28 @@ nlohmann::json RpcDispatcher::handle(
         if (req.method == "resources/read") {
             return make_result(req.id, method_resources_read(req.params));
         }
+        if (req.method == "resources/templates/list") {
+            return make_result(req.id, method_resources_templates_list());
+        }
+        if (req.method == "resources/subscribe") {
+            return make_result(req.id,
+                               method_resources_subscribe(req.params, session));
+        }
+        if (req.method == "resources/unsubscribe") {
+            return make_result(
+                req.id, method_resources_unsubscribe(req.params, session));
+        }
         if (req.method == "prompts/list") {
             return make_result(req.id, method_prompts_list());
         }
         if (req.method == "prompts/get") {
             return make_result(req.id, method_prompts_get(req.params));
+        }
+        if (req.method == "logging/setLevel") {
+            return make_result(req.id, method_logging_set_level(req.params));
+        }
+        if (req.method == "completion/complete") {
+            return make_result(req.id, method_completion_complete(req.params));
         }
 
         return make_error(req.id, rpc_error::kMethodNotFound,
@@ -146,13 +165,19 @@ nlohmann::json RpcDispatcher::method_initialize(
     // implement. ``listChanged`` = false since we don't push deltas yet.
     capabilities["tools"] = {{"listChanged", false}};
     if (opts_.resources) {
-        capabilities["resources"] = {{"subscribe", false},
+        // Subscribe capability is unconditionally advertised now that the
+        // dispatcher tracks per-session subscription sets (notifications
+        // are opt-in via ``McpServer::send_notification``).
+        capabilities["resources"] = {{"subscribe", true},
                                      {"listChanged", false}};
     }
     if (opts_.prompts) {
         capabilities["prompts"] = {{"listChanged", false}};
     }
     capabilities["logging"] = nlohmann::json::object();
+    if (opts_.completions) {
+        capabilities["completions"] = nlohmann::json::object();
+    }
 
     nlohmann::json out;
     out["protocolVersion"] = std::string(kProtocolVersion);
@@ -291,6 +316,148 @@ nlohmann::json RpcDispatcher::method_prompts_get(const nlohmann::json& params) {
     nlohmann::json out;
     out["messages"] = nlohmann::json::array();
     return out;
+}
+
+nlohmann::json RpcDispatcher::method_resources_templates_list() {
+    nlohmann::json out;
+    out["resourceTemplates"] = nlohmann::json::array();
+    if (!opts_.resources || !opts_.resources->list_templates) {
+        // Spec allows returning an empty list when no templates are
+        // provided — this is NOT method_not_found so clients can safely
+        // probe without error-handling a missing implementation.
+        return out;
+    }
+    auto r = opts_.resources->list_templates();
+    if (r.is_array()) {
+        out["resourceTemplates"] = std::move(r);
+        return out;
+    }
+    if (r.is_object() && r.contains("resourceTemplates")) return r;
+    return out;
+}
+
+nlohmann::json RpcDispatcher::method_resources_subscribe(
+    const nlohmann::json& params, const std::shared_ptr<McpSession>& s) {
+    if (!params.is_object()) {
+        throw std::invalid_argument(
+            "resources/subscribe params must be an object");
+    }
+    auto uri = params.value("uri", std::string{});
+    if (uri.empty()) {
+        throw std::invalid_argument("resources/subscribe requires \"uri\"");
+    }
+    if (s) {
+        std::lock_guard<std::mutex> lk(s->sub_mu);
+        s->subscriptions.insert(uri);
+    }
+    return nlohmann::json::object();
+}
+
+nlohmann::json RpcDispatcher::method_resources_unsubscribe(
+    const nlohmann::json& params, const std::shared_ptr<McpSession>& s) {
+    if (!params.is_object()) {
+        throw std::invalid_argument(
+            "resources/unsubscribe params must be an object");
+    }
+    auto uri = params.value("uri", std::string{});
+    if (uri.empty()) {
+        throw std::invalid_argument("resources/unsubscribe requires \"uri\"");
+    }
+    if (s) {
+        std::lock_guard<std::mutex> lk(s->sub_mu);
+        s->subscriptions.erase(uri);
+    }
+    return nlohmann::json::object();
+}
+
+nlohmann::json RpcDispatcher::method_logging_set_level(
+    const nlohmann::json& params) {
+    if (!params.is_object()) {
+        throw std::invalid_argument(
+            "logging/setLevel params must be an object");
+    }
+    auto level = params.value("level", std::string{});
+    if (level.empty()) {
+        throw std::invalid_argument("logging/setLevel requires \"level\"");
+    }
+    // Validate against the MCP-defined vocabulary. ``debug/info/notice/
+    // warning/error/critical/alert/emergency`` is the RFC-5424 subset the
+    // spec enumerates; we map down to hermes' four-level scale.
+    static const std::unordered_set<std::string> kAccepted{
+        "debug",   "info",  "notice",    "warning",
+        "warn",    "error", "critical",  "alert", "emergency"};
+    if (!kAccepted.count(level)) {
+        throw std::invalid_argument("logging/setLevel: unknown level '" +
+                                    level + "'");
+    }
+
+    if (opts_.logging_sink) {
+        opts_.logging_sink(level);
+    } else {
+        // Map MCP levels to hermes core levels. ``notice`` → info,
+        // ``critical``/``alert``/``emergency`` → error.
+        std::string core_level = level;
+        if (level == "notice") core_level = "info";
+        else if (level == "critical" || level == "alert" ||
+                 level == "emergency") core_level = "error";
+        // ``setup_logging`` reuses the min-level atomic without touching
+        // the on-disk sink so this is cheap and reversible.
+        hermes::core::logging::setup_logging({}, core_level);
+    }
+    return nlohmann::json::object();
+}
+
+nlohmann::json RpcDispatcher::method_completion_complete(
+    const nlohmann::json& params) {
+    if (!params.is_object()) {
+        throw std::invalid_argument(
+            "completion/complete params must be an object");
+    }
+    auto ref = params.value("ref", nlohmann::json::object());
+    auto argument = params.value("argument", nlohmann::json::object());
+    if (!ref.is_object() || !argument.is_object()) {
+        throw std::invalid_argument(
+            "completion/complete requires object \"ref\" and \"argument\"");
+    }
+    std::string ref_type = ref.value("type", std::string{});
+    // ``name`` identifies prompts; ``uri`` identifies resources. Accept
+    // either so the caller sees a uniform ref_name string.
+    std::string ref_name = ref.value("name", std::string{});
+    if (ref_name.empty()) ref_name = ref.value("uri", std::string{});
+    std::string arg_name = argument.value("name", std::string{});
+    std::string arg_value = argument.value("value", std::string{});
+
+    nlohmann::json empty_completion;
+    empty_completion["completion"] = {
+        {"values", nlohmann::json::array()},
+        {"total", 0},
+        {"hasMore", false},
+    };
+
+    if (!opts_.completions || !opts_.completions->complete) {
+        // Per spec guidance: reply with an empty completion rather than
+        // method_not_found so clients don't need to special-case probing.
+        return empty_completion;
+    }
+    auto r = opts_.completions->complete(ref_type, ref_name, arg_name,
+                                         arg_value);
+    if (r.is_object() && r.contains("completion")) return r;
+    if (r.is_object() && r.contains("values")) {
+        nlohmann::json out;
+        out["completion"] = std::move(r);
+        return out;
+    }
+    if (r.is_array()) {
+        const auto n = r.size();
+        nlohmann::json out;
+        out["completion"] = {
+            {"values", std::move(r)},
+            {"total", static_cast<int>(n)},
+            {"hasMore", false},
+        };
+        return out;
+    }
+    return empty_completion;
 }
 
 }  // namespace hermes::mcp_server

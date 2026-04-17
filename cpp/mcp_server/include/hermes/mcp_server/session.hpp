@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace hermes::mcp_server {
@@ -62,6 +63,14 @@ struct McpSession {
     std::string client_name;
     std::string client_version;
     bool initialized = false;
+
+    // Resource URIs the client has subscribed to via
+    // ``resources/subscribe``. Mutations must hold ``sub_mu``. A dedicated
+    // per-session mutex avoids contention against the session-store lock
+    // for the common read path (``is_subscribed``) used by notification
+    // broadcasting.
+    mutable std::mutex sub_mu;
+    std::unordered_set<std::string> subscriptions;
 };
 
 class SessionStore {

@@ -98,6 +98,26 @@ public:
     // Attach resource / prompt providers. Either may be null.
     void register_resource_provider(std::shared_ptr<ResourceProvider> provider);
     void register_prompt_provider(std::shared_ptr<PromptProvider> provider);
+    // Attach a completion provider for ``completion/complete``. When null,
+    // the server returns an empty completion rather than method_not_found.
+    void register_completion_provider(
+        std::shared_ptr<CompletionProvider> provider);
+    // Override the logging sink invoked on ``logging/setLevel``. Default
+    // behaviour forwards to ``hermes::core::logging::setup_logging``.
+    void set_logging_sink(LoggingSink sink);
+
+    // Push a server-initiated JSON-RPC notification ( ``id``-less envelope
+    // per spec §4.1 ) onto a single session's SSE queue. Returns true when
+    // the session exists and the frame was enqueued. ``params`` may be
+    // null to emit a bare ``{"jsonrpc":"2.0","method":"..."}``.
+    bool send_notification(std::string_view session_id,
+                           std::string_view method,
+                           const nlohmann::json& params = nlohmann::json());
+
+    // Convenience wrapper: fires ``notifications/resources/updated`` for
+    // every session currently subscribed to ``uri``. Returns the number
+    // of sessions notified.
+    std::size_t notify_resource_updated(std::string_view uri);
 
     // Optional session validator. When set, any request except
     // ``initialize`` is rejected with a -32000 error unless the validator

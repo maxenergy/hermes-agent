@@ -30,6 +30,10 @@ struct ResourceProvider {
     // Reads a resource by uri. Returns ``{"contents": [...]}`` on success
     // or ``{"error": "<msg>"}`` on failure.
     std::function<nlohmann::json(const std::string& uri)> read;
+    // Optional. Returns the ``resourceTemplates`` array for a
+    // ``resources/templates/list`` response. When null, the dispatcher
+    // answers with an empty array — per MCP spec, templates are optional.
+    std::function<nlohmann::json()> list_templates;
 };
 
 struct PromptProvider {
@@ -38,6 +42,26 @@ struct PromptProvider {
     std::function<nlohmann::json(const std::string& name,
                                   const nlohmann::json& arguments)> get;
 };
+
+// Optional provider for ``completion/complete``. ``ref_type`` is one of
+// ``ref/prompt`` / ``ref/resource``; ``ref_name`` is the prompt name or
+// resource uri; ``arg_name`` + ``arg_value`` come straight from the
+// request's ``argument`` object. The handler returns the
+// ``{"completion": {...}}`` shape defined by MCP (MUST contain ``values``;
+// may include ``total`` / ``hasMore``). Returning an empty / null value
+// produces the default empty completion.
+struct CompletionProvider {
+    std::function<nlohmann::json(const std::string& ref_type,
+                                 const std::string& ref_name,
+                                 const std::string& arg_name,
+                                 const std::string& arg_value)> complete;
+};
+
+// Optional sink invoked on ``logging/setLevel``. Default implementation
+// forwards to ``hermes::core::logging::setup_logging`` so the process log
+// level tracks client requests. Embedders can install a custom sink to
+// fan-out to their own loggers.
+using LoggingSink = std::function<void(const std::string& level)>;
 
 // Hook called by ``tools/call`` to invoke the underlying tool. Default
 // implementation delegates to ``hermes::tools::ToolRegistry`` when one is
@@ -51,6 +75,8 @@ public:
         hermes::tools::ToolRegistry* registry = nullptr;
         std::shared_ptr<ResourceProvider> resources;
         std::shared_ptr<PromptProvider> prompts;
+        std::shared_ptr<CompletionProvider> completions;
+        LoggingSink logging_sink;  // optional; default forwards to core logging
         ToolCallHook tool_call_hook;  // optional override of registry dispatch
         std::string server_name = "hermes-mcp";
         std::string server_version = "0.1.0";
@@ -79,8 +105,17 @@ public:
     nlohmann::json method_tools_call(const nlohmann::json& params);
     nlohmann::json method_resources_list();
     nlohmann::json method_resources_read(const nlohmann::json& params);
+    nlohmann::json method_resources_templates_list();
+    nlohmann::json method_resources_subscribe(
+        const nlohmann::json& params,
+        const std::shared_ptr<McpSession>& s);
+    nlohmann::json method_resources_unsubscribe(
+        const nlohmann::json& params,
+        const std::shared_ptr<McpSession>& s);
     nlohmann::json method_prompts_list();
     nlohmann::json method_prompts_get(const nlohmann::json& params);
+    nlohmann::json method_logging_set_level(const nlohmann::json& params);
+    nlohmann::json method_completion_complete(const nlohmann::json& params);
 
 private:
     Options opts_;

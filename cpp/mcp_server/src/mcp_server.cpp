@@ -277,6 +277,85 @@ void McpServer::register_prompt_provider(
     dispatcher_ = std::make_unique<RpcDispatcher>(dispatch_opts_);
 }
 
+void McpServer::register_completion_provider(
+    std::shared_ptr<CompletionProvider> provider) {
+    dispatch_opts_.completions = std::move(provider);
+    dispatcher_ = std::make_unique<RpcDispatcher>(dispatch_opts_);
+}
+
+void McpServer::set_logging_sink(LoggingSink sink) {
+    dispatch_opts_.logging_sink = std::move(sink);
+    dispatcher_ = std::make_unique<RpcDispatcher>(dispatch_opts_);
+}
+
+namespace {
+// Build an SSE frame compatible with ``format_sse_frame`` in
+// ``http_server.cpp``. Duplicated locally to avoid leaking the HTTP
+// implementation detail through a public header.
+std::string build_sse_frame(std::string_view event, std::string_view data) {
+    std::string out;
+    if (!event.empty()) {
+        out.append("event: ");
+        out.append(event);
+        out.push_back('\n');
+    }
+    std::size_t start = 0;
+    while (start <= data.size()) {
+        auto nl = data.find('\n', start);
+        auto slice =
+            data.substr(start, nl == std::string_view::npos
+                                   ? std::string_view::npos
+                                   : nl - start);
+        out.append("data: ");
+        out.append(slice);
+        out.push_back('\n');
+        if (nl == std::string_view::npos) break;
+        start = nl + 1;
+    }
+    out.push_back('\n');
+    return out;
+}
+}  // namespace
+
+bool McpServer::send_notification(std::string_view session_id,
+                                  std::string_view method,
+                                  const nlohmann::json& params) {
+    auto s = sessions_.get(session_id);
+    if (!s || !s->queue) return false;
+
+    nlohmann::json env;
+    env["jsonrpc"] = "2.0";
+    env["method"] = std::string(method);
+    if (!params.is_null()) env["params"] = params;
+
+    auto body = env.dump();
+    s->queue->push(build_sse_frame("message", body));
+    return true;
+}
+
+std::size_t McpServer::notify_resource_updated(std::string_view uri) {
+    const std::string uri_str(uri);
+    nlohmann::json params;
+    params["uri"] = uri_str;
+
+    std::size_t notified = 0;
+    for (const auto& id : sessions_.list_ids()) {
+        auto s = sessions_.get(id);
+        if (!s) continue;
+        bool subscribed = false;
+        {
+            std::lock_guard<std::mutex> lk(s->sub_mu);
+            subscribed = s->subscriptions.count(uri_str) > 0;
+        }
+        if (!subscribed) continue;
+        if (send_notification(s->id, "notifications/resources/updated",
+                              params)) {
+            ++notified;
+        }
+    }
+    return notified;
+}
+
 void McpServer::set_session_validator(
     std::function<bool(std::string_view)> validator) {
     session_validator_ = std::move(validator);
