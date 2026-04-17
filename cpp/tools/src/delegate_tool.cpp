@@ -837,7 +837,18 @@ void register_schemas() {
                 {"constraints", {{"type", "string"},  {"description", "Optional constraints"}}},
                 {"model",       {{"type", "string"},  {"description", "Optional per-call model"}}},
                 {"toolsets",    {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                {"tasks",       {{"type", "array"}, {"description", "Batch mode — array of {goal, context, toolsets}"}}},
+                {"tasks",       {{"type", "array"},
+                                  {"description", "Batch mode — array of {goal, context, toolsets}"},
+                                  {"items", {
+                                      {"type", "object"},
+                                      {"properties", {
+                                          {"goal",        {{"type", "string"}}},
+                                          {"context",     {{"type", "string"}}},
+                                          {"constraints", {{"type", "string"}}},
+                                          {"model",       {{"type", "string"}}},
+                                          {"toolsets",    {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                                      }},
+                                  }}}},
                 {"max_iterations", {{"type", "integer"}}},
             }},
             // `goal` OR `tasks` — handler validates at runtime.
