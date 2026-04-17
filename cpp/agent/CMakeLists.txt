@@ -45,6 +45,7 @@ add_library(hermes_agent STATIC
     src/skill_utils.cpp
     src/models_dev.cpp
     src/display.cpp
+    src/copilot_acp_client.cpp
 )
 
 target_include_directories(hermes_agent
