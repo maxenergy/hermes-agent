@@ -17,6 +17,7 @@
 #include "hermes/agent/context_engine.hpp"
 #include "hermes/llm/llm_client.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -78,6 +79,25 @@ public:
         return previous_summary_;
     }
 
+    // Test hook: override the summary-failure cooldown duration (default
+    // 600s, matching agent/context_compressor.py). Passing a zero or
+    // negative duration effectively disables the cooldown and allows an
+    // immediate retry after a previous failure.
+    void set_cooldown_duration(std::chrono::seconds d) {
+        cooldown_duration_ = d;
+        if (d <= std::chrono::seconds::zero()) {
+            // Clear any pending cooldown so the next compress() is free
+            // to hit the LLM again.
+            summary_failure_cooldown_until_ = std::chrono::steady_clock::time_point{};
+        }
+    }
+
+    // Test hook: whether generate_summary() is currently suppressed by a
+    // prior failure.
+    bool in_summary_failure_cooldown() const {
+        return std::chrono::steady_clock::now() < summary_failure_cooldown_until_;
+    }
+
 private:
     // --- Pipeline stages wired around compressor_depth helpers. ---
     //
@@ -122,6 +142,16 @@ private:
     // Stored across compactions so generate_summary() can produce an
     // iterative update rather than summarising from scratch.
     std::optional<std::string> previous_summary_;
+
+    // Summary-failure cooldown — mirrors
+    // agent/context_compressor.py::_summary_failure_cooldown_until. If
+    // now() < summary_failure_cooldown_until_, generate_summary()
+    // short-circuits to std::nullopt (the caller then injects a static
+    // marker instead of hitting the LLM). Set to default-constructed
+    // (epoch) on success; pushed forward by `cooldown_duration_` on any
+    // summariser exception. Default duration is 600s to match Python.
+    std::chrono::steady_clock::time_point summary_failure_cooldown_until_{};
+    std::chrono::seconds cooldown_duration_{600};
 };
 
 }  // namespace hermes::agent

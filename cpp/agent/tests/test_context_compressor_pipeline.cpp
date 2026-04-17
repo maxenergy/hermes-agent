@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <set>
 #include <string>
 #include <vector>
@@ -355,6 +356,118 @@ TEST(ContextCompressorPipeline, SerializerMentionsToolBlocks) {
 // ---------------------------------------------------------------------
 // 8. on_session_reset — clears the iterative summary.
 // ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// 9. Summary failure cooldown — after one summariser exception, further
+//    compress() calls within the cooldown window must not invoke the
+//    LLM again; they fall back to the static marker. Setting the
+//    cooldown duration to zero re-enables immediate retries. Mirrors
+//    agent/context_compressor.py::_summary_failure_cooldown_until.
+// ---------------------------------------------------------------------
+
+TEST(ContextCompressorPipeline, SummaryFailureEnforces600sCooldown) {
+    FakeSummarizer fake;  // no scripted responses → complete() throws
+    CompressionOptions opts;
+    opts.protected_tail_tokens = 100;
+    opts.protect_first_n = 1;
+    ContextCompressor c(&fake, "fake", opts);
+
+    auto build_msgs = []() {
+        std::vector<Message> msgs;
+        msgs.push_back(make(Role::System, "sys"));
+        for (int i = 0; i < 8; ++i) {
+            msgs.push_back(make(Role::User, "u" + std::to_string(i) +
+                                                std::string(200, 'x')));
+            msgs.push_back(make(Role::Assistant, "a" + std::to_string(i) +
+                                                     std::string(200, 'y')));
+        }
+        return msgs;
+    };
+
+    // First compression: LLM throws → fallback marker is injected and
+    // the cooldown is armed.
+    auto out1 = c.compress(build_msgs(), /*cur=*/9000, /*max=*/10000);
+    EXPECT_EQ(fake.call_count(), 1);
+    bool found_fallback_1 = false;
+    for (const auto& m : out1) {
+        if (m.content_text.find("Summary generation was unavailable") !=
+            std::string::npos) {
+            found_fallback_1 = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_fallback_1);
+    EXPECT_TRUE(c.in_summary_failure_cooldown());
+
+    // Second compression within the cooldown window: the LLM must NOT
+    // be called again (call_count still 1), yet the fallback marker is
+    // still emitted so the model sees a compaction breadcrumb.
+    auto out2 = c.compress(build_msgs(), /*cur=*/9000, /*max=*/10000);
+    EXPECT_EQ(fake.call_count(), 1)
+        << "cooldown must short-circuit the summariser call";
+    bool found_fallback_2 = false;
+    for (const auto& m : out2) {
+        if (m.content_text.find("Summary generation was unavailable") !=
+            std::string::npos) {
+            found_fallback_2 = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_fallback_2);
+
+    // Collapse the cooldown window and enqueue a scripted response:
+    // compress() should call the LLM again and produce a real summary.
+    c.set_cooldown_duration(std::chrono::seconds(0));
+    EXPECT_FALSE(c.in_summary_failure_cooldown());
+    fake.enqueue("recovered summary body");
+
+    auto out3 = c.compress(build_msgs(), /*cur=*/9000, /*max=*/10000);
+    EXPECT_EQ(fake.call_count(), 2)
+        << "zero cooldown should allow an immediate LLM retry";
+    bool found_recovered = false;
+    for (const auto& m : out3) {
+        if (m.content_text.find("recovered summary body") !=
+            std::string::npos) {
+            found_recovered = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_recovered);
+}
+
+// ---------------------------------------------------------------------
+// 10. on_session_reset() clears both the iterative summary and any
+//     armed summary-failure cooldown.
+// ---------------------------------------------------------------------
+
+TEST(ContextCompressorPipeline, ResetClearsFailureCooldown) {
+    FakeSummarizer fake;  // throws on first call
+    CompressionOptions opts;
+    opts.protected_tail_tokens = 100;
+    opts.protect_first_n = 1;
+    ContextCompressor c(&fake, "fake", opts);
+
+    std::vector<Message> msgs;
+    msgs.push_back(make(Role::System, "sys"));
+    for (int i = 0; i < 8; ++i) {
+        msgs.push_back(make(Role::User, "u" + std::to_string(i) +
+                                            std::string(200, 'x')));
+        msgs.push_back(make(Role::Assistant, "a" + std::to_string(i) +
+                                                 std::string(200, 'y')));
+    }
+    c.compress(msgs, /*cur=*/9000, /*max=*/10000);
+    EXPECT_EQ(fake.call_count(), 1);
+    EXPECT_TRUE(c.in_summary_failure_cooldown());
+
+    c.on_session_reset();
+    EXPECT_FALSE(c.in_summary_failure_cooldown());
+
+    // Enqueue a successful response; the next compression must call
+    // the LLM (call_count increments) because the cooldown was cleared.
+    fake.enqueue("fresh summary");
+    c.compress(msgs, /*cur=*/9000, /*max=*/10000);
+    EXPECT_EQ(fake.call_count(), 2);
+}
 
 TEST(ContextCompressorPipeline, ResetClearsPreviousSummary) {
     FakeSummarizer fake;

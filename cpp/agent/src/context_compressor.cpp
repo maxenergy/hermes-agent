@@ -135,6 +135,16 @@ std::optional<std::string> ContextCompressor::generate_summary(
     if (!summarizer_) return std::nullopt;
     if (turns.empty()) return std::nullopt;
 
+    // Summary-failure cooldown: if a previous LLM call threw, suppress
+    // further attempts for `cooldown_duration_` (default 600s). Matches
+    // agent/context_compressor.py::_summary_failure_cooldown_until.
+    // The caller (compress()) substitutes a static fallback marker on
+    // nullopt, so the conversation still gets a "turns were removed"
+    // breadcrumb without another LLM round-trip.
+    if (std::chrono::steady_clock::now() < summary_failure_cooldown_until_) {
+        return std::nullopt;
+    }
+
     auto dv = to_depth_vec(turns);
     // Scale the summariser output cap with the content being
     // compressed. The Python version uses a context-length-derived
@@ -208,13 +218,23 @@ std::optional<std::string> ContextCompressor::generate_summary(
             }
         }
     } catch (const std::exception&) {
+        // LLM summariser failed — pause further attempts for
+        // `cooldown_duration_` so compress() doesn't repeatedly hammer a
+        // broken provider. Mirrors the RuntimeError/Exception branches
+        // in agent/context_compressor.py::_generate_summary.
+        if (cooldown_duration_ > std::chrono::seconds::zero()) {
+            summary_failure_cooldown_until_ =
+                std::chrono::steady_clock::now() + cooldown_duration_;
+        }
         return std::nullopt;
     }
 
     if (body.empty()) return std::nullopt;
     // Persist the raw (unprefixed) body so iterative updates can build
-    // on it without the prefix noise.
+    // on it without the prefix noise. A successful call also clears any
+    // previously-set cooldown (aligned with the Python reset to 0.0).
     previous_summary_ = body;
+    summary_failure_cooldown_until_ = std::chrono::steady_clock::time_point{};
     return depth::with_summary_prefix(body);
 }
 
@@ -369,6 +389,10 @@ std::vector<Message> ContextCompressor::compress(
 void ContextCompressor::on_session_reset() {
     this->ContextEngine::compression_count = 0;
     previous_summary_.reset();
+    // Clear the summary-failure cooldown: a session reset implies a
+    // fresh conversation, so the prior provider failure should not
+    // leak across boundaries.
+    summary_failure_cooldown_until_ = std::chrono::steady_clock::time_point{};
 }
 
 void ContextCompressor::update_model(const hermes::llm::ModelMetadata& meta) {
