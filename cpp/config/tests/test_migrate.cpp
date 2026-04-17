@@ -100,3 +100,155 @@ TEST(MigrateConfig, V2ToV3NoApiKeyNoOp) {
     EXPECT_EQ(migrated["provider_api_key"].get<std::string>(), "already-renamed");
     EXPECT_FALSE(migrated.contains("api_key"));
 }
+
+// ---------------------------------------------------------------------------
+// v6 -> v14 coverage (no-op version bumps + schema changes)
+// ---------------------------------------------------------------------------
+
+TEST(MigrateConfig, V6WalksStraightToCurrent) {
+    // A v6 config with no legacy fields should be stamped forward without
+    // adding any schema sections that didn't already exist.
+    nlohmann::json cfg = {{"_config_version", 6}};
+    auto migrated = hc::migrate_config(cfg);
+    EXPECT_EQ(migrated["_config_version"].get<int>(), 14);
+    EXPECT_EQ(migrated["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+    // No legacy list → no providers dict added by migration.
+    EXPECT_FALSE(migrated.contains("providers"));
+    // No legacy stt.model → no nested stt.local injected.
+    EXPECT_FALSE(migrated.contains("stt"));
+}
+
+TEST(MigrateConfig, V11ToV12MigratesCustomProviders) {
+    nlohmann::json cfg = {
+        {"_config_version", 11},
+        {"custom_providers", nlohmann::json::array({
+            {
+                {"name", "My Endpoint"},
+                {"base_url", "https://example.com/v1"},
+                {"api_key", "sk-endpoint"},
+                {"model", "my-model"},
+                {"api_mode", "responses"},
+            },
+            {
+                {"name", "No Key Host"},
+                {"url", "https://free.example.net/v1"},
+                {"api_key", "no-key-required"},
+            },
+        })},
+    };
+    auto out = hc::migrate_config(cfg);
+
+    EXPECT_FALSE(out.contains("custom_providers"));
+    ASSERT_TRUE(out.contains("providers"));
+    ASSERT_TRUE(out["providers"].is_object());
+    ASSERT_TRUE(out["providers"].contains("my-endpoint"));
+    const auto& me = out["providers"]["my-endpoint"];
+    EXPECT_EQ(me["api"].get<std::string>(), "https://example.com/v1");
+    EXPECT_EQ(me["api_key"].get<std::string>(), "sk-endpoint");
+    EXPECT_EQ(me["default_model"].get<std::string>(), "my-model");
+    EXPECT_EQ(me["transport"].get<std::string>(), "responses");
+
+    ASSERT_TRUE(out["providers"].contains("no-key-host"));
+    const auto& nk = out["providers"]["no-key-host"];
+    EXPECT_EQ(nk["api"].get<std::string>(), "https://free.example.net/v1");
+    // Placeholder api_key ("no-key-required") is dropped.
+    EXPECT_FALSE(nk.contains("api_key"));
+}
+
+TEST(MigrateConfig, V11SkipsEntryWithNoUrl) {
+    nlohmann::json cfg = {
+        {"_config_version", 11},
+        {"custom_providers", nlohmann::json::array({
+            {{"name", "nopey"}},  // no base_url/url → skipped
+        })},
+    };
+    auto out = hc::migrate_config(cfg);
+    // custom_providers stays (migrated_count == 0 → don't erase).
+    EXPECT_TRUE(out.contains("custom_providers"));
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+}
+
+TEST(MigrateConfig, V13ToV14MigratesLocalSttModel) {
+    nlohmann::json cfg = {
+        {"_config_version", 13},
+        {"stt", {
+            {"provider", "local"},
+            {"model", "large-v3"},
+        }},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_FALSE(out["stt"].contains("model"));
+    ASSERT_TRUE(out["stt"].contains("local"));
+    EXPECT_EQ(out["stt"]["local"]["model"].get<std::string>(), "large-v3");
+}
+
+TEST(MigrateConfig, V13ToV14DropsOpenAiNameFromLocalProvider) {
+    // "whisper-1" is not a faster-whisper model — drop it rather than
+    // poisoning the local section.
+    nlohmann::json cfg = {
+        {"_config_version", 13},
+        {"stt", {
+            {"provider", "local"},
+            {"model", "whisper-1"},
+        }},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_FALSE(out["stt"].contains("model"));
+    // No local.model injected — DEFAULT_CONFIG's "base" takes effect at load.
+    if (out["stt"].contains("local") && out["stt"]["local"].is_object()) {
+        EXPECT_FALSE(out["stt"]["local"].contains("model"));
+    }
+}
+
+TEST(MigrateConfig, V13ToV14MigratesCloudSttModel) {
+    nlohmann::json cfg = {
+        {"_config_version", 13},
+        {"stt", {
+            {"provider", "openai"},
+            {"model", "whisper-1"},
+        }},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_FALSE(out["stt"].contains("model"));
+    ASSERT_TRUE(out["stt"].contains("openai"));
+    EXPECT_EQ(out["stt"]["openai"]["model"].get<std::string>(), "whisper-1");
+}
+
+TEST(MigrateConfig, V13ToV14PreservesExistingNestedModel) {
+    nlohmann::json cfg = {
+        {"_config_version", 13},
+        {"stt", {
+            {"provider", "openai"},
+            {"model", "whisper-1"},
+            {"openai", {{"model", "gpt-4o-transcribe"}}},
+        }},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_FALSE(out["stt"].contains("model"));
+    EXPECT_EQ(out["stt"]["openai"]["model"].get<std::string>(), "gpt-4o-transcribe");
+}
+
+TEST(MigrateConfig, V6ToV14FullWalkWithAllLegacyFields) {
+    // Exercise v6 → v14 in a single call with both legacy features set.
+    nlohmann::json cfg = {
+        {"_config_version", 6},
+        {"custom_providers", nlohmann::json::array({
+            {
+                {"name", "Old Host"},
+                {"base_url", "https://old.example.com/v1"},
+            },
+        })},
+        {"stt", {
+            {"provider", "local"},
+            {"model", "medium"},
+        }},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), 14);
+    EXPECT_FALSE(out.contains("custom_providers"));
+    ASSERT_TRUE(out["providers"].contains("old-host"));
+    EXPECT_EQ(out["providers"]["old-host"]["api"].get<std::string>(),
+              "https://old.example.com/v1");
+    EXPECT_FALSE(out["stt"].contains("model"));
+    EXPECT_EQ(out["stt"]["local"]["model"].get<std::string>(), "medium");
+}

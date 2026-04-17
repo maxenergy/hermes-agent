@@ -17,6 +17,6 @@ const nlohmann::json& default_config();
 
 // Current config schema version.  Bumping this forces a migration
 // pass next time a user's config is loaded.
-constexpr int kCurrentConfigVersion = 6;
+constexpr int kCurrentConfigVersion = 14;
 
 }  // namespace hermes::config

@@ -7,12 +7,14 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 
 namespace hermes::config {
 
@@ -390,6 +392,221 @@ nlohmann::json migrate_config(nlohmann::json config) {
 
         config["_config_version"] = 6;
         current = 6;
+    }
+
+    // v6 -> v7: version-only bump in Python (ENV_VARS_BY_VERSION marker).
+    // No schema change — the setup wizard uses it solely to decide which
+    // optional env-var prompts to re-surface.  Stamp the version and move on.
+    if (current < 7) {
+        config["_config_version"] = 7;
+        current = 7;
+    }
+
+    // v7 -> v8: version-only bump in Python (no schema change).
+    if (current < 8) {
+        config["_config_version"] = 8;
+        current = 8;
+    }
+
+    // v8 -> v9: Python clears ANTHROPIC_TOKEN from ~/.hermes/.env.
+    // The C++ config loader does not mutate .env files, so the version
+    // stamp is advanced and the env-file rewrite is intentionally left to
+    // the Python setup wizard (which still runs for mixed installs).
+    if (current < 9) {
+        config["_config_version"] = 9;
+        current = 9;
+    }
+
+    // v9 -> v10: version-only bump (TAVILY_API_KEY env var introduced).
+    if (current < 10) {
+        config["_config_version"] = 10;
+        current = 10;
+    }
+
+    // v10 -> v11: version-only bump (TERMINAL_MODAL_MODE env var introduced).
+    if (current < 11) {
+        config["_config_version"] = 11;
+        current = 11;
+    }
+
+    // v11 -> v12: migrate legacy `custom_providers` list into the
+    // `providers` dict.  Each list entry becomes a kebab-cased key under
+    // `providers`, with `base_url`/`url` → `api`, `model` → `default_model`,
+    // `api_mode` → `transport`.  Placeholder keys ("no-key", "no-key-required",
+    // empty) are dropped.  Existing `providers` entries are never overwritten.
+    if (current < 12) {
+        if (config.contains("custom_providers") &&
+            config["custom_providers"].is_array() &&
+            !config["custom_providers"].empty()) {
+            if (!config.contains("providers") || !config["providers"].is_object()) {
+                config["providers"] = nlohmann::json::object();
+            }
+            auto& providers = config["providers"];
+            std::size_t migrated_count = 0;
+
+            auto to_kebab = [](std::string s) {
+                std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                std::string out;
+                out.reserve(s.size());
+                for (char c : s) {
+                    if (c == ' ') {
+                        out.push_back('-');
+                    } else if (c == '(' || c == ')') {
+                        // drop
+                    } else {
+                        out.push_back(c);
+                    }
+                }
+                // collapse consecutive hyphens
+                std::string collapsed;
+                collapsed.reserve(out.size());
+                bool last_hyphen = false;
+                for (char c : out) {
+                    if (c == '-') {
+                        if (!last_hyphen) collapsed.push_back(c);
+                        last_hyphen = true;
+                    } else {
+                        collapsed.push_back(c);
+                        last_hyphen = false;
+                    }
+                }
+                // strip leading/trailing hyphens
+                std::size_t first = collapsed.find_first_not_of('-');
+                std::size_t last = collapsed.find_last_not_of('-');
+                if (first == std::string::npos) return std::string{};
+                return collapsed.substr(first, last - first + 1);
+            };
+
+            auto host_fallback = [](const std::string& url) {
+                // naive host extract: scheme://host/... → host; replace dots.
+                auto scheme = url.find("://");
+                std::string host = (scheme == std::string::npos)
+                                       ? url
+                                       : url.substr(scheme + 3);
+                auto slash = host.find('/');
+                if (slash != std::string::npos) host = host.substr(0, slash);
+                auto colon = host.find(':');
+                if (colon != std::string::npos) host = host.substr(0, colon);
+                std::replace(host.begin(), host.end(), '.', '-');
+                if (host.empty()) host = "endpoint";
+                return host;
+            };
+
+            for (const auto& entry : config["custom_providers"]) {
+                if (!entry.is_object()) continue;
+
+                auto get_str = [&](const char* key) {
+                    if (entry.contains(key) && entry[key].is_string())
+                        return entry[key].get<std::string>();
+                    return std::string{};
+                };
+
+                const std::string old_name = get_str("name");
+                std::string old_url = get_str("base_url");
+                if (old_url.empty()) old_url = get_str("url");
+                const std::string old_key_val = get_str("api_key");
+                if (old_url.empty()) continue;  // no URL → skip
+
+                std::string key = to_kebab(old_name);
+                if (key.empty()) {
+                    key = host_fallback(old_url);
+                    if (key.empty()) key = "endpoint-" + std::to_string(migrated_count);
+                }
+                // Do not overwrite existing entries.
+                if (providers.contains(key)) {
+                    key = key + "-" + std::to_string(migrated_count);
+                }
+
+                nlohmann::json new_entry = nlohmann::json::object();
+                new_entry["api"] = old_url;
+                if (!old_name.empty()) new_entry["name"] = old_name;
+                if (!old_key_val.empty() && old_key_val != "no-key" &&
+                    old_key_val != "no-key-required") {
+                    new_entry["api_key"] = old_key_val;
+                }
+                const std::string model = get_str("model");
+                if (!model.empty()) new_entry["default_model"] = model;
+                const std::string api_mode = get_str("api_mode");
+                if (!api_mode.empty()) new_entry["transport"] = api_mode;
+
+                providers[key] = std::move(new_entry);
+                ++migrated_count;
+            }
+
+            if (migrated_count > 0) {
+                config.erase("custom_providers");
+            }
+        }
+        config["_config_version"] = 12;
+        current = 12;
+    }
+
+    // v12 -> v13: Python clears dead LLM_MODEL / OPENAI_MODEL from .env.
+    // Like v8→v9, this is purely an env-file cleanup — no schema change —
+    // so the C++ port stamps the version and leaves the env rewrite to the
+    // Python setup wizard.
+    if (current < 13) {
+        config["_config_version"] = 13;
+        current = 13;
+    }
+
+    // v13 -> v14: migrate legacy flat `stt.model` into the provider-specific
+    // section.  Old configs had a provider-agnostic `stt.model`; when the
+    // provider was "local", OpenAI model names (e.g. "whisper-1") were fed
+    // to faster-whisper and crashed.  Move the value into the right nested
+    // section based on `stt.provider`, only if the nested slot isn't set.
+    if (current < 14) {
+        if (config.contains("stt") && config["stt"].is_object()) {
+            auto& stt = config["stt"];
+            if (stt.contains("model")) {
+                // Pull + remove the flat legacy key.
+                nlohmann::json legacy_model = stt["model"];
+                stt.erase("model");
+
+                std::string provider = "local";
+                if (stt.contains("provider") && stt["provider"].is_string()) {
+                    provider = stt["provider"].get<std::string>();
+                }
+
+                static const std::unordered_set<std::string> kLocalModels = {
+                    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
+                    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
+                    "large", "distil-large-v2", "distil-medium.en",
+                    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
+                    "large-v3-turbo", "turbo",
+                };
+
+                if (provider == "local" || provider == "local_command") {
+                    // Only migrate if legacy value is actually a local model
+                    // name.  Cloud names (e.g. "whisper-1") are dropped so
+                    // the default "base" takes effect.
+                    if (legacy_model.is_string() &&
+                        kLocalModels.count(legacy_model.get<std::string>()) > 0) {
+                        if (!stt.contains("local") || !stt["local"].is_object()) {
+                            stt["local"] = nlohmann::json::object();
+                        }
+                        if (!stt["local"].contains("model")) {
+                            stt["local"]["model"] = legacy_model;
+                        }
+                    }
+                    // else: drop — DEFAULT_CONFIG already defaults local.model
+                    // to "base".
+                } else {
+                    // Cloud provider — place under provider section only if
+                    // the user hasn't already specified a nested model.
+                    if (!stt.contains(provider) || !stt[provider].is_object()) {
+                        stt[provider] = nlohmann::json::object();
+                    }
+                    if (!stt[provider].contains("model")) {
+                        stt[provider]["model"] = legacy_model;
+                    }
+                }
+            }
+        }
+        config["_config_version"] = 14;
+        current = 14;
     }
 
     return config;

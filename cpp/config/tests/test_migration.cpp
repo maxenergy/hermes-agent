@@ -215,3 +215,52 @@ TEST(MigrationYaml, FutureVersionIsNotDowngraded) {
     // No seeded sections — migration is a no-op for future versions.
     EXPECT_FALSE(out.contains("security"));
 }
+
+// ---------------------------------------------------------------------------
+// v6 -> v14: version-only bumps for v6/v7/v8/v9/v10/v11 + the v11→v12 and
+// v13→v14 schema changes applied end-to-end.
+// ---------------------------------------------------------------------------
+TEST(MigrationYaml, V6YamlWalksToCurrentWithLegacyCustomProviders) {
+    TempHermesHome home;
+    home.write_config(
+        "_config_version: 6\n"
+        "custom_providers:\n"
+        "  - name: Legacy Host\n"
+        "    base_url: https://legacy.example.com/v1\n"
+        "    api_key: sk-legacy\n"
+        "    model: foo\n"
+        "stt:\n"
+        "  provider: local\n"
+        "  model: base\n");
+
+    auto cfg = hc::migrate_config(hc::load_cli_config());
+    EXPECT_EQ(cfg["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+    EXPECT_EQ(hc::kCurrentConfigVersion, 14);
+
+    // v11 -> v12: custom_providers migrated into providers dict.
+    EXPECT_FALSE(cfg.contains("custom_providers"));
+    ASSERT_TRUE(cfg["providers"].contains("legacy-host"));
+    EXPECT_EQ(cfg["providers"]["legacy-host"]["api"].get<std::string>(),
+              "https://legacy.example.com/v1");
+    EXPECT_EQ(cfg["providers"]["legacy-host"]["api_key"].get<std::string>(),
+              "sk-legacy");
+    EXPECT_EQ(cfg["providers"]["legacy-host"]["default_model"].get<std::string>(),
+              "foo");
+
+    // v13 -> v14: flat stt.model relocated under stt.local.
+    EXPECT_FALSE(cfg["stt"].contains("model"));
+    EXPECT_EQ(cfg["stt"]["local"]["model"].get<std::string>(), "base");
+}
+
+TEST(MigrationYaml, V8YamlStampsForwardWithoutEnvRewrite) {
+    // The Python v8→v9 migration clears ANTHROPIC_TOKEN from .env.  The
+    // C++ port intentionally does not touch .env (it's owned by the setup
+    // wizard); we only advance the version stamp.
+    TempHermesHome home;
+    home.write_config(
+        "_config_version: 8\n"
+        "model: gpt-4o\n");
+    auto cfg = hc::migrate_config(hc::load_cli_config());
+    EXPECT_EQ(cfg["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+    EXPECT_EQ(cfg["model"].get<std::string>(), "gpt-4o");
+}

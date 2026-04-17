@@ -61,6 +61,21 @@ nlohmann::json make_default_config() {
         {"provider", "edge"},
     };
 
+    // --- STT (v14 provider-keyed shape) ---
+    cfg["stt"] = {
+        {"enabled", true},
+        {"provider", "local"},
+        {"local", {{"model", "base"}, {"language", ""}}},
+        {"openai", {{"model", "whisper-1"}}},
+        {"mistral", {{"model", "voxtral-mini-latest"}}},
+    };
+
+    // --- Providers dict (v12 rename target, empty by default) ---
+    cfg["providers"] = json::object();
+
+    // --- IANA timezone (v5 — empty = server-local) ---
+    cfg["timezone"] = "";
+
     // --- Security (v5 -> v6) ---
     cfg["security"] = {
         {"redact_secrets", true},
