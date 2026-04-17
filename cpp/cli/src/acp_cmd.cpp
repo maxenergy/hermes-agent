@@ -26,6 +26,7 @@
 #include "hermes/acp/acp_adapter.hpp"
 #include "hermes/agent/ai_agent.hpp"
 #include "hermes/agent/prompt_builder.hpp"
+#include "hermes/auth/codex_oauth.hpp"
 #include "hermes/auth/qwen_client.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/llm/llm_client.hpp"
@@ -108,6 +109,32 @@ std::unique_ptr<hermes::llm::LlmClient> make_llm_client(
 
     if (provider == "qwen") {
         return std::make_unique<hermes::auth::QwenClient>(transport);
+    }
+
+    if (provider == "openai-codex" || provider == "codex") {
+        // Default to the local CLIProxyAPI which wraps the Codex
+        // OAuth session; direct chatgpt.com access is blocked by
+        // Cloudflare.  See hermes_cli.cpp::make_client for details.
+        std::string codex_base = "http://127.0.0.1:8993/v1";
+        if (cfg.contains("base_url") && cfg["base_url"].is_string() &&
+            !cfg["base_url"].get<std::string>().empty()) {
+            codex_base = cfg["base_url"].get<std::string>();
+        }
+        std::string token;
+        if (auto* k = std::getenv("CLIPROXY_API_KEY")) token = k;
+        if (token.empty()) {
+            auto creds = hermes::auth::load_codex_credentials();
+            if (creds) {
+                if (!creds->access_token.empty()) token = creds->access_token;
+                else if (!creds->api_key.empty()) token = creds->api_key;
+            }
+        }
+        if (token.empty()) return nullptr;
+        auto client = std::make_unique<hermes::llm::OpenAIClient>(
+            transport, token, codex_base);
+        client->set_provider_name("openai-codex");
+        client->set_force_stream(true);
+        return client;
     }
 
     std::string base_url = "https://api.openai.com/v1";

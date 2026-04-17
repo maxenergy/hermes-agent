@@ -249,7 +249,7 @@ CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
     };
     for (const auto& [k, v] : extra_headers_) headers[k] = v;
 
-    if (req.stream) {
+    if (req.stream || force_stream_) {
         body["stream"] = true;
         // Request usage info in stream mode.
         body["stream_options"] = {{"include_usage", true}};

@@ -26,6 +26,11 @@ public:
         extra_headers_ = std::move(h);
     }
     void set_provider_name(std::string name) { provider_name_ = std::move(name); }
+    // Force streaming regardless of ``CompletionRequest::stream``.  Some
+    // backends (e.g. the Codex/ChatGPT CLIProxy) return ``content:null``
+    // under non-stream mode and only populate content via the SSE
+    // delta, so the adapter that constructs them should opt in.
+    void set_force_stream(bool f) { force_stream_ = f; }
 
 private:
     HttpTransport* transport_;
@@ -33,6 +38,7 @@ private:
     std::string base_url_;
     std::unordered_map<std::string, std::string> extra_headers_;
     std::string provider_name_;
+    bool force_stream_ = false;
 };
 
 }  // namespace hermes::llm

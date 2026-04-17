@@ -2,6 +2,7 @@
 
 #include "hermes/agent/ai_agent.hpp"
 #include "hermes/agent/prompt_builder.hpp"
+#include "hermes/auth/codex_oauth.hpp"
 #include "hermes/auth/qwen_client.hpp"
 #include "hermes/cli/commands.hpp"
 #include "hermes/cli/display.hpp"
@@ -177,6 +178,41 @@ std::unique_ptr<hermes::llm::LlmClient> make_client(const nlohmann::json& cfg) {
         return std::make_unique<hermes::auth::QwenClient>(transport);
     }
 
+    // Codex (ChatGPT) OAuth path.  The actual wire protocol is brokered
+    // by CLIProxyAPI — a local proxy that holds the Codex OAuth session
+    // and exposes an OpenAI-compatible /v1 surface (see
+    // ~/.codex/config.toml :: [model_providers.cliproxy]).  Hermes hits
+    // the proxy with CLIPROXY_API_KEY; direct ChatGPT backend access is
+    // blocked by Cloudflare for non-browser clients.  If the proxy key
+    // is absent we still record who the user *meant* to use so
+    // ensure_agent's diagnostic message names Codex rather than
+    // "generic openai missing key".
+    if (provider == "openai-codex" || provider == "codex") {
+        std::string base_url = "http://127.0.0.1:8993/v1";
+        if (cfg.contains("base_url") && cfg["base_url"].is_string() &&
+            !cfg["base_url"].get<std::string>().empty()) {
+            base_url = cfg["base_url"].get<std::string>();
+        }
+        std::string token;
+        if (auto* k = std::getenv("CLIPROXY_API_KEY")) token = k;
+        if (token.empty()) {
+            // Best-effort fallback to the Codex OAuth access_token —
+            // Cloudflare will reject it on chatgpt.com but at least the
+            // user sees a real HTTP error instead of "no credentials".
+            auto creds = hermes::auth::load_codex_credentials();
+            if (creds) {
+                if (!creds->access_token.empty()) token = creds->access_token;
+                else if (!creds->api_key.empty()) token = creds->api_key;
+            }
+        }
+        if (token.empty()) return nullptr;
+        auto client = std::make_unique<hermes::llm::OpenAIClient>(
+            transport, token, base_url);
+        client->set_provider_name("openai-codex");
+        client->set_force_stream(true);
+        return client;
+    }
+
     // Generic OpenAI-compatible: provider == "openai" / "openrouter" / etc.
     std::string base_url = "https://api.openai.com/v1";
     if (cfg.contains("base_url") && cfg["base_url"].is_string() &&
@@ -208,6 +244,21 @@ void HermesCLI::ensure_agent() {
     }
     if (config_.contains("provider") && config_["provider"].is_string()) {
         acfg.provider = config_["provider"].get<std::string>();
+    }
+    // reasoning_effort: accept either an int (0..3) or the Codex-style
+    // strings "none"|"low"|"medium"|"high".  Silently clamps unknown
+    // values to 0.
+    if (config_.contains("reasoning_effort")) {
+        const auto& v = config_["reasoning_effort"];
+        if (v.is_number_integer()) {
+            acfg.reasoning_effort = v.get<int>();
+        } else if (v.is_string()) {
+            std::string s = v.get<std::string>();
+            if (s == "low") acfg.reasoning_effort = 1;
+            else if (s == "medium") acfg.reasoning_effort = 2;
+            else if (s == "high") acfg.reasoning_effort = 3;
+            else acfg.reasoning_effort = 0;
+        }
     }
     acfg.platform = "cli";
     acfg.temperature = temperature_;

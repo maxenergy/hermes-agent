@@ -4,6 +4,7 @@ add_library(hermes_auth STATIC
     src/credentials.cpp
     src/env_loader.cpp
     src/copilot_oauth.cpp
+    src/codex_oauth.cpp
     src/nous_subscription.cpp
     src/qwen_oauth.cpp
     src/qwen_client.cpp
