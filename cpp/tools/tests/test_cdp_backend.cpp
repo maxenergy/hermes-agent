@@ -35,14 +35,37 @@ TEST(CdpBackend, ConstructDoesNotLaunch) {
     // Destruction is safe even without launch().
 }
 
-TEST(CdpBackend, LaunchFailsWithBadPath) {
+// Fixture that isolates PATH so CdpBackend's fallback to chromium/
+// chromium-browser/google-chrome-stable cannot find any real browser on
+// the host. Without this isolation, the two tests below fail on machines
+// that have Chromium / Chrome installed (launch() succeeds via fallback).
+class CdpBackendIsolated : public ::testing::Test {
+protected:
+    void SetUp() override {
+        const char* p = ::getenv("PATH");
+        original_path_ = p ? std::string(p) : std::string();
+        had_path_ = (p != nullptr);
+        ::setenv("PATH", "/nonexistent-hermes-test", 1);
+    }
+    void TearDown() override {
+        if (had_path_) {
+            ::setenv("PATH", original_path_.c_str(), 1);
+        } else {
+            ::unsetenv("PATH");
+        }
+    }
+    std::string original_path_;
+    bool had_path_{false};
+};
+
+TEST_F(CdpBackendIsolated, LaunchFailsWithBadPath) {
     CdpConfig cfg;
     cfg.chrome_path = "/nonexistent/chrome-XXXXX";
     CdpBackend backend(cfg);
     EXPECT_FALSE(backend.launch());
 }
 
-TEST(CdpBackend, MakeFactoryReturnsNullWithBadPath) {
+TEST_F(CdpBackendIsolated, MakeFactoryReturnsNullWithBadPath) {
     CdpConfig cfg;
     cfg.chrome_path = "/nonexistent/chrome-XXXXX";
     auto ptr = make_cdp_backend(cfg);
