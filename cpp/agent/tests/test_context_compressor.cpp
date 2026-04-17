@@ -113,10 +113,13 @@ TEST(ContextCompressor, AboveThresholdSummarisesMiddle) {
     EXPECT_EQ(out.front().role, Role::System);
     EXPECT_EQ(out.front().content_text, "system prompt");
 
-    // Summary marker visible somewhere.
+    // Summary marker visible somewhere. The new pipeline mirrors the
+    // Python [CONTEXT COMPACTION] prefix (see compressor_depth::
+    // kSummaryPrefix) rather than the legacy "Compressed history
+    // summary" header.
     bool found_summary = false;
     for (const auto& m : out) {
-        if (m.content_text.find("Compressed history summary") !=
+        if (m.content_text.find("[CONTEXT COMPACTION]") !=
             std::string::npos) {
             found_summary = true;
             break;
@@ -129,11 +132,17 @@ TEST(ContextCompressor, ProtectedTailIsPreserved) {
     ScriptedClient sc;
     sc.enqueue("summary body");
     CompressionOptions opts;
-    opts.protected_tail_turns = 4;
-    opts.protected_tail_tokens = 10;  // small so the turn count drives it
+    // Python-aligned behaviour: the token budget is the primary
+    // criterion for the tail cut. Python _find_tail_cut_by_tokens
+    // walks backward accumulating tokens until soft_ceiling
+    // (= budget * 1.5) is exceeded AND at least min_tail=3 messages
+    // have been kept. Pick a budget that lets ~8-11 tail messages
+    // survive so our 4 sentinels (interleaved with 4 assistant msgs)
+    // fall inside the protected tail.
+    opts.protected_tail_tokens = 500;  // soft ceiling ~= 750 tokens
     ContextCompressor c(&sc, "gpt-aux", opts);
 
-    auto msgs = build_long_history(20);
+    auto msgs = build_long_history(10);
     // Mark the last 4 user messages with sentinel content we can check.
     for (int i = 0; i < 4; ++i) {
         msgs[msgs.size() - 1 - 2 * i].content_text =

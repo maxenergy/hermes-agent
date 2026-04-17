@@ -20,6 +20,7 @@ add_executable(hermes_agent_tests
     test_prompt_builder_depth.cpp
     test_context_compressor.cpp
     test_context_compressor_depth.cpp
+    test_context_compressor_pipeline.cpp
     test_memory_manager.cpp
     test_iteration_budget.cpp
     test_subdirectory_hints.cpp
