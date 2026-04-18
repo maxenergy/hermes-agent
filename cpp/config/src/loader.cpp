@@ -1,5 +1,6 @@
 #include "hermes/config/loader.hpp"
 
+#include "hermes/auth/env_writer.hpp"
 #include "hermes/config/default_config.hpp"
 #include "hermes/core/atomic_io.hpp"
 #include "hermes/core/logging.hpp"
@@ -408,11 +409,14 @@ nlohmann::json migrate_config(nlohmann::json config) {
         current = 8;
     }
 
-    // v8 -> v9: Python clears ANTHROPIC_TOKEN from ~/.hermes/.env.
-    // The C++ config loader does not mutate .env files, so the version
-    // stamp is advanced and the env-file rewrite is intentionally left to
-    // the Python setup wizard (which still runs for mixed installs).
+    // v8 -> v9: Anthropic rotated their auth flow; `ANTHROPIC_TOKEN`
+    // is no longer read by anything.  Wipe it from the per-profile
+    // `.env` so it stops surfacing in `hermes doctor` / setup.
+    //
+    // Failures are best-effort — we still stamp the version so we
+    // don't re-try this cleanup on every load.
     if (current < 9) {
+        (void)hermes::auth::clear_env_value("ANTHROPIC_TOKEN");
         config["_config_version"] = 9;
         current = 9;
     }
@@ -543,11 +547,15 @@ nlohmann::json migrate_config(nlohmann::json config) {
         current = 12;
     }
 
-    // v12 -> v13: Python clears dead LLM_MODEL / OPENAI_MODEL from .env.
-    // Like v8→v9, this is purely an env-file cleanup — no schema change —
-    // so the C++ port stamps the version and leaves the env rewrite to the
-    // Python setup wizard.
+    // v12 -> v13: config.yaml is the single source of truth for
+    // model selection.  Retire the legacy `LLM_MODEL` / `OPENAI_MODEL`
+    // entries from `.env` — they are no longer read by anything and
+    // just cause user confusion.
     if (current < 13) {
+        (void)hermes::auth::rewrite_env_file(
+            hermes::core::path::get_hermes_home() / ".env",
+            /*updates=*/{},
+            /*removals=*/{"LLM_MODEL", "OPENAI_MODEL"});
         config["_config_version"] = 13;
         current = 13;
     }

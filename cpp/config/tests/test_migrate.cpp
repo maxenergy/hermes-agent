@@ -1,9 +1,60 @@
 #include "hermes/config/default_config.hpp"
 #include "hermes/config/loader.hpp"
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <sstream>
+#include <string>
 
 namespace hc = hermes::config;
+namespace fs = std::filesystem;
+
+namespace {
+
+// Scoped HERMES_HOME override so v8→v9 / v12→v13 migrations that
+// touch `<HERMES_HOME>/.env` don't leak into the developer's real
+// dotfile directory.  Mirrors `TempHermesHome` in the auth tests.
+class TempHermesHome {
+public:
+    TempHermesHome() {
+        base_ = fs::temp_directory_path() /
+                ("hermes-migrate-env-" + std::to_string(::getpid()) + "-" +
+                 std::to_string(++counter_));
+        fs::create_directories(base_);
+        if (const char* old = std::getenv("HERMES_HOME"); old != nullptr) {
+            had_old_ = true;
+            old_ = old;
+        }
+        ::setenv("HERMES_HOME", base_.c_str(), 1);
+    }
+    ~TempHermesHome() {
+        std::error_code ec;
+        fs::remove_all(base_, ec);
+        if (had_old_) {
+            ::setenv("HERMES_HOME", old_.c_str(), 1);
+        } else {
+            ::unsetenv("HERMES_HOME");
+        }
+    }
+    const fs::path& path() const { return base_; }
+
+private:
+    fs::path base_;
+    bool had_old_ = false;
+    std::string old_;
+    static inline int counter_ = 0;
+};
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    return buf.str();
+}
+
+}  // namespace
 
 TEST(MigrateConfig, EmptyConfigGetsVersionStamp) {
     nlohmann::json cfg = nlohmann::json::object();
@@ -251,4 +302,73 @@ TEST(MigrateConfig, V6ToV14FullWalkWithAllLegacyFields) {
               "https://old.example.com/v1");
     EXPECT_FALSE(out["stt"].contains("model"));
     EXPECT_EQ(out["stt"]["local"]["model"].get<std::string>(), "medium");
+}
+
+// ---------------------------------------------------------------------------
+// v8 → v9 + v12 → v13: .env cleanup side-effects
+// ---------------------------------------------------------------------------
+
+TEST(MigrateConfig, V8ToV9WipesAnthropicTokenFromDotEnv) {
+    TempHermesHome home;
+    const auto env_path = home.path() / ".env";
+    {
+        std::ofstream f(env_path, std::ios::binary);
+        f << "# pre-existing\n"
+             "ANTHROPIC_TOKEN=sk-legacy-value\n"
+             "ANTHROPIC_API_KEY=sk-keep-this\n";
+    }
+
+    nlohmann::json cfg = {{"_config_version", 8}};
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+
+    const std::string env = slurp(env_path);
+    EXPECT_EQ(env.find("ANTHROPIC_TOKEN"), std::string::npos)
+        << "v8→v9 should have dropped ANTHROPIC_TOKEN";
+    EXPECT_EQ(env.find("sk-legacy-value"), std::string::npos);
+    // Adjacent / unrelated keys survive.
+    EXPECT_NE(env.find("ANTHROPIC_API_KEY=sk-keep-this"), std::string::npos);
+    // Comment preserved.
+    EXPECT_NE(env.find("# pre-existing"), std::string::npos);
+}
+
+TEST(MigrateConfig, V12ToV13WipesLlmAndOpenAiModelFromDotEnv) {
+    TempHermesHome home;
+    const auto env_path = home.path() / ".env";
+    {
+        std::ofstream f(env_path, std::ios::binary);
+        f << "OPENAI_API_KEY=keep-me\n"
+             "LLM_MODEL=gpt-something\n"
+             "# comment\n"
+             "OPENAI_MODEL=\"gpt-4o\"\n"
+             "ANOTHER=ok\n";
+    }
+
+    nlohmann::json cfg = {{"_config_version", 12}};
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+
+    const std::string env = slurp(env_path);
+    EXPECT_EQ(env.find("LLM_MODEL"), std::string::npos);
+    EXPECT_EQ(env.find("OPENAI_MODEL"), std::string::npos);
+    EXPECT_EQ(env.find("gpt-something"), std::string::npos);
+    EXPECT_EQ(env.find("gpt-4o"), std::string::npos);
+    // Survivors.
+    EXPECT_NE(env.find("OPENAI_API_KEY=keep-me"), std::string::npos);
+    EXPECT_NE(env.find("ANOTHER=ok"), std::string::npos);
+    EXPECT_NE(env.find("# comment"), std::string::npos);
+}
+
+TEST(MigrateConfig, V8ToV9WithoutEnvFileDoesNotCreateOne) {
+    TempHermesHome home;
+    const auto env_path = home.path() / ".env";
+    ASSERT_FALSE(fs::exists(env_path));
+
+    nlohmann::json cfg = {{"_config_version", 8}};
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+
+    // Removal against a non-existent file is a no-op; we don't want
+    // the migration to spuriously create an empty `.env`.
+    EXPECT_FALSE(fs::exists(env_path));
 }

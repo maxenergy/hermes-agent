@@ -3,6 +3,7 @@ include(GoogleTest)
 add_executable(hermes_auth_tests
     test_credentials.cpp
     test_env_loader.cpp
+    test_env_writer.cpp
     test_copilot_oauth.cpp
     test_nous_subscription.cpp
     test_mcp_oauth.cpp

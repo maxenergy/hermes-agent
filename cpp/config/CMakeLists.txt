@@ -45,6 +45,11 @@ target_link_libraries(hermes_config
     PUBLIC
         hermes::core
         nlohmann_json::nlohmann_json
+        # env_writer backs the v8→v9 / v12→v13 .env cleanup steps.
+        # hermes::auth does NOT link config (verified), so no cycle.
+        # Kept PUBLIC so downstream exes re-see the symbol after config's
+        # .o references are queued (single-pass ld link order).
+        hermes::auth
     PRIVATE
         hermes_warnings
         yaml-cpp::yaml-cpp
