@@ -321,3 +321,165 @@ TEST(LlmClient, FakeTransportThrowsWhenEmpty) {
     req.messages = {user_msg("hi")};
     EXPECT_THROW(client.complete(req), std::runtime_error);
 }
+
+// ── Codex intermediate-ack normalisation ──────────────────────────────────
+//
+// The Codex Responses API occasionally returns a heartbeat-shaped message
+// (content=null, no tool_calls, no reasoning, no finish_reason).  The client
+// should retry until a real response arrives rather than surfacing the ack.
+
+namespace {
+
+std::string codex_ack_body() {
+    return json{
+        {"id", "chatcmpl-ack"},
+        {"choices", json::array({{
+            {"index", 0},
+            // Note: finish_reason omitted (== null on the wire).
+            {"message", {
+                {"role", "assistant"},
+                {"content", nullptr},
+            }},
+        }})},
+    }.dump();
+}
+
+std::string codex_real_body(const std::string& text) {
+    return json{
+        {"id", "chatcmpl-real"},
+        {"choices", json::array({{
+            {"index", 0},
+            {"finish_reason", "stop"},
+            {"message", {
+                {"role", "assistant"},
+                {"content", text},
+            }},
+        }})},
+    }.dump();
+}
+
+}  // namespace
+
+TEST(LlmClient, CodexAckTriggersRetryUntilRealResponse) {
+    FakeHttpTransport fake;
+    HttpTransport::Response ack;
+    ack.status_code = 200;
+    ack.body = codex_ack_body();
+    HttpTransport::Response real;
+    real.status_code = 200;
+    real.body = codex_real_body("hello there");
+    // First call returns ack, second returns the real body.
+    fake.enqueue_response(ack);
+    fake.enqueue_response(real);
+
+    OpenAIClient client(&fake, "sk-fake");
+    client.set_provider_name("openai-codex");
+    CompletionRequest req;
+    req.model = "gpt-5-codex";
+    req.messages = {user_msg("hi")};
+    const auto out = client.complete(req);
+
+    EXPECT_EQ(out.finish_reason, "stop");
+    EXPECT_EQ(out.assistant_message.content_text, "hello there");
+    // Two HTTP requests were issued — one ack, one real.
+    EXPECT_EQ(fake.requests().size(), 2u);
+}
+
+TEST(LlmClient, CodexAckRetryGivesUpAfterCap) {
+    FakeHttpTransport fake;
+    for (int i = 0; i < 6; ++i) {
+        HttpTransport::Response ack;
+        ack.status_code = 200;
+        ack.body = codex_ack_body();
+        fake.enqueue_response(std::move(ack));
+    }
+    OpenAIClient client(&fake, "sk-fake");
+    client.set_provider_name("openai-codex");
+    CompletionRequest req;
+    req.model = "gpt-5-codex";
+    req.messages = {user_msg("hi")};
+    const auto out = client.complete(req);
+    // Initial request + 3 retries = 4 HTTP calls (kMaxAckRetries=3).
+    EXPECT_EQ(fake.requests().size(), 4u);
+    // Final response is still an ack — we surrender, not loop forever.
+    EXPECT_TRUE(out.assistant_message.content_text.empty());
+    EXPECT_TRUE(out.finish_reason.empty());
+}
+
+TEST(LlmClient, NonCodexProviderDoesNotRetryOnAck) {
+    FakeHttpTransport fake;
+    HttpTransport::Response ack;
+    ack.status_code = 200;
+    ack.body = codex_ack_body();
+    fake.enqueue_response(ack);
+
+    // Default provider name is "openai" — the ack path must not trigger.
+    OpenAIClient client(&fake, "sk-fake");
+    CompletionRequest req;
+    req.model = "gpt-4o";
+    req.messages = {user_msg("hi")};
+    const auto out = client.complete(req);
+    // Exactly one request — no retry — and the empty response is returned.
+    EXPECT_EQ(fake.requests().size(), 1u);
+    EXPECT_TRUE(out.assistant_message.content_text.empty());
+}
+
+TEST(LlmClient, CodexToolCallResponseIsNotAck) {
+    // content=null but tool_calls populated → a real tool turn, not ack.
+    FakeHttpTransport fake;
+    HttpTransport::Response tool_resp;
+    tool_resp.status_code = 200;
+    tool_resp.body = json{
+        {"id", "chatcmpl-tool"},
+        {"choices", json::array({{
+            {"index", 0},
+            {"finish_reason", "tool_calls"},
+            {"message", {
+                {"role", "assistant"},
+                {"content", nullptr},
+                {"tool_calls", json::array({{
+                    {"id", "call_xyz"},
+                    {"type", "function"},
+                    {"function", {
+                        {"name", "ls"},
+                        {"arguments", "{}"},
+                    }},
+                }})},
+            }},
+        }})},
+    }.dump();
+    fake.enqueue_response(tool_resp);
+
+    OpenAIClient client(&fake, "sk-fake");
+    client.set_provider_name("openai-codex");
+    CompletionRequest req;
+    req.model = "gpt-5-codex";
+    req.messages = {user_msg("list /tmp")};
+    const auto out = client.complete(req);
+
+    EXPECT_EQ(fake.requests().size(), 1u);
+    ASSERT_EQ(out.assistant_message.tool_calls.size(), 1u);
+    EXPECT_EQ(out.assistant_message.tool_calls[0].name, "ls");
+}
+
+TEST(LlmClient, CodexAckDetectedViaCodexInBaseUrl) {
+    FakeHttpTransport fake;
+    HttpTransport::Response ack;
+    ack.status_code = 200;
+    ack.body = codex_ack_body();
+    HttpTransport::Response real;
+    real.status_code = 200;
+    real.body = codex_real_body("ok");
+    fake.enqueue_response(ack);
+    fake.enqueue_response(real);
+
+    // provider_name defaults to "openai" but base_url carries "codex".
+    OpenAIClient client(&fake, "sk",
+                        "https://codex.example.com/v1");
+    CompletionRequest req;
+    req.model = "x";
+    req.messages = {user_msg("hi")};
+    const auto out = client.complete(req);
+    EXPECT_EQ(out.assistant_message.content_text, "ok");
+    EXPECT_EQ(fake.requests().size(), 2u);
+}

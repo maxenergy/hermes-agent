@@ -239,6 +239,63 @@ CompletionResponse parse_openai_stream(
     return out;
 }
 
+/// Detect a Codex Responses-API "intermediate ack" — a heartbeat-shaped
+/// response with no content, no tool_calls, no reasoning, and no
+/// finish_reason.  The caller re-issues the request (up to a cap) so the
+/// agent loop doesn't bail out with an empty turn.
+///
+/// Guardrails (must ALL match to treat as ack):
+///   - provider is codex-shaped (name/base_url contains "codex")
+///   - assistant content_text is empty/whitespace (and no content_blocks)
+///   - tool_calls is empty
+///   - reasoning is unset or empty
+///   - finish_reason is empty (non-ack real responses carry "stop",
+///     "tool_calls", "length", etc.)
+///
+/// Notably we do NOT treat a response with tool_calls but empty content as
+/// ack — that's a legitimate tool-calling turn.
+bool is_codex_intermediate_ack(const CompletionResponse& r,
+                               const std::string& provider,
+                               const std::string& base_url) {
+    // Provider gate — matches Python's restriction to openai-codex.
+    auto contains_codex = [](const std::string& s) {
+        for (size_t i = 0; i + 5 <= s.size(); ++i) {
+            char buf[6] = {s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], 0};
+            for (char& c : buf) {
+                c = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (std::string_view(buf, 5) == "codex") return true;
+        }
+        return false;
+    };
+    if (!contains_codex(provider) && !contains_codex(base_url)) return false;
+
+    // Content empty (whitespace-only counts as empty).
+    const auto& msg = r.assistant_message;
+    bool content_empty = true;
+    for (char c : msg.content_text) {
+        if (!std::isspace(static_cast<unsigned char>(c))) {
+            content_empty = false;
+            break;
+        }
+    }
+    if (!content_empty) return false;
+    if (!msg.content_blocks.empty()) return false;
+
+    // Must have no tool_calls — a real tool-calling turn is not an ack.
+    if (!msg.tool_calls.empty()) return false;
+
+    // Reasoning absent or empty.
+    if (msg.reasoning && !msg.reasoning->empty()) return false;
+
+    // finish_reason empty means the stream/JSON didn't actually terminate —
+    // the classic heartbeat shape.
+    if (!r.finish_reason.empty()) return false;
+
+    return true;
+}
+
 }  // namespace
 
 CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
@@ -249,43 +306,67 @@ CompletionResponse OpenAIClient::complete(const CompletionRequest& req) {
     };
     for (const auto& [k, v] : extra_headers_) headers[k] = v;
 
-    if (req.stream || force_stream_) {
+    const bool stream = req.stream || force_stream_;
+    if (stream) {
         body["stream"] = true;
         // Request usage info in stream mode.
         body["stream_options"] = {{"include_usage", true}};
         if (headers.find("User-Agent") == headers.end()) {
             headers["User-Agent"] = "QwenCode/0.14.3 (linux; x64)";
         }
-        return parse_openai_stream(
-            transport_, base_url_ + "/chat/completions",
-            headers, body.dump(), provider_name());
-    }
-
-    if (headers.find("User-Agent") == headers.end()) {
+    } else if (headers.find("User-Agent") == headers.end()) {
         // Some OpenAI-compatible endpoints (e.g. Bailian Coding Plan at
         // coding.dashscope.aliyuncs.com) reject default libcurl UAs with
         // "Coding Plan is currently only available for Coding Agents".
         // Send a Qwen Code-shaped UA by default; override via extra_headers.
         headers["User-Agent"] = "QwenCode/0.14.3 (linux; x64)";
     }
-    const auto resp = transport_->post_json(
-        base_url_ + "/chat/completions", headers, body.dump());
-    if (std::getenv("HERMES_DEBUG_LLM")) {
-        std::fprintf(stderr, "[hermes-llm] %s status=%d body=%.1000s\n",
-                     base_url_.c_str(), resp.status_code, resp.body.c_str());
+
+    const std::string body_str = body.dump();
+    const std::string url = base_url_ + "/chat/completions";
+
+    // Up to 3 intermediate-ack retries (Codex-only path — see
+    // is_codex_intermediate_ack above).  A real empty turn only loops when
+    // the server keeps sending heartbeats; each retry is a fresh POST with
+    // the identical body so cache keys stay stable.
+    constexpr int kMaxAckRetries = 3;
+    CompletionResponse last_response;
+    for (int ack_try = 0; ack_try <= kMaxAckRetries; ++ack_try) {
+        if (stream) {
+            last_response = parse_openai_stream(
+                transport_, url, headers, body_str, provider_name());
+        } else {
+            const auto resp = transport_->post_json(url, headers, body_str);
+            if (std::getenv("HERMES_DEBUG_LLM")) {
+                std::fprintf(stderr, "[hermes-llm] %s status=%d body=%.1000s\n",
+                             base_url_.c_str(), resp.status_code,
+                             resp.body.c_str());
+            }
+            if (resp.status_code < 200 || resp.status_code >= 300) {
+                throw ApiError(resp.status_code, resp.body, provider_name());
+            }
+            json parsed;
+            try {
+                parsed = json::parse(resp.body);
+            } catch (const std::exception& e) {
+                throw ApiError(
+                    resp.status_code,
+                    std::string("invalid JSON response: ") + e.what(),
+                    provider_name());
+            }
+            last_response =
+                parse_chat_completions_response(parsed, provider_name());
+        }
+
+        if (!is_codex_intermediate_ack(last_response, provider_name(),
+                                       base_url_)) {
+            return last_response;
+        }
+        // else: loop and re-issue the request.  After kMaxAckRetries we
+        // return the last ack as-is so callers see it (matching Python's
+        // behaviour of surrendering after the retry budget is exhausted).
     }
-    if (resp.status_code < 200 || resp.status_code >= 300) {
-        throw ApiError(resp.status_code, resp.body, provider_name());
-    }
-    json parsed;
-    try {
-        parsed = json::parse(resp.body);
-    } catch (const std::exception& e) {
-        throw ApiError(resp.status_code,
-                       std::string("invalid JSON response: ") + e.what(),
-                       provider_name());
-    }
-    return parse_chat_completions_response(parsed, provider_name());
+    return last_response;
 }
 
 }  // namespace hermes::llm
