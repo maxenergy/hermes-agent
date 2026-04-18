@@ -1,5 +1,6 @@
 #include "hermes/agent/ai_agent.hpp"
 
+#include "hermes/agent/background_tasks.hpp"
 #include "hermes/agent/rate_limit_tracker.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/llm/error_classifier.hpp"
@@ -8,6 +9,7 @@
 #include "hermes/llm/retry_policy.hpp"
 #include "hermes/state/trajectory.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -72,6 +74,24 @@ struct AIAgent::Impl {
 
     // Agent-level todo state — opaque key/value list of items.
     nlohmann::json todos = nlohmann::json::array();
+
+    // Quiet mode + tool progress — see ai_agent.hpp for semantics.
+    std::atomic<bool> quiet_mode{false};
+    ToolProgressCallback on_tool_progress;
+
+    // Lazy-initialised background task pool.  We create it on first use
+    // so tests that never touch spawn_background_review pay no thread
+    // cost.  Owned by the Impl; joined at Impl destruction.
+    std::unique_ptr<BackgroundTaskPool> bg_pool;
+    std::mutex bg_pool_mu;
+
+    BackgroundTaskPool& ensure_bg_pool() {
+        std::lock_guard<std::mutex> lk(bg_pool_mu);
+        if (!bg_pool) {
+            bg_pool = std::make_unique<BackgroundTaskPool>(2);
+        }
+        return *bg_pool;
+    }
 
     // ── Observability state ───────────────────────────────────────────
     // Last-activity tracking for the gateway timeout + heartbeat.
@@ -202,14 +222,46 @@ struct AIAgent::Impl {
         }
     }
     void emit_tool_call(const std::string& name, const nlohmann::json& args) {
+        if (quiet_mode.load()) return;
         if (callbacks.on_tool_call) {
             try { callbacks.on_tool_call(name, args); } catch (...) {}
         }
     }
     void emit_tool_result(const std::string& name, const std::string& result) {
+        if (quiet_mode.load()) return;
         if (callbacks.on_tool_result) {
             try { callbacks.on_tool_result(name, result); } catch (...) {}
         }
+    }
+
+    // Build a short preview of the arguments (<= 120 chars, single-line)
+    // for tool_progress_callback consumers.  Port of run_agent.py's
+    // _format_tool_args_preview.
+    static std::string arg_preview(const nlohmann::json& args) {
+        std::string s;
+        try {
+            s = args.dump();
+        } catch (...) {
+            return "";
+        }
+        // Collapse newlines so the preview fits on one line.
+        std::replace(s.begin(), s.end(), '\n', ' ');
+        std::replace(s.begin(), s.end(), '\r', ' ');
+        if (s.size() > 120) {
+            s.resize(117);
+            s += "...";
+        }
+        return s;
+    }
+
+    void emit_tool_progress(const std::string& name,
+                            const nlohmann::json& args,
+                            std::string_view phase) {
+        if (quiet_mode.load()) return;
+        if (!on_tool_progress) return;
+        try {
+            on_tool_progress(name, arg_preview(args), phase);
+        } catch (...) {}
     }
     void emit_usage(const CanonicalUsage& usage) {
         if (!callbacks.on_usage) return;
@@ -621,13 +673,34 @@ struct AIAgent::Impl {
             for (const auto& tc : resp.assistant_message.tool_calls) {
                 if (stop_requested.load()) break;
                 emit_tool_call(tc.name, tc.arguments);
+                emit_tool_progress(tc.name, tc.arguments, "start");
                 set_current_tool(tc.name);
                 touch_activity("running tool: " + tc.name);
-                std::string tool_result = dispatch_tool(tc, task_id);
+                std::string tool_result;
+                std::string progress_phase = "end";
+                try {
+                    tool_result = dispatch_tool(tc, task_id);
+                    // dispatch_tool already traps exceptions from the
+                    // tool dispatcher, but it does NOT mark the JSON
+                    // result as an error.  We peek at the leading JSON
+                    // to classify the phase purely as an observability
+                    // hint — behaviour parity with Python.
+                    if (tool_result.find("\"error\"") != std::string::npos &&
+                        tool_result.find("{") == 0) {
+                        progress_phase = "error";
+                    }
+                } catch (...) {
+                    // Defensive — dispatch_tool shouldn't throw, but if
+                    // it ever does we still want the progress "error"
+                    // phase to fire.
+                    progress_phase = "error";
+                    tool_result = R"({"error":"tool dispatch threw"})";
+                }
                 touch_activity("tool completed: " + tc.name);
                 set_current_tool("");
                 Message tr = make_tool_result_message(tc.id, tool_result);
                 emit_tool_result(tc.name, tool_result);
+                emit_tool_progress(tc.name, tc.arguments, progress_phase);
                 persist_message(tr, static_cast<int>(messages.size()));
                 messages.push_back(std::move(tr));
             }
@@ -643,6 +716,9 @@ struct AIAgent::Impl {
         // Loop exited without a final assistant text — return whatever
         // we have.
         result.completed = false;
+        const bool budget_exhausted =
+            !result.error.has_value() ||
+            result.error.value() == "iteration budget exhausted";
         if (!result.error) {
             result.error = "iteration budget exhausted";
         }
@@ -665,6 +741,110 @@ struct AIAgent::Impl {
                 break;
             }
         }
+
+        // ── _handle_max_iterations summary path ──────────────────────
+        //
+        // Port of run_agent.py::AIAgent._handle_max_iterations.  When the
+        // iteration budget is exhausted we make one final no-tools LLM
+        // call so the model produces a summary of progress so far instead
+        // of the user seeing a bare "budget exhausted" error.
+        //
+        // We only run this for the "budget exhausted" case — a hard stop
+        // request, a fatal API error, or a retry exhaustion already
+        // leaves a more specific error in place.
+        if (budget_exhausted && !stop_requested.load() && llm) {
+            try {
+                // Append a user-side prompt asking for the summary.
+                Message wrap_up;
+                wrap_up.role = Role::User;
+                wrap_up.content_text =
+                    "The iteration budget has been reached. Please summarise "
+                    "what you've accomplished and what remains, without "
+                    "calling any more tools.";
+                std::vector<Message> summary_msgs = messages;
+                summary_msgs.push_back(wrap_up);
+
+                CompletionRequest summary_req;
+                summary_req.model = config.model;
+                summary_req.messages = std::move(summary_msgs);
+                // No tools — this is the key signal that tells the model
+                // "stop acting, start summarising".
+                summary_req.tools.clear();
+                summary_req.temperature = config.temperature;
+                summary_req.reasoning_effort = config.reasoning_effort;
+                // Cap the summary response — we don't want it to run as
+                // long as a normal turn.
+                int cap = 2048;
+                if (config.extra.is_object() &&
+                    config.extra.contains("max_tokens") &&
+                    config.extra["max_tokens"].is_number_integer()) {
+                    int cur = config.extra["max_tokens"].get<int>();
+                    cap = (cur > 0 && cur < 2048) ? cur : 2048;
+                }
+                summary_req.max_tokens = cap;
+                summary_req.cache.native_anthropic =
+                    (config.provider == "anthropic");
+                summary_req.extra = config.extra;
+
+                emit_status("max_iterations",
+                            "iteration budget exhausted — requesting summary");
+                emit_telemetry("max_iterations_summary_start",
+                               nlohmann::json{{"iterations", api_calls}});
+
+                CompletionResponse summary_resp = llm->complete(summary_req);
+
+                std::string summary_text =
+                    summary_resp.assistant_message.content_text;
+                if (summary_text.empty()) {
+                    for (const auto& b :
+                         summary_resp.assistant_message.content_blocks) {
+                        if (b.type == "text") {
+                            summary_text = b.text;
+                            break;
+                        }
+                    }
+                }
+                if (summary_text.empty() &&
+                    summary_resp.assistant_message.reasoning &&
+                    !summary_resp.assistant_message.reasoning->empty()) {
+                    // Thinking-model fallback — same as the main loop's
+                    // final-response path.
+                    summary_text =
+                        *summary_resp.assistant_message.reasoning;
+                }
+
+                if (!summary_text.empty()) {
+                    result.final_response = summary_text;
+                    accumulate_usage(total_usage, summary_resp.usage);
+                    result.usage = total_usage;
+                    result.error =
+                        "iteration budget exhausted (with summary)";
+                    // Persist the summary so the transcript reflects it.
+                    messages.push_back(summary_resp.assistant_message);
+                    persist_message(summary_resp.assistant_message,
+                                    static_cast<int>(messages.size()) - 1);
+                    result.messages = messages;
+                    emit_telemetry(
+                        "max_iterations_summary_done",
+                        nlohmann::json{
+                            {"summary_length", summary_text.size()}});
+                } else {
+                    emit_telemetry("max_iterations_summary_empty",
+                                   nlohmann::json::object());
+                }
+            } catch (const std::exception& e) {
+                // Failure: keep the original "budget exhausted" error.
+                emit_status(
+                    "error",
+                    std::string("max-iterations summary failed: ") +
+                        e.what());
+                emit_telemetry("max_iterations_summary_error",
+                               nlohmann::json{{"error", e.what()}});
+            } catch (...) {
+                emit_status("error", "max-iterations summary failed");
+            }
+        }
+
         save_trajectory(result);
         return result;
     }
@@ -789,6 +969,32 @@ void AIAgent::set_telemetry_callback(TelemetryCallback cb) {
 void AIAgent::set_persist_user_message_override(
     PersistUserMessageOverride cb) {
     impl_->callbacks.persist_user_message_override = std::move(cb);
+}
+
+void AIAgent::set_tool_progress_callback(ToolProgressCallback cb) {
+    impl_->on_tool_progress = std::move(cb);
+}
+
+void AIAgent::set_quiet_mode(bool q) { impl_->quiet_mode.store(q); }
+bool AIAgent::quiet_mode() const { return impl_->quiet_mode.load(); }
+
+void AIAgent::spawn_background_review(std::function<void()> fn) {
+    if (!fn) return;
+    impl_->ensure_bg_pool().submit(std::move(fn));
+}
+
+std::size_t AIAgent::background_pending() const {
+    std::lock_guard<std::mutex> lk(impl_->bg_pool_mu);
+    return impl_->bg_pool ? impl_->bg_pool->pending() : 0;
+}
+
+void AIAgent::wait_background_idle() {
+    BackgroundTaskPool* pool = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(impl_->bg_pool_mu);
+        pool = impl_->bg_pool.get();
+    }
+    if (pool) pool->wait_idle();
 }
 
 }  // namespace hermes::agent

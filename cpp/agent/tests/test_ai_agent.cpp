@@ -1,5 +1,6 @@
 #include "hermes/agent/ai_agent.hpp"
 
+#include "hermes/agent/background_tasks.hpp"
 #include "hermes/llm/llm_client.hpp"
 #include "hermes/llm/openai_client.hpp"
 
@@ -9,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 using hermes::agent::AgentCallbacks;
@@ -430,6 +432,258 @@ TEST(AIAgent, InvalidateSystemPromptIsNoOpForBareAgent) {
     // Should not throw even when no memory store is configured.
     agent->invalidate_system_prompt();
     SUCCEED();
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Stream M3+: max-iterations summary, quiet mode, background tasks
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(AIAgent, MaxIterationsFallbackSummary) {
+    AgentFixture f;
+    f.config.max_iterations = 1;
+    // Iteration 1: model calls a tool — consumes the budget.
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/x"}}));
+    // After the budget is exhausted the loop calls the LLM once more
+    // with no tools, asking for a summary.  We return plain text.
+    f.fake.enqueue_response(
+        make_text_response("Summary: read /x and hit the budget."));
+
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        });
+
+    auto result = agent->run_conversation("Do things until you run out");
+
+    EXPECT_FALSE(result.completed);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_EQ(*result.error,
+              std::string("iteration budget exhausted (with summary)"));
+    EXPECT_EQ(result.final_response,
+              std::string("Summary: read /x and hit the budget."));
+}
+
+TEST(AIAgent, MaxIterationsSummaryErrorPreservesOriginal) {
+    AgentFixture f;
+    f.config.max_iterations = 1;
+    // Iteration 1: tool call.
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/x"}}));
+    // Do NOT enqueue a second response — the summary request will
+    // throw std::runtime_error inside the LLM client, and the agent
+    // should swallow it and leave the original budget-exhausted error.
+
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        });
+
+    auto result = agent->run_conversation("Use it all");
+
+    EXPECT_FALSE(result.completed);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_EQ(*result.error, std::string("iteration budget exhausted"));
+}
+
+TEST(AIAgent, ToolProgressCallbackFiresStartEnd) {
+    AgentFixture f;
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/a"}}));
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    std::vector<std::pair<std::string, std::string>> events;  // (name, phase)
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        });
+    agent->set_tool_progress_callback(
+        [&](std::string_view name, std::string_view preview,
+            std::string_view phase) {
+            (void)preview;
+            events.emplace_back(std::string(name), std::string(phase));
+        });
+
+    agent->chat("Do it");
+
+    // Expect one "start" and one "end" for read_file.
+    int start_count = 0, end_count = 0;
+    for (const auto& [name, phase] : events) {
+        EXPECT_EQ(name, std::string("read_file"));
+        if (phase == "start") ++start_count;
+        if (phase == "end") ++end_count;
+    }
+    EXPECT_EQ(start_count, 1);
+    EXPECT_EQ(end_count, 1);
+}
+
+TEST(AIAgent, ToolProgressPreviewIsTruncated) {
+    AgentFixture f;
+    // Craft a giant args payload so the preview trips the 120-char cap.
+    std::string big_path(200, 'x');
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", big_path}}));
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    std::string seen_preview;
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        });
+    agent->set_tool_progress_callback(
+        [&](std::string_view, std::string_view preview, std::string_view phase) {
+            if (phase == "start") seen_preview = std::string(preview);
+        });
+
+    agent->chat("Do it");
+
+    EXPECT_LE(seen_preview.size(), static_cast<std::size_t>(120));
+    // The tail should be the "..." marker we appended.
+    ASSERT_GE(seen_preview.size(), 3u);
+    EXPECT_EQ(seen_preview.substr(seen_preview.size() - 3), std::string("..."));
+}
+
+TEST(AIAgent, QuietModeSuppressesProgress) {
+    AgentFixture f;
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/a"}}));
+    f.fake.enqueue_response(make_text_response("ok"));
+
+    int progress_count = 0;
+    int on_tool_call_count = 0;
+    int on_tool_result_count = 0;
+
+    AgentCallbacks cbs;
+    cbs.on_tool_call = [&](const std::string&, const json&) {
+        ++on_tool_call_count;
+    };
+    cbs.on_tool_result = [&](const std::string&, const std::string&) {
+        ++on_tool_result_count;
+    };
+
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        },
+        std::move(cbs));
+    agent->set_quiet_mode(true);
+    EXPECT_TRUE(agent->quiet_mode());
+    agent->set_tool_progress_callback(
+        [&](std::string_view, std::string_view, std::string_view) {
+            ++progress_count;
+        });
+
+    agent->chat("Do it");
+
+    EXPECT_EQ(progress_count, 0);
+    EXPECT_EQ(on_tool_call_count, 0);
+    EXPECT_EQ(on_tool_result_count, 0);
+}
+
+TEST(AIAgent, QuietModeDefaultFalse) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    EXPECT_FALSE(agent->quiet_mode());
+}
+
+TEST(AIAgent, SpawnBackgroundReviewRunsAndJoinsAtDestruction) {
+    AgentFixture f;
+    std::atomic<int> counter{0};
+    {
+        auto agent = f.make_agent();
+        agent->spawn_background_review([&] { counter.fetch_add(1); });
+        agent->wait_background_idle();
+        EXPECT_EQ(counter.load(), 1);
+    }
+    // Pool joined in AIAgent destructor — nothing to assert beyond not
+    // crashing.
+    EXPECT_EQ(counter.load(), 1);
+}
+
+TEST(AIAgent, SpawnBackgroundReviewDrainsOnDestroy) {
+    AgentFixture f;
+    std::atomic<int> finished{0};
+    {
+        auto agent = f.make_agent();
+        for (int i = 0; i < 5; ++i) {
+            agent->spawn_background_review([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                finished.fetch_add(1);
+            });
+        }
+        agent->wait_background_idle();
+        EXPECT_EQ(finished.load(), 5);
+    }
+    // Clean destruction with all 5 tasks already complete.
+    EXPECT_EQ(finished.load(), 5);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// BackgroundTaskPool — standalone coverage
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(BackgroundTaskPool, RunsSubmittedTask) {
+    hermes::agent::BackgroundTaskPool pool(2);
+    std::atomic<int> c{0};
+    pool.submit([&] { c.fetch_add(1); });
+    pool.wait_idle();
+    EXPECT_EQ(c.load(), 1);
+}
+
+TEST(BackgroundTaskPool, DrainsFiveTasksWithoutCrash) {
+    std::atomic<int> c{0};
+    {
+        hermes::agent::BackgroundTaskPool pool(2);
+        for (int i = 0; i < 5; ++i) {
+            pool.submit([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                c.fetch_add(1);
+            });
+        }
+        // Let destructor handle join — pending tasks that have started
+        // must finish, not-yet-started tasks may be discarded.  The
+        // test just asserts no crash and c never exceeds 5.
+    }
+    EXPECT_LE(c.load(), 5);
+}
+
+TEST(BackgroundTaskPool, SwallowsTaskException) {
+    hermes::agent::BackgroundTaskPool pool(1);
+    std::atomic<int> after{0};
+    pool.submit([] { throw std::runtime_error("boom"); });
+    pool.submit([&] { after.fetch_add(1); });
+    pool.wait_idle();
+    EXPECT_EQ(after.load(), 1);  // Pool survived the throw.
+}
+
+TEST(BackgroundTaskPool, PendingReportsQueueDepth) {
+    // Single worker so tasks queue up.
+    hermes::agent::BackgroundTaskPool pool(1);
+    std::atomic<bool> gate{false};
+    pool.submit([&] {
+        while (!gate.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    pool.submit([] {});
+    pool.submit([] {});
+    // At least one task should be queued while the first blocks.
+    // Use a short spin because the first submit may still be in the
+    // queue or already picked up.
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(100);
+    bool saw_pending = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pool.pending() > 0) {
+            saw_pending = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    gate.store(true);
+    pool.wait_idle();
+    EXPECT_TRUE(saw_pending);
+    EXPECT_EQ(pool.pending(), 0u);
 }
 
 TEST(AIAgent, SetCallbacksAfterConstructionTakesEffect) {

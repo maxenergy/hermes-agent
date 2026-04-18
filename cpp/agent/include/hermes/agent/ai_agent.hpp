@@ -75,6 +75,16 @@ using TelemetryCallback =
 using PersistUserMessageOverride =
     std::function<std::optional<std::string>(const std::string& original)>;
 
+// Port of run_agent.py::AIAgent tool_progress_callback — fired around
+// every tool dispatch (start/end/error) so REPL-style consumers can
+// render inline progress ("🔧 tool_name: arg preview").  The
+// arguments_preview is truncated to 120 chars; phase is one of
+// "start" / "end" / "error".  Suppressed when quiet_mode is true.
+using ToolProgressCallback = std::function<void(
+    std::string_view tool_name,
+    std::string_view arguments_preview,
+    std::string_view phase)>;
+
 struct AgentCallbacks {
     std::function<void(const hermes::llm::Message&)> on_assistant_message;
     std::function<void(const std::string&, const nlohmann::json&)> on_tool_call;
@@ -217,6 +227,33 @@ public:
     void set_context_pressure_callback(ContextPressureCallback cb);
     void set_telemetry_callback(TelemetryCallback cb);
     void set_persist_user_message_override(PersistUserMessageOverride cb);
+
+    // ── Quiet mode + tool progress ───────────────────────────────────
+    //
+    // Port of run_agent.py::AIAgent.quiet_mode + tool_progress_callback.
+    // When quiet_mode is true: tool_progress_callback AND the existing
+    // on_tool_call/on_tool_result callbacks are suppressed so the REPL
+    // can offer a headless mode.  Default quiet_mode=false preserves
+    // the existing behaviour.
+    void set_tool_progress_callback(ToolProgressCallback cb);
+    void set_quiet_mode(bool q);
+    bool quiet_mode() const;
+
+    // ── Background task pool ─────────────────────────────────────────
+    //
+    // Port of run_agent.py::AIAgent._spawn_background_review — submit a
+    // task (insights / trajectory review / memory GC) to a worker pool
+    // that is owned by this agent.  The pool is joined at agent
+    // destruction, so callers need not manage thread lifetime.  Safe
+    // to call from any thread.
+    void spawn_background_review(std::function<void()> fn);
+
+    // Test-only accessor for the background pool's pending count.
+    std::size_t background_pending() const;
+
+    // Block until all currently-submitted background tasks have
+    // finished.  Mainly useful in tests.
+    void wait_background_idle();
 
 private:
     struct Impl;
