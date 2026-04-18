@@ -194,16 +194,19 @@ TEST(CLICommands, ToolsetsListsEntries) {
 }
 
 TEST(CLICommands, BrowserStubIsGraceful) {
+    // /browser is now backed by CdpBackend (Stream L2).  Without the env
+    // override we'd either launch real Chromium (connect success) or
+    // print a "launch failed" line (connect failure).  We only assert the
+    // disconnected-state surface — status + disconnect-before-connect —
+    // which the handler can always serve without spawning a child.
     HermesCLI cli;
     auto out = capture_stdout([&] { cli.process_command("/browser"); });
-    // Status stub mentions "disconnected"; connect path prints the
-    // migration note.  Either is acceptable.
-    EXPECT_TRUE(out.find("Browser bridge") != std::string::npos ||
-                out.find("Browser") != std::string::npos);
+    EXPECT_NE(out.find("Browser"), std::string::npos);
+    EXPECT_NE(out.find("not connected"), std::string::npos);
     auto out2 = capture_stdout([&] {
-        cli.process_command("/browser connect");
+        cli.process_command("/browser disconnect");
     });
-    EXPECT_NE(out2.find("Browser connect is not available"), std::string::npos);
+    EXPECT_NE(out2.find("not connected"), std::string::npos);
 }
 
 TEST(CLICommands, PluginsHandlesMissingDir) {

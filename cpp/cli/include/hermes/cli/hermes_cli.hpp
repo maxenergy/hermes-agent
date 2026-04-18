@@ -15,6 +15,7 @@
 namespace hermes::agent { class AIAgent; class PromptBuilder; }
 namespace hermes::llm { class LlmClient; }
 namespace hermes::state { class SessionDB; class MemoryStore; }
+namespace hermes::tools { class CdpBackend; }
 
 namespace hermes::cli {
 
@@ -109,6 +110,14 @@ private:
     std::unique_ptr<hermes::state::MemoryStore> memory_store_;
     std::unique_ptr<hermes::agent::AIAgent> agent_;
     void ensure_agent();
+
+    // /browser: CDP-backed Chromium bridge.  Lazily launched on
+    // `/browser connect`; installed into the global BrowserBackend so the
+    // 10 browser_* tools (navigate/click/snapshot/screenshot/…) pick it up.
+    // Reset on `/browser disconnect` or in ~HermesCLI to avoid leaking the
+    // underlying Chrome process.
+    std::unique_ptr<hermes::tools::CdpBackend> browser_;
+    bool browser_connected_ = false;
 };
 
 }  // namespace hermes::cli

@@ -37,6 +37,8 @@
 #include <readline/readline.h>
 #include <cstdlib>
 #endif
+#include "hermes/tools/browser_backend.hpp"
+#include "hermes/tools/cdp_backend.hpp"
 #include "hermes/tools/clarify_tool.hpp"
 #include "hermes/tools/delegate_tool.hpp"
 #include "hermes/tools/discover_tools.hpp"
@@ -132,7 +134,18 @@ HermesCLI::HermesCLI() {
     });
 }
 
-HermesCLI::~HermesCLI() = default;
+HermesCLI::~HermesCLI() {
+    // Make sure any Chromium child launched via `/browser connect` is torn
+    // down even if the user exits the REPL without disconnecting first.
+    if (browser_) {
+        try { browser_->close(); } catch (...) {}
+        // Clear the global first so the tool layer doesn't see a dangling
+        // pointer into our about-to-die instance.
+        hermes::tools::set_browser_backend(nullptr);
+        browser_.reset();
+        browser_connected_ = false;
+    }
+}
 
 void HermesCLI::run() {
     show_banner();
@@ -1151,24 +1164,148 @@ void HermesCLI::handle_cron(const std::string& args) {
     (void)rc;
 }
 
-void HermesCLI::handle_browser(const std::string& args) {
-    // CDP browser bridge is not wired in the C++ CLI runtime yet; the
-    // command surfaces a graceful stub so /help still advertises it and
-    // users get a clear pointer to the Python CLI path.
-    const std::string sub = args.empty() ? std::string("status") : args;
-    if (sub == "status") {
-        std::cout << "Browser bridge: disconnected\n"
-                  << "  (CDP attach is available via the Python CLI;"
-                     " the C++ REPL exposes a stub only.)\n";
-    } else if (sub == "connect") {
-        std::cout << "Browser connect is not available in this CLI context."
-                     " Launch Chrome with --remote-debugging-port=9222 and"
-                     " use the Python CLI.\n";
-    } else if (sub == "disconnect") {
-        std::cout << "Browser disconnect: no active session.\n";
-    } else {
-        std::cout << "Usage: /browser [connect|disconnect|status]\n";
+namespace {
+// Parse config_["browser"] (if present) into a CdpConfig.  Missing keys
+// fall back to CdpConfig's built-in defaults.
+hermes::tools::CdpConfig build_cdp_config(const nlohmann::json& cfg) {
+    hermes::tools::CdpConfig out;
+    if (!cfg.contains("browser") || !cfg["browser"].is_object()) return out;
+    const auto& b = cfg["browser"];
+    if (b.contains("chrome_path") && b["chrome_path"].is_string()) {
+        auto v = b["chrome_path"].get<std::string>();
+        if (!v.empty()) out.chrome_path = std::move(v);
     }
+    if (b.contains("debug_port") && b["debug_port"].is_number_integer()) {
+        out.debug_port = b["debug_port"].get<int>();
+    }
+    if (b.contains("headless") && b["headless"].is_boolean()) {
+        out.headless = b["headless"].get<bool>();
+    }
+    if (b.contains("user_data_dir") && b["user_data_dir"].is_string()) {
+        out.user_data_dir = b["user_data_dir"].get<std::string>();
+    }
+    return out;
+}
+}  // namespace
+
+void HermesCLI::handle_browser(const std::string& args) {
+    // First token = subcommand; empty == "status".
+    std::string sub;
+    {
+        std::istringstream iss(args);
+        iss >> sub;
+    }
+    if (sub.empty()) sub = "status";
+
+    if (sub == "connect") {
+        if (browser_) {
+            std::cout << "Browser already connected (port "
+                      << build_cdp_config(config_).debug_port << ").\n";
+            return;
+        }
+        // Test hook — HERMES_BROWSER_FAKE=1 short-circuits the Chromium
+        // spawn so CI can exercise the connect/disconnect state transitions
+        // without a real binary.  The tool layer still sees a real backend
+        // (a FakeBrowserBackend) so any browser_* tool call works too.
+        if (const char* fake = std::getenv("HERMES_BROWSER_FAKE");
+            fake && std::string(fake) == "1") {
+            // No CdpBackend, but mark as "connected" and install a fake
+            // into the global so tool calls don't error out.
+            hermes::tools::set_browser_backend(
+                std::make_unique<hermes::tools::FakeBrowserBackend>());
+            browser_connected_ = true;
+            std::cout << "(test) Browser fake backend installed.\n";
+            return;
+        }
+
+        auto cfg = build_cdp_config(config_);
+        const int port = cfg.debug_port;
+        const std::string chrome_path = cfg.chrome_path;
+        auto backend = std::make_unique<hermes::tools::CdpBackend>(cfg);
+        if (!backend->launch()) {
+            std::cout << "Browser connect failed — could not launch '"
+                      << chrome_path
+                      << "'.  Install chromium/google-chrome or set"
+                         " browser.chrome_path in config.\n";
+            return;
+        }
+        browser_ = std::move(backend);
+        browser_connected_ = true;
+        // Install into the global so the 10 browser_* tools route here.
+        // We hand a non-owning shim over: the CdpBackend lifetime is tied
+        // to HermesCLI, not the tool layer, so we wrap it in a deleter
+        // that just drops the pointer.
+        struct NonOwningBackend : public hermes::tools::BrowserBackend {
+            hermes::tools::BrowserBackend* inner;
+            explicit NonOwningBackend(hermes::tools::BrowserBackend* i)
+                : inner(i) {}
+            bool navigate(const std::string& u) override { return inner->navigate(u); }
+            hermes::tools::PageSnapshot snapshot() override { return inner->snapshot(); }
+            bool click(const std::string& r, bool d) override { return inner->click(r, d); }
+            bool type(const std::string& r, const std::string& t, bool s) override { return inner->type(r, t, s); }
+            bool scroll(const std::string& d) override { return inner->scroll(d); }
+            bool go_back() override { return inner->go_back(); }
+            bool press_key(const std::string& k) override { return inner->press_key(k); }
+            std::vector<std::string> get_image_urls() override { return inner->get_image_urls(); }
+            hermes::tools::ConsoleResult evaluate_js(const std::string& e) override { return inner->evaluate_js(e); }
+            std::string screenshot_base64() override { return inner->screenshot_base64(); }
+        };
+        hermes::tools::set_browser_backend(
+            std::make_unique<NonOwningBackend>(browser_.get()));
+        std::cout << "Browser connected (chrome='" << chrome_path
+                  << "', port=" << port << ").\n";
+        return;
+    }
+
+    if (sub == "disconnect") {
+        if (!browser_ && !browser_connected_) {
+            std::cout << "Browser not connected.\n";
+            return;
+        }
+        // Clear global first so in-flight tool calls stop dispatching here.
+        hermes::tools::set_browser_backend(nullptr);
+        if (browser_) {
+            try { browser_->close(); } catch (...) {}
+            browser_.reset();
+        }
+        browser_connected_ = false;
+        std::cout << "Browser disconnected.\n";
+        return;
+    }
+
+    if (sub == "status") {
+        auto cfg = build_cdp_config(config_);
+        if (!browser_ && !browser_connected_) {
+            std::cout << "Browser: not connected\n"
+                      << "  (use /browser connect to launch Chromium with"
+                         " --remote-debugging-port)\n"
+                      << "  chrome_path: " << cfg.chrome_path << "\n"
+                      << "  debug_port:  " << cfg.debug_port << "\n";
+            return;
+        }
+        std::cout << "Browser: connected\n"
+                  << "  chrome_path: " << cfg.chrome_path << "\n"
+                  << "  debug_port:  " << cfg.debug_port << "\n";
+        if (browser_) {
+            // snapshot() is the cheapest way to surface the current tab's
+            // URL without adding a new CdpBackend accessor.  Best-effort —
+            // swallow exceptions so /browser status never crashes the REPL.
+            try {
+                auto snap = browser_->snapshot();
+                if (!snap.url.empty()) {
+                    std::cout << "  tab url:     " << snap.url << "\n";
+                }
+                if (!snap.title.empty()) {
+                    std::cout << "  tab title:   " << snap.title << "\n";
+                }
+            } catch (...) {
+                // Not fatal — the socket may not be ready yet.
+            }
+        }
+        return;
+    }
+
+    std::cout << "Usage: /browser [connect|disconnect|status]\n";
 }
 
 void HermesCLI::handle_plugins() {
