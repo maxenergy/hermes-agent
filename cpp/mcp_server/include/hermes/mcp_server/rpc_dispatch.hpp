@@ -69,6 +69,16 @@ using LoggingSink = std::function<void(const std::string& level)>;
 using ToolCallHook = std::function<nlohmann::json(const std::string& name,
                                                   const nlohmann::json& args)>;
 
+// Hook invoked by ``handle_raw`` when an incoming payload is a JSON-RPC
+// *response* (has ``id`` plus ``result`` or ``error``, no ``method``) to a
+// previously sent server→client reverse request (e.g. ``sampling/createMessage``).
+// Returning ``true`` tells the dispatcher to treat the frame as fully
+// consumed (no further processing / no JSON-RPC envelope emitted). When
+// null or returning ``false`` the frame falls through to the normal
+// parse-error path.
+using ReverseResponseHandler =
+    std::function<bool(const nlohmann::json& payload)>;
+
 class RpcDispatcher {
 public:
     struct Options {
@@ -78,6 +88,7 @@ public:
         std::shared_ptr<CompletionProvider> completions;
         LoggingSink logging_sink;  // optional; default forwards to core logging
         ToolCallHook tool_call_hook;  // optional override of registry dispatch
+        ReverseResponseHandler reverse_response_handler;  // optional; fulfills pending sample() promises
         std::string server_name = "hermes-mcp";
         std::string server_version = "0.1.0";
         std::string instructions;

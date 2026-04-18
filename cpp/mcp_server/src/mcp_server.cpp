@@ -3,6 +3,7 @@
 #include "hermes/mcp_server/mcp_server.hpp"
 
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <set>
 #include <string>
@@ -250,10 +251,23 @@ McpServer::McpServer(Options opts)
     dispatch_opts_.server_name = opts_.server_name;
     dispatch_opts_.server_version = opts_.server_version;
     dispatch_opts_.instructions = opts_.instructions;
+    // Wire the reverse-response hook so every subsequent dispatcher
+    // rebuild (set_tool_registry / register_*_provider / ...) preserves
+    // the sampling plumbing. ``this`` outlives the dispatcher by
+    // construction (dispatcher_ is owned by *this*).
+    dispatch_opts_.reverse_response_handler =
+        [this](const nlohmann::json& payload) {
+            return fulfill_reverse_response(payload);
+        };
     dispatcher_ = std::make_unique<RpcDispatcher>(dispatch_opts_);
+    start_reverse_watch();
 }
 
-McpServer::~McpServer() { stop(); }
+McpServer::~McpServer() {
+    stop();
+    stop_reverse_watch();
+    fail_all_pending_with("server shutting down");
+}
 
 void McpServer::set_tool_registry(hermes::tools::ToolRegistry* registry) {
     dispatch_opts_.registry = registry;
@@ -354,6 +368,237 @@ std::size_t McpServer::notify_resource_updated(std::string_view uri) {
         }
     }
     return notified;
+}
+
+namespace {
+// Broadcast a bare notification (no params payload) to every active
+// session's SSE queue. Centralized so the three ``list_changed`` helpers
+// share a single implementation and the semantics match the spec
+// (notifications/<kind>/list_changed → params omitted).
+std::size_t broadcast_notification_impl(
+    McpServer& server, SessionStore& sessions, std::string_view method) {
+    std::size_t notified = 0;
+    for (const auto& id : sessions.list_ids()) {
+        if (server.send_notification(id, method)) ++notified;
+    }
+    return notified;
+}
+}  // namespace
+
+std::size_t McpServer::notify_tools_list_changed() {
+    return broadcast_notification_impl(*this, sessions_,
+                                       "notifications/tools/list_changed");
+}
+
+std::size_t McpServer::notify_resources_list_changed() {
+    return broadcast_notification_impl(*this, sessions_,
+                                       "notifications/resources/list_changed");
+}
+
+std::size_t McpServer::notify_prompts_list_changed() {
+    return broadcast_notification_impl(*this, sessions_,
+                                       "notifications/prompts/list_changed");
+}
+
+bool McpServer::notify_progress(std::string_view session_id,
+                                const nlohmann::json& progress_token,
+                                double progress,
+                                std::optional<double> total,
+                                std::optional<std::string> message) {
+    nlohmann::json params;
+    // ``progressToken`` is mandatory per spec — we echo whatever the
+    // client gave us (may be string or number).
+    params["progressToken"] = progress_token;
+    params["progress"] = progress;
+    if (total.has_value()) params["total"] = *total;
+    if (message.has_value()) params["message"] = *message;
+    return send_notification(session_id, "notifications/progress", params);
+}
+
+bool McpServer::notify_cancelled(std::string_view session_id,
+                                 const nlohmann::json& request_id,
+                                 std::string_view reason) {
+    nlohmann::json params;
+    params["requestId"] = request_id;
+    if (!reason.empty()) params["reason"] = std::string(reason);
+    return send_notification(session_id, "notifications/cancelled", params);
+}
+
+// ---------------------------------------------------------------------------
+// sampling/createMessage reverse request
+// ---------------------------------------------------------------------------
+
+std::future<nlohmann::json> McpServer::sample(
+    std::string_view session_id, const nlohmann::json& params,
+    std::chrono::milliseconds timeout) {
+    auto session = sessions_.get(session_id);
+    if (!session || !session->queue) {
+        std::promise<nlohmann::json> p;
+        nlohmann::json err;
+        err["error"] = {{"code", -32001},
+                        {"message", "sample: session not found"}};
+        p.set_value(std::move(err));
+        return p.get_future();
+    }
+
+    // Mint a unique id. We prefix with "srv-" so clients / humans can
+    // distinguish server-originated ids from their own.
+    std::string id_str;
+    std::unique_ptr<PendingReverse> entry;
+    std::future<nlohmann::json> fut;
+    {
+        std::lock_guard<std::mutex> lk(reverse_mu_);
+        id_str = "srv-sample-" + std::to_string(next_reverse_id_++);
+        entry = std::make_unique<PendingReverse>();
+        entry->session_id = std::string(session_id);
+        entry->deadline = std::chrono::steady_clock::now() + timeout;
+        fut = entry->promise.get_future();
+        pending_reverse_.emplace(id_str, std::move(entry));
+    }
+
+    // Build the JSON-RPC *request* envelope (has both id + method).
+    nlohmann::json env;
+    env["jsonrpc"] = "2.0";
+    env["id"] = id_str;
+    env["method"] = "sampling/createMessage";
+    env["params"] = params;
+
+    auto frame = build_sse_frame("message", env.dump());
+    session->queue->push(std::move(frame));
+
+    // Wake the watcher so it recomputes its nearest deadline.
+    reverse_watch_cv_.notify_all();
+    return fut;
+}
+
+bool McpServer::fulfill_reverse_response(const nlohmann::json& payload) {
+    // Extract id as string — JSON-RPC ids can be string or number, we
+    // normalize to string so the map key is uniform.
+    std::string id_str;
+    if (payload.contains("id")) {
+        const auto& id = payload["id"];
+        if (id.is_string()) id_str = id.get<std::string>();
+        else if (id.is_number()) id_str = std::to_string(id.get<long long>());
+    }
+    if (id_str.empty()) return false;
+
+    std::unique_ptr<PendingReverse> entry;
+    {
+        std::lock_guard<std::mutex> lk(reverse_mu_);
+        auto it = pending_reverse_.find(id_str);
+        if (it == pending_reverse_.end()) return false;
+        entry = std::move(it->second);
+        pending_reverse_.erase(it);
+    }
+
+    // Surface either ``result`` or ``error`` to the caller. We preserve
+    // the envelope shape defined on ``sample()``'s doc: success →
+    // ``result`` payload, failure → ``{"error": {...}}``.
+    nlohmann::json out;
+    if (payload.contains("error")) {
+        out["error"] = payload["error"];
+    } else if (payload.contains("result")) {
+        out = payload["result"];
+    } else {
+        out["error"] = {{"code", -32603},
+                        {"message", "reverse response missing result/error"}};
+    }
+    try {
+        entry->promise.set_value(std::move(out));
+    } catch (const std::future_error&) {
+        // Already fulfilled — e.g. a racing timeout completed first.
+    }
+    return true;
+}
+
+void McpServer::start_reverse_watch() {
+    reverse_watch_thread_ = std::thread([this] {
+        std::unique_lock<std::mutex> lk(reverse_mu_);
+        while (!reverse_watch_stop_) {
+            auto now = std::chrono::steady_clock::now();
+            auto next_deadline = now + std::chrono::milliseconds(500);
+            // Fulfill anything overdue, and track the earliest remaining
+            // deadline so wait_for sleeps only as long as necessary.
+            for (auto it = pending_reverse_.begin();
+                 it != pending_reverse_.end();) {
+                if (it->second->deadline <= now) {
+                    nlohmann::json err;
+                    err["error"] = {
+                        {"code", -32001},
+                        {"message", "reverse request timed out"}};
+                    try {
+                        it->second->promise.set_value(std::move(err));
+                    } catch (const std::future_error&) {
+                        // Already fulfilled; drop silently.
+                    }
+                    it = pending_reverse_.erase(it);
+                    continue;
+                }
+                if (it->second->deadline < next_deadline) {
+                    next_deadline = it->second->deadline;
+                }
+                ++it;
+            }
+            reverse_watch_cv_.wait_until(lk, next_deadline, [this] {
+                return reverse_watch_stop_;
+            });
+        }
+    });
+}
+
+void McpServer::stop_reverse_watch() {
+    {
+        std::lock_guard<std::mutex> lk(reverse_mu_);
+        reverse_watch_stop_ = true;
+    }
+    reverse_watch_cv_.notify_all();
+    if (reverse_watch_thread_.joinable()) reverse_watch_thread_.join();
+    reverse_watch_stop_ = false;
+}
+
+void McpServer::fail_pending_for_session(std::string_view session_id) {
+    const std::string sid(session_id);
+    std::vector<std::unique_ptr<PendingReverse>> drained;
+    {
+        std::lock_guard<std::mutex> lk(reverse_mu_);
+        for (auto it = pending_reverse_.begin();
+             it != pending_reverse_.end();) {
+            if (sid.empty() || it->second->session_id == sid) {
+                drained.push_back(std::move(it->second));
+                it = pending_reverse_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& entry : drained) {
+        nlohmann::json err;
+        err["error"] = {{"code", -32002},
+                        {"message", "session closed before response"}};
+        try {
+            entry->promise.set_value(std::move(err));
+        } catch (const std::future_error&) {
+        }
+    }
+}
+
+void McpServer::fail_all_pending_with(const std::string& message) {
+    std::vector<std::unique_ptr<PendingReverse>> drained;
+    {
+        std::lock_guard<std::mutex> lk(reverse_mu_);
+        for (auto& kv : pending_reverse_) {
+            drained.push_back(std::move(kv.second));
+        }
+        pending_reverse_.clear();
+    }
+    for (auto& entry : drained) {
+        nlohmann::json err;
+        err["error"] = {{"code", -32003}, {"message", message}};
+        try {
+            entry->promise.set_value(std::move(err));
+        } catch (const std::future_error&) {
+        }
+    }
 }
 
 void McpServer::set_session_validator(

@@ -622,5 +622,234 @@ TEST_F(McpRoundtripTest, SseStreamEmitsEndpointFrame) {
     EXPECT_FALSE(captured_session_id.empty());
 }
 
+// ---------- list_changed broadcasts --------------------------------------
+
+TEST_F(McpRoundtripTest, NotifyToolsListChangedBroadcasts) {
+    // Three subscribed sessions → notify_tools_list_changed should drop a
+    // ``notifications/tools/list_changed`` frame on every SSE queue.
+    auto a = server_->sessions().create();
+    auto b = server_->sessions().create();
+    auto c = server_->sessions().create();
+
+    auto n = server_->notify_tools_list_changed();
+    EXPECT_EQ(n, 3u);
+
+    auto check = [](const std::shared_ptr<McpSession>& s) {
+        std::string frame;
+        ASSERT_TRUE(s->queue->wait_and_pop(frame,
+                                            std::chrono::milliseconds(100)));
+        EXPECT_NE(frame.find("notifications/tools/list_changed"),
+                  std::string::npos);
+    };
+    check(a);
+    check(b);
+    check(c);
+}
+
+TEST_F(McpRoundtripTest, NotifyResourcesListChangedBroadcasts) {
+    auto s = server_->sessions().create();
+    EXPECT_EQ(server_->notify_resources_list_changed(), 1u);
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    EXPECT_NE(frame.find("notifications/resources/list_changed"),
+              std::string::npos);
+}
+
+TEST_F(McpRoundtripTest, NotifyPromptsListChangedBroadcasts) {
+    auto s = server_->sessions().create();
+    EXPECT_EQ(server_->notify_prompts_list_changed(), 1u);
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    EXPECT_NE(frame.find("notifications/prompts/list_changed"),
+              std::string::npos);
+}
+
+// ---------- progress / cancelled -----------------------------------------
+
+TEST_F(McpRoundtripTest, NotifyProgressWithTotal) {
+    auto s = server_->sessions().create();
+    ASSERT_TRUE(server_->notify_progress(s->id, "tok-1", 0.5, 1.0,
+                                         std::string("half")));
+
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    // Extract the JSON-RPC envelope out of the ``data: ...\n`` line so we
+    // can assert on individual fields instead of brittle substring matches.
+    auto line = frame.substr(frame.find("data: ") + 6);
+    line = line.substr(0, line.find('\n'));
+    auto j = nlohmann::json::parse(line);
+    EXPECT_EQ(j["method"], "notifications/progress");
+    EXPECT_EQ(j["params"]["progressToken"], "tok-1");
+    EXPECT_DOUBLE_EQ(j["params"]["progress"].get<double>(), 0.5);
+    EXPECT_DOUBLE_EQ(j["params"]["total"].get<double>(), 1.0);
+    EXPECT_EQ(j["params"]["message"], "half");
+}
+
+TEST_F(McpRoundtripTest, NotifyProgressOnlyPartial) {
+    // Without total / message — those keys should be absent.
+    auto s = server_->sessions().create();
+    ASSERT_TRUE(server_->notify_progress(s->id, 42, 17.0));
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    auto line = frame.substr(frame.find("data: ") + 6);
+    line = line.substr(0, line.find('\n'));
+    auto j = nlohmann::json::parse(line);
+    EXPECT_EQ(j["params"]["progressToken"], 42);
+    EXPECT_DOUBLE_EQ(j["params"]["progress"].get<double>(), 17.0);
+    EXPECT_FALSE(j["params"].contains("total"));
+    EXPECT_FALSE(j["params"].contains("message"));
+}
+
+TEST_F(McpRoundtripTest, NotifyCancelledDelivers) {
+    auto s = server_->sessions().create();
+    ASSERT_TRUE(server_->notify_cancelled(s->id, "req-7", "user aborted"));
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    auto line = frame.substr(frame.find("data: ") + 6);
+    line = line.substr(0, line.find('\n'));
+    auto j = nlohmann::json::parse(line);
+    EXPECT_EQ(j["method"], "notifications/cancelled");
+    EXPECT_EQ(j["params"]["requestId"], "req-7");
+    EXPECT_EQ(j["params"]["reason"], "user aborted");
+}
+
+TEST_F(McpRoundtripTest, NotifyCancelledOmitsEmptyReason) {
+    auto s = server_->sessions().create();
+    ASSERT_TRUE(server_->notify_cancelled(s->id, 99));
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(100)));
+    auto line = frame.substr(frame.find("data: ") + 6);
+    line = line.substr(0, line.find('\n'));
+    auto j = nlohmann::json::parse(line);
+    EXPECT_FALSE(j["params"].contains("reason"));
+    EXPECT_EQ(j["params"]["requestId"], 99);
+}
+
+// ---------- sampling/createMessage reverse request -----------------------
+
+TEST_F(McpRoundtripTest, SamplingReverseRequestRoundTrip) {
+    // Happy path: server issues sample(), a mock client dequeues the frame,
+    // extracts the minted id, and POSTs back a JSON-RPC response. The
+    // pending future should then resolve with the result payload.
+    auto s = server_->sessions().create();
+
+    nlohmann::json params;
+    params["messages"] = nlohmann::json::array();
+    params["messages"].push_back({{"role", "user"},
+                                   {"content", {{"type", "text"},
+                                                {"text", "hi"}}}});
+    params["maxTokens"] = 64;
+    auto fut = server_->sample(s->id, params, std::chrono::seconds(3));
+
+    // Drain the sample request frame from the session's queue.
+    std::string frame;
+    ASSERT_TRUE(s->queue->wait_and_pop(frame, std::chrono::milliseconds(500)));
+    auto line = frame.substr(frame.find("data: ") + 6);
+    line = line.substr(0, line.find('\n'));
+    auto envelope = nlohmann::json::parse(line);
+    EXPECT_EQ(envelope["method"], "sampling/createMessage");
+    ASSERT_TRUE(envelope.contains("id"));
+    auto mint_id = envelope["id"].get<std::string>();
+
+    // Client posts the response via /messages. The body is a JSON-RPC
+    // response (no ``method`` key) — the dispatcher's reverse-response
+    // hook should consume it and fulfill the promise.
+    nlohmann::json resp;
+    resp["jsonrpc"] = "2.0";
+    resp["id"] = mint_id;
+    resp["result"] = {{"role", "assistant"},
+                      {"content", {{"type", "text"},
+                                   {"text", "hello back"}}},
+                      {"model", "mock-1"}};
+    auto reply = http_post(port_, "/messages?sessionId=" + s->id, resp.dump());
+    EXPECT_TRUE(reply.status == 200 || reply.status == 202);
+
+    auto status = fut.wait_for(std::chrono::seconds(3));
+    ASSERT_EQ(status, std::future_status::ready);
+    auto r = fut.get();
+    EXPECT_EQ(r["model"], "mock-1");
+    EXPECT_EQ(r["content"]["text"], "hello back");
+}
+
+TEST_F(McpRoundtripTest, SamplingTimeoutReturnsError) {
+    auto s = server_->sessions().create();
+    auto fut = server_->sample(s->id, nlohmann::json::object(),
+                                std::chrono::milliseconds(100));
+    // Consume the outgoing request so the queue doesn't back up, then
+    // wait for the watcher to fail the pending promise.
+    std::string frame;
+    (void)s->queue->wait_and_pop(frame, std::chrono::milliseconds(100));
+
+    auto status = fut.wait_for(std::chrono::seconds(2));
+    ASSERT_EQ(status, std::future_status::ready);
+    auto r = fut.get();
+    ASSERT_TRUE(r.contains("error"));
+    EXPECT_EQ(r["error"]["code"], -32001);
+}
+
+TEST(SamplingCloseTest, ServerShutdownFulfillsPending) {
+    // Own the server locally so we can explicitly destroy it and trigger
+    // fail_all_pending_with. Uses a very long sample timeout so the watcher
+    // cannot fulfill the promise before we shut down.
+    McpServer::Options opts;
+    opts.bind_address = "127.0.0.1";
+    opts.port = 0;
+    opts.worker_threads = 2;
+    opts.gc_interval = std::chrono::seconds(3600);
+    auto server = std::make_unique<McpServer>(opts);
+    ASSERT_NE(server->start(), 0u);
+    auto s = server->sessions().create();
+    auto fut = server->sample(s->id, nlohmann::json::object(),
+                               std::chrono::hours(1));
+
+    std::string frame;
+    (void)s->queue->wait_and_pop(frame, std::chrono::milliseconds(100));
+
+    // Destroying the server fulfills every pending promise with a
+    // "server shutting down" error — the future must resolve promptly.
+    server.reset();
+
+    auto status = fut.wait_for(std::chrono::seconds(2));
+    ASSERT_EQ(status, std::future_status::ready);
+    auto r = fut.get();
+    ASSERT_TRUE(r.contains("error"));
+    EXPECT_EQ(r["error"]["code"], -32003);
+}
+
+TEST(SamplingCloseTest, UnknownSessionResolvesImmediately) {
+    McpServer::Options opts;
+    opts.bind_address = "127.0.0.1";
+    opts.port = 0;
+    opts.gc_interval = std::chrono::seconds(3600);
+    McpServer server(opts);
+    auto fut = server.sample("nope", nlohmann::json::object());
+    ASSERT_EQ(fut.wait_for(std::chrono::milliseconds(100)),
+              std::future_status::ready);
+    auto r = fut.get();
+    ASSERT_TRUE(r.contains("error"));
+    EXPECT_EQ(r["error"]["code"], -32001);
+}
+
+TEST(ReverseResponseTest, DispatcherHookFulfillsOnNumericId) {
+    // Focussed dispatcher-level test: verify the hook fires for
+    // JSON-RPC responses with numeric ids and that ``handle_raw`` returns
+    // null (no reply emitted) so the HTTP layer issues a 202.
+    RpcDispatcher::Options o;
+    bool called = false;
+    nlohmann::json captured;
+    o.reverse_response_handler = [&](const nlohmann::json& payload) {
+        called = true;
+        captured = payload;
+        return true;
+    };
+    RpcDispatcher d(o);
+    std::string payload =
+        R"({"jsonrpc":"2.0","id":77,"result":{"ok":true}})";
+    auto out = d.handle_raw(payload, nullptr);
+    EXPECT_TRUE(called);
+    EXPECT_EQ(captured["id"], 77);
+    EXPECT_TRUE(out.is_null());
+}
+
 }  // namespace
 }  // namespace hermes::mcp_server

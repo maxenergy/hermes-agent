@@ -146,6 +146,28 @@ nlohmann::json RpcDispatcher::handle(
 
 nlohmann::json RpcDispatcher::handle_raw(
     std::string_view payload, const std::shared_ptr<McpSession>& session) {
+    // Inspect the raw envelope first: a JSON-RPC *response* to a prior
+    // server→client reverse request (``sampling/createMessage``) has no
+    // ``method`` field but does carry ``id`` + (``result`` | ``error``).
+    // Route those through the reverse-response handler so the pending
+    // ``sample()`` future can be fulfilled; the request path would
+    // otherwise spuriously reply with a -32700 parse error.
+    if (opts_.reverse_response_handler) {
+        try {
+            auto parsed = nlohmann::json::parse(payload);
+            if (parsed.is_object() && parsed.contains("id") &&
+                !parsed.contains("method") &&
+                (parsed.contains("result") || parsed.contains("error"))) {
+                if (opts_.reverse_response_handler(parsed)) {
+                    // Consumed — return null so the HTTP layer replies
+                    // with 202 Accepted and emits no SSE frame.
+                    return nlohmann::json();
+                }
+            }
+        } catch (...) {
+            // Fall through to the normal parse path.
+        }
+    }
     auto req = parse_request(payload);
     return handle(req, session);
 }

@@ -19,12 +19,14 @@
 
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -119,6 +121,51 @@ public:
     // of sessions notified.
     std::size_t notify_resource_updated(std::string_view uri);
 
+    // ----- list_changed broadcasts --------------------------------------
+    //
+    // Fire a ``notifications/<kind>/list_changed`` event to every active
+    // session. Returns the number of sessions notified. These methods are
+    // safe to call from any thread; they never block longer than the
+    // SSE-queue push (bounded / lock-free-ish).
+    std::size_t notify_tools_list_changed();
+    std::size_t notify_resources_list_changed();
+    std::size_t notify_prompts_list_changed();
+
+    // ----- progress / cancelled -----------------------------------------
+    //
+    // ``progress`` fires ``notifications/progress`` on a single session.
+    // ``progress_token`` is the opaque token the client supplied in the
+    // originating request's ``_meta.progressToken`` field. ``total`` and
+    // ``message`` are optional per MCP spec. Returns true on success.
+    bool notify_progress(std::string_view session_id,
+                         const nlohmann::json& progress_token, double progress,
+                         std::optional<double> total = std::nullopt,
+                         std::optional<std::string> message = std::nullopt);
+
+    // ``cancelled`` fires ``notifications/cancelled`` — the server-side
+    // complement of the client's cancel notification. ``request_id`` is
+    // the id of the (previously in-flight) request being cancelled.
+    bool notify_cancelled(std::string_view session_id,
+                          const nlohmann::json& request_id,
+                          std::string_view reason = "");
+
+    // ----- sampling/createMessage reverse request -----------------------
+    //
+    // Send a ``sampling/createMessage`` JSON-RPC *request* from the server
+    // to the given session's client and wait for the response. The
+    // returned future resolves with the raw JSON-RPC response envelope's
+    // ``result`` object on success; on error / timeout / session close it
+    // resolves with an object of the shape
+    // ``{"error":{"code":<int>,"message":<str>}}`` so callers can treat
+    // the two cases uniformly without exception propagation.
+    //
+    // ``timeout`` is enforced by a dedicated timeout watcher; when it
+    // fires and no response has arrived, the pending promise is fulfilled
+    // with a -32001 error.
+    std::future<nlohmann::json> sample(
+        std::string_view session_id, const nlohmann::json& params,
+        std::chrono::milliseconds timeout = std::chrono::seconds(30));
+
     // Optional session validator. When set, any request except
     // ``initialize`` is rejected with a -32000 error unless the validator
     // returns true for the Mcp-Session-Id value.
@@ -159,6 +206,40 @@ private:
     std::mutex gc_mu_;
     std::condition_variable gc_cv_;
     bool gc_stop_ = false;
+
+    // ----- reverse-request bookkeeping ---------------------------------
+    //
+    // Each outstanding ``sample()`` call owns an entry in this map keyed
+    // by the minted JSON-RPC request id. When the client posts a response
+    // back (routed through the dispatcher's ``reverse_response_handler``
+    // hook) we look the id up, move out the promise, and fulfill it.
+    struct PendingReverse {
+        std::promise<nlohmann::json> promise;
+        std::string session_id;    // captured so session-close can cleanup
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::mutex reverse_mu_;
+    std::unordered_map<std::string, std::unique_ptr<PendingReverse>>
+        pending_reverse_;
+    std::uint64_t next_reverse_id_ = 1;
+
+    // Background watcher that fulfills any pending reverse request whose
+    // deadline has elapsed. One thread for the whole server — cheap
+    // because the common case is zero outstanding pending entries.
+    std::thread reverse_watch_thread_;
+    std::condition_variable reverse_watch_cv_;
+    bool reverse_watch_stop_ = false;
+    void start_reverse_watch();
+    void stop_reverse_watch();
+
+    // Hook wired into the dispatcher; returns true when the payload was
+    // an in-flight reverse response and was consumed.
+    bool fulfill_reverse_response(const nlohmann::json& payload);
+
+    // Drain every pending entry belonging to ``session_id`` (or all
+    // pending if empty) with a session-closed error.
+    void fail_pending_for_session(std::string_view session_id);
+    void fail_all_pending_with(const std::string& message);
 };
 
 }  // namespace hermes::mcp_server
