@@ -175,7 +175,10 @@ bool McpStdioTransport::is_connected() const {
 }
 
 void McpStdioTransport::write_message(const json& msg) {
-    std::string line = msg.dump() + "\n";
+    // ensure_ascii=false — preserve CJK / emoji as raw UTF-8 on the
+    // stdio wire. Parity with upstream 861efe27.
+    std::string line = msg.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                /*ensure_ascii=*/false) + "\n";
     HANDLE h;
     {
         std::lock_guard<std::mutex> lk(g_handles_mu);
@@ -301,7 +304,10 @@ bool McpStdioTransport::handle_inbound_(const json& msg) {
                 h = g_handles()[this].stdin_wr;
             }
             if (h) {
-                std::string line = response.dump() + "\n";
+                std::string line = response.dump(/*indent=*/-1,
+                                                 /*indent_char=*/' ',
+                                                 /*ensure_ascii=*/false)
+                                   + "\n";
                 DWORD written = 0;
                 WriteFile(h, line.data(), (DWORD)line.size(), &written, nullptr);
             }
@@ -502,7 +508,10 @@ bool McpStdioTransport::is_connected() const {
 }
 
 void McpStdioTransport::write_message(const json& msg) {
-    std::string line = msg.dump() + "\n";
+    // ensure_ascii=false — preserve CJK / emoji as raw UTF-8 on the
+    // stdio wire. Parity with upstream 861efe27.
+    std::string line = msg.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                /*ensure_ascii=*/false) + "\n";
     const char* data = line.c_str();
     std::size_t remaining = line.size();
     while (remaining > 0) {
@@ -671,7 +680,9 @@ bool McpStdioTransport::handle_inbound_(const json& msg) {
         // write directly (we're already holding mu_ in send_request; but
         // write_message doesn't take the lock so this is OK).
         try {
-            std::string line = response.dump() + "\n";
+            std::string line = response.dump(/*indent=*/-1,
+                                             /*indent_char=*/' ',
+                                             /*ensure_ascii=*/false) + "\n";
             const char* data = line.c_str();
             std::size_t remaining = line.size();
             while (remaining > 0) {

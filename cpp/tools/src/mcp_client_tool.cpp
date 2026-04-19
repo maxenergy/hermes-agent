@@ -520,7 +520,14 @@ json McpClientManager::handle_inbound_(const std::string& server_name,
                         if (t == "text") {
                             msg.content_text = c.value("text", "");
                         } else {
-                            msg.content_text = c.dump();
+                            // ensure_ascii=false — the serialised block
+                            // becomes part of the LLM prompt, so CJK /
+                            // emoji content must not inflate to
+                            // \uXXXX sequences. Parity with upstream
+                            // 861efe27.
+                            msg.content_text =
+                                c.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                       /*ensure_ascii=*/false);
                         }
                     }
                 }

@@ -220,8 +220,14 @@ struct HttpServer::Impl {
         }
 
         auto response = self->dispatcher_.handle_raw(req.body(), session);
+        // ensure_ascii=false on every wire-facing dump() — CJK / emoji
+        // in tool results or notifications must not inflate to
+        // \uXXXX sequences. Parity with upstream 861efe27.
         if (session && session->queue && !response.is_null()) {
-            session->queue->push(format_sse_frame("message", response.dump()));
+            session->queue->push(format_sse_frame(
+                "message",
+                response.dump(/*indent=*/-1, /*indent_char=*/' ',
+                              /*ensure_ascii=*/false)));
         }
 
         if (response.is_null()) {
@@ -240,7 +246,8 @@ struct HttpServer::Impl {
         res.set(http::field::server, "hermes-mcp");
         res.set(http::field::content_type, "application/json");
         if (session) res.set("Mcp-Session-Id", session->id);
-        res.body() = response.dump();
+        res.body() = response.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                   /*ensure_ascii=*/false);
         res.prepare_payload();
         boost::system::error_code ec;
         http::write(sock, res, ec);
@@ -262,7 +269,8 @@ struct HttpServer::Impl {
             res.result(http::status::accepted);
             res.body() = "";
         } else {
-            res.body() = response.dump();
+            res.body() = response.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                       /*ensure_ascii=*/false);
         }
         res.prepare_payload();
         boost::system::error_code ec;

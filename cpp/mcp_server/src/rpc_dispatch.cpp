@@ -41,7 +41,11 @@ nlohmann::json wrap_tool_result(const nlohmann::json& raw) {
     if (raw.is_string()) {
         text_block["text"] = raw.get<std::string>();
     } else {
-        text_block["text"] = raw.dump();
+        // ensure_ascii=false — raw UTF-8 in the text payload so CJK /
+        // emoji do not inflate to \uXXXX sequences in the model's
+        // conversation context. Parity with upstream 861efe27.
+        text_block["text"] = raw.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                      /*ensure_ascii=*/false);
     }
     out["content"].push_back(std::move(text_block));
     if (raw.is_object() && raw.contains("error")) out["isError"] = true;

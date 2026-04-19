@@ -222,7 +222,9 @@ nlohmann::json HermesMcpServer::handle_tool_call(const std::string& tool_name,
 
     return {{"content",
              nlohmann::json::array(
-                 {{{"type", "text"}, {"text", content.dump()}}})}};
+                 {{{"type", "text"},
+                   {"text", content.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                         /*ensure_ascii=*/false)}}})}};
 }
 
 std::optional<nlohmann::json> HermesMcpServer::read_message() {
@@ -237,7 +239,12 @@ std::optional<nlohmann::json> HermesMcpServer::read_message() {
 }
 
 void HermesMcpServer::write_message(const nlohmann::json& msg) {
-    std::cout << msg.dump() << "\n" << std::flush;
+    // ensure_ascii=false — preserve CJK / emoji as raw UTF-8 on the
+    // stdio wire so tool results do not bloat to \uXXXX sequences
+    // (parity with upstream 861efe27).
+    std::cout << msg.dump(/*indent=*/-1, /*indent_char=*/' ',
+                          /*ensure_ascii=*/false)
+              << "\n" << std::flush;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +349,10 @@ bool McpServer::send_notification(std::string_view session_id,
     env["method"] = std::string(method);
     if (!params.is_null()) env["params"] = params;
 
-    auto body = env.dump();
+    // ensure_ascii=false so notifications carrying CJK / emoji
+    // payloads survive the SSE wire without bloating to \uXXXX.
+    auto body = env.dump(/*indent=*/-1, /*indent_char=*/' ',
+                         /*ensure_ascii=*/false);
     s->queue->push(build_sse_frame("message", body));
     return true;
 }
@@ -463,7 +473,13 @@ std::future<nlohmann::json> McpServer::sample(
     env["method"] = "sampling/createMessage";
     env["params"] = params;
 
-    auto frame = build_sse_frame("message", env.dump());
+    // ensure_ascii=false — sampling params may contain conversation
+    // messages with CJK / emoji content, which should not bloat into
+    // \uXXXX on the wire.
+    auto frame = build_sse_frame("message",
+                                 env.dump(/*indent=*/-1,
+                                          /*indent_char=*/' ',
+                                          /*ensure_ascii=*/false));
     session->queue->push(std::move(frame));
 
     // Wake the watcher so it recomputes its nearest deadline.

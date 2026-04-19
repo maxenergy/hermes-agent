@@ -227,6 +227,36 @@ TEST_F(McpRoundtripTest, ToolsCallInvokesHook) {
     EXPECT_EQ(last_tool_args_["hello"], "world");
 }
 
+TEST_F(McpRoundtripTest, ToolsCallPreservesCjkWithoutAsciiEscaping) {
+    // Upstream 861efe27: MCP json.dumps must use ensure_ascii=False so
+    // CJK / emoji in tool results survive on the wire as raw UTF-8
+    // (otherwise a single Chinese char inflates ~3-4x in tokens).
+    // The echo hook reflects args back into the tool result, which is
+    // then serialised into the `text` block — we assert that the raw
+    // HTTP body bytes contain the literal CJK rather than \u escapes.
+    nlohmann::json req;
+    req["jsonrpc"] = "2.0";
+    req["id"] = 303;
+    req["method"] = "tools/call";
+    req["params"] = {{"name", "echo_tool"},
+                     {"arguments", {{"greet", "你好,世界 🎉"}}}};
+    auto rep = http_post(port_, "/", req.dump());
+    ASSERT_EQ(rep.status, 200);
+    // Raw wire bytes must contain the literal UTF-8 CJK characters.
+    EXPECT_NE(rep.body.find("你好"), std::string::npos)
+        << "wire body was: " << rep.body;
+    EXPECT_NE(rep.body.find("🎉"), std::string::npos);
+    // And must NOT contain a \u escape for these codepoints.
+    EXPECT_EQ(rep.body.find("\\u4f60"), std::string::npos);
+    EXPECT_EQ(rep.body.find("\\u597d"), std::string::npos);
+    // Parsed response still round-trips to the original string.
+    auto j = nlohmann::json::parse(rep.body);
+    const std::string text_block =
+        j["result"]["content"][0]["text"].get<std::string>();
+    auto inner = nlohmann::json::parse(text_block);
+    EXPECT_EQ(inner["echo"]["greet"].get<std::string>(), "你好,世界 🎉");
+}
+
 TEST_F(McpRoundtripTest, ResourcesListAndRead) {
     auto list_req =
         nlohmann::json{{"jsonrpc", "2.0"}, {"id", 10}, {"method", "resources/list"}};
