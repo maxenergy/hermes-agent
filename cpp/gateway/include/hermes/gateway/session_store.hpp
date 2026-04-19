@@ -110,6 +110,25 @@ public:
     int bump_restart_failure_count(const std::string& session_key);
     void clear_restart_failure_count(const std::string& session_key);
 
+    // --- Stale pruning (upstream eb07c056) ------------------------------
+
+    // Drop SessionContext records whose ``updated_at`` is older than
+    // ``max_age_days`` days.  Matches Python SessionStore.prune_old_entries:
+    //   - ``max_age_days <= 0`` returns 0 immediately
+    //   - ``suspended`` entries are kept (user paused them for later resume)
+    //   - transcript / sidecar counters are NOT removed — pruning is
+    //     functionally identical to a natural reset-policy expiry
+    //
+    // Returns the number of entries removed.
+    std::size_t prune_old_entries(int max_age_days);
+
+    // Flush in-flight changes + close any OS-level handles so a
+    // --replace restart can open the same session directory without
+    // contention.  Safe to call multiple times (idempotent).  After
+    // close() other accessors still function — they will re-open the
+    // per-session files on demand.
+    void close();
+
     // PII redaction: hash IDs for Telegram/Signal/WhatsApp/BlueBubbles
     // Discord excluded (needs real IDs for <@user_id> mentions)
     static std::string hash_id(std::string_view id);  // SHA256 12-char hex

@@ -51,6 +51,11 @@ struct ShutdownOutcome {
     std::vector<std::string> errors;
     bool agent_drain_timed_out = false;
     int agents_still_running = 0;
+    // Count of stale session entries dropped during FlushingSessions
+    // (upstream eb07c056).  Zero when no prune fn is registered.
+    std::size_t stale_pruned = 0;
+    // True if the session-close fn ran to completion (upstream 31e72764).
+    bool session_closed = false;
 };
 
 // Registration-order list of "closers" — each closer is called during
@@ -67,6 +72,8 @@ public:
     using PendingAgentCount = std::function<int()>;
     using QueueSnapshotFn = std::function<void()>;
     using SessionFlushFn = std::function<void()>;
+    using SessionCloseFn = std::function<void()>;
+    using StalePruneFn = std::function<std::size_t()>;
     using PhaseCallback = std::function<void(ShutdownPhase)>;
 
     ShutdownSequencer();
@@ -78,6 +85,16 @@ public:
     void set_agent_counter(PendingAgentCount fn);
     void set_queue_snapshot(QueueSnapshotFn fn);
     void set_session_flush(SessionFlushFn fn);
+    // Upstream 31e72764: after FlushingSessions, explicitly close any
+    // OS-level handles (SQLite WAL lock in Python; placeholder in C++)
+    // so a --replace restart can open the same directory without
+    // contention.  Runs within the session-flush timeout budget.
+    void set_session_close(SessionCloseFn fn);
+    // Upstream eb07c056: optional stale-entry prune invoked once during
+    // the FlushingSessions phase.  Returns the count of pruned rows
+    // for the caller to log; must be fast (seconds, not minutes) so a
+    // shutdown isn't blocked.  Runs within the session-flush timeout.
+    void set_stale_prune(StalePruneFn fn);
     void set_phase_callback(PhaseCallback cb);
 
     void add_adapter(AdapterCloser closer);
@@ -104,6 +121,8 @@ private:
     PendingAgentCount agent_counter_;
     QueueSnapshotFn queue_snapshot_;
     SessionFlushFn session_flush_;
+    SessionCloseFn session_close_;
+    StalePruneFn stale_prune_;
     PhaseCallback phase_cb_;
     std::vector<AdapterCloser> adapters_;
 

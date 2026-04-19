@@ -508,6 +508,88 @@ std::string SessionStore::hash_id(std::string_view id) {
     return oss.str();
 }
 
+// --- Stale pruning + close (upstream eb07c056, 31e72764) ---------------
+
+std::size_t SessionStore::prune_old_entries(int max_age_days) {
+    if (max_age_days <= 0) return 0;
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+
+    auto cutoff = std::chrono::system_clock::now() -
+                  std::chrono::hours(24 * max_age_days);
+    std::size_t removed = 0;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(dir_, ec)) return 0;
+
+    // Iterate session subdirectories.  Each holds a session.json +
+    // transcript.jsonl; prune drops the whole directory so the user
+    // gets a fresh session on return, exactly matching the "natural
+    // reset-policy expiry" semantics from the Python impl.
+    for (auto it = std::filesystem::directory_iterator(dir_, ec);
+         !ec && it != std::filesystem::directory_iterator();
+         it.increment(ec)) {
+        const auto& p = it->path();
+        if (!std::filesystem::is_directory(p, ec)) continue;
+        // Skip the counters sidecar file (though directory_iterator
+        // already filters non-dirs, this is defensive).
+        if (p.filename().string().front() == '.') continue;
+
+        auto session_file = p / "session.json";
+        auto maybe_j = load_session_json(session_file);
+        if (!maybe_j) continue;
+        const auto& j = *maybe_j;
+
+        // Keep suspended entries — the user explicitly paused them for
+        // later resume via /stop.
+        if (j.value("suspended", false)) continue;
+
+        auto updated_str = j.value("updated_at", std::string{});
+        if (updated_str.empty()) continue;
+        auto updated_at = iso_to_time(updated_str);
+        if (updated_at >= cutoff) continue;
+
+        // Remove the entire session subdirectory.  Transcript + session.json
+        // both go; the counters sidecar (if it carries an entry) is
+        // cleaned by the counter load/save path on next access.
+        std::error_code rm_ec;
+        std::filesystem::remove_all(p, rm_ec);
+        if (!rm_ec) ++removed;
+    }
+
+    // Also clean up any orphan entries in the counters sidecar that
+    // reference session_keys whose directories no longer exist.
+    if (removed > 0) {
+        auto counters = load_counters_locked_();
+        std::size_t before = counters.size();
+        for (auto c_it = counters.begin(); c_it != counters.end();) {
+            auto session_dir = dir_ / c_it->first;
+            if (!std::filesystem::exists(session_dir, ec)) {
+                c_it = counters.erase(c_it);
+            } else {
+                ++c_it;
+            }
+        }
+        if (counters.size() != before) save_counters_locked_(counters);
+    }
+
+    return removed;
+}
+
+void SessionStore::close() {
+    // The C++ SessionStore holds no persistent file handles — each
+    // get_or_create_session / append_message opens + closes on demand.
+    // This hook exists so the shutdown sequencer can call into the
+    // store symmetrically with the Python SessionDB.close() path
+    // (upstream 31e72764) and so future implementations that cache an
+    // fd / sqlite handle have a place to release it.  Acquire the
+    // lock to ensure any concurrent writer has flushed before we
+    // return, which is the functional contract shutdown wants.
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    // No-op: the body is intentionally empty.  (Don't mark [[maybe_unused]]
+    // on the lock — that would suggest we could remove it; we can't,
+    // because the semantic contract is "quiesce first".)
+}
+
 SessionSource SessionStore::redact_pii(const SessionSource& source) const {
     SessionSource redacted = source;
 

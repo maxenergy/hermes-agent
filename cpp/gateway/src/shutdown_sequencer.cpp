@@ -52,6 +52,16 @@ void ShutdownSequencer::set_session_flush(SessionFlushFn fn) {
     session_flush_ = std::move(fn);
 }
 
+void ShutdownSequencer::set_session_close(SessionCloseFn fn) {
+    std::lock_guard<std::mutex> lock(mu_);
+    session_close_ = std::move(fn);
+}
+
+void ShutdownSequencer::set_stale_prune(StalePruneFn fn) {
+    std::lock_guard<std::mutex> lock(mu_);
+    stale_prune_ = std::move(fn);
+}
+
 void ShutdownSequencer::set_phase_callback(PhaseCallback cb) {
     std::lock_guard<std::mutex> lock(mu_);
     phase_cb_ = std::move(cb);
@@ -121,6 +131,8 @@ ShutdownOutcome ShutdownSequencer::run(std::string_view reason) {
     PendingAgentCount counter_fn;
     QueueSnapshotFn snap_fn;
     SessionFlushFn flush_fn;
+    SessionCloseFn close_fn;
+    StalePruneFn prune_fn;
     std::vector<AdapterCloser> adapters;
     ShutdownBudget b;
     {
@@ -129,6 +141,8 @@ ShutdownOutcome ShutdownSequencer::run(std::string_view reason) {
         counter_fn = agent_counter_;
         snap_fn = queue_snapshot_;
         flush_fn = session_flush_;
+        close_fn = session_close_;
+        prune_fn = stale_prune_;
         adapters = adapters_;
         b = budget_;
     }
@@ -183,6 +197,8 @@ ShutdownOutcome ShutdownSequencer::run(std::string_view reason) {
 
     // --- Phase: FlushingSessions ---
     set_phase(ShutdownPhase::FlushingSessions);
+    auto flush_deadline =
+        std::chrono::steady_clock::now() + b.session_flush_timeout;
     if (flush_fn) {
         auto fut = std::async(std::launch::async, [&] {
             try { flush_fn(); } catch (const std::exception& e) {
@@ -192,9 +208,57 @@ ShutdownOutcome ShutdownSequencer::run(std::string_view reason) {
                 out.errors.emplace_back("session_flush: unknown error");
             }
         });
-        if (fut.wait_for(b.session_flush_timeout) !=
-            std::future_status::ready) {
+        auto remaining =
+            flush_deadline - std::chrono::steady_clock::now();
+        if (remaining.count() < 0) remaining = std::chrono::steady_clock::duration::zero();
+        if (fut.wait_for(remaining) != std::future_status::ready) {
             out.errors.emplace_back("session_flush: timeout");
+        }
+    }
+
+    // Prune stale entries (upstream eb07c056).  Runs inside the
+    // session-flush budget so slow pruning can't stall shutdown.
+    if (prune_fn) {
+        auto fut = std::async(std::launch::async, [&] {
+            try {
+                out.stale_pruned = prune_fn();
+            } catch (const std::exception& e) {
+                out.errors.emplace_back(std::string("stale_prune: ") +
+                                         e.what());
+            } catch (...) {
+                out.errors.emplace_back("stale_prune: unknown error");
+            }
+        });
+        auto remaining =
+            flush_deadline - std::chrono::steady_clock::now();
+        if (remaining.count() < 0) remaining = std::chrono::steady_clock::duration::zero();
+        if (fut.wait_for(remaining) != std::future_status::ready) {
+            out.errors.emplace_back("stale_prune: timeout");
+        }
+    }
+
+    // Close SessionStore handles last (upstream 31e72764).  Python's
+    // SQLite WAL lock stays held until the connection closes; even
+    // though the C++ SessionStore currently holds no persistent
+    // handles, invoking close() gives downstream implementations a
+    // symmetric hook and waits for concurrent writers to drain.
+    if (close_fn) {
+        auto fut = std::async(std::launch::async, [&] {
+            try {
+                close_fn();
+                out.session_closed = true;
+            } catch (const std::exception& e) {
+                out.errors.emplace_back(std::string("session_close: ") +
+                                         e.what());
+            } catch (...) {
+                out.errors.emplace_back("session_close: unknown error");
+            }
+        });
+        auto remaining =
+            flush_deadline - std::chrono::steady_clock::now();
+        if (remaining.count() < 0) remaining = std::chrono::steady_clock::duration::zero();
+        if (fut.wait_for(remaining) != std::future_status::ready) {
+            out.errors.emplace_back("session_close: timeout");
         }
     }
 

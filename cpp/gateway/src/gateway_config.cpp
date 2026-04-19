@@ -109,6 +109,16 @@ GatewayConfig load_gateway_config(const nlohmann::json& config_yaml) {
     if (config_yaml.contains("unauthorized_dm_behavior"))
         cfg.unauthorized_dm_behavior =
             config_yaml["unauthorized_dm_behavior"].get<std::string>();
+    if (config_yaml.contains("session_store_max_age_days")) {
+        try {
+            int v = config_yaml["session_store_max_age_days"].get<int>();
+            if (v < 0) v = 0;
+            cfg.session_store_max_age_days = v;
+        } catch (...) {
+            // Preserve the default on bad types (matches Python's
+            // try/except fallback for coercion errors).
+        }
+    }
 
     // platforms
     if (config_yaml.contains("platforms")) {

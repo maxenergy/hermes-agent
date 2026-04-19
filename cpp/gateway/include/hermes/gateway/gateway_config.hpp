@@ -66,6 +66,11 @@ struct GatewayConfig {
     bool group_sessions_per_user = false;
     bool thread_sessions_per_user = false;
     std::string unauthorized_dm_behavior = "pair";  // pair|ignore
+    // Upstream eb07c056: drop SessionContext entries whose ``updated_at``
+    // is older than this many days to bound memory + disk over long
+    // gateway lifetimes.  0 disables pruning entirely.  Default matches
+    // the Python GatewayConfig.session_store_max_age_days field.
+    int session_store_max_age_days = 90;
 };
 
 GatewayConfig load_gateway_config(const nlohmann::json& config_yaml);
