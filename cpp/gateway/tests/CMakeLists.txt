@@ -55,6 +55,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_platform_depth_port.cpp
     test_base_depth.cpp
     test_api_server_depth.cpp
+    test_session_resume_pending.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})

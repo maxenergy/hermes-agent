@@ -92,6 +92,14 @@ nlohmann::json SessionContext::to_json() const {
     j["created_at"] = time_to_iso(created_at);
     j["updated_at"] = time_to_iso(updated_at);
 
+    // Resume/suspend state (upstream cb4addac).
+    j["suspended"] = suspended;
+    j["resume_pending"] = resume_pending;
+    if (!resume_reason.empty()) j["resume_reason"] = resume_reason;
+    if (last_resume_marked_at.time_since_epoch().count() > 0) {
+        j["last_resume_marked_at"] = time_to_iso(last_resume_marked_at);
+    }
+
     nlohmann::json plats = nlohmann::json::array();
     for (auto p : connected_platforms) {
         plats.push_back(platform_to_string(p));
@@ -125,11 +133,32 @@ std::string SessionStore::get_or_create_session(
     auto session_file = session_dir / "session.json";
 
     if (std::filesystem::exists(session_file)) {
-        // Update the updated_at timestamp.
         std::ifstream in(session_file);
         nlohmann::json j;
         in >> j;
         in.close();
+
+        // Hard forced-wipe takes priority over resume_pending (upstream
+        // cb4addac): /stop / stuck-loop escalation must always produce a
+        // clean slate even when the drain-timeout path had flagged the
+        // entry as resumable.
+        bool suspended = j.value("suspended", false);
+        if (suspended) {
+            auto transcript = session_dir / "transcript.jsonl";
+            if (std::filesystem::exists(transcript)) {
+                std::filesystem::remove(transcript);
+            }
+            j["suspended"] = false;
+            j["resume_pending"] = false;
+            j["resume_reason"] = nlohmann::json();
+            j["session_id"] = key + ":" +
+                              std::to_string(std::chrono::system_clock::now()
+                                                 .time_since_epoch()
+                                                 .count());
+        }
+        // resume_pending is intentionally NOT cleared here — the runner
+        // calls ``consume_resume_pending`` once it has inspected the flag
+        // and decided whether to inject the restart-resume system note.
 
         j["updated_at"] = time_to_iso(std::chrono::system_clock::now());
         std::ofstream out(session_file);
@@ -268,6 +297,202 @@ bool SessionStore::should_reset(const std::string& session_key,
     }
 
     return false;
+}
+
+// --- Resume-pending helpers (upstream cb4addac / c49a58a6) --------------
+
+namespace {
+
+// Load / save session.json under the caller-held lock.  Returns nullopt
+// when the file doesn't exist or fails to parse.
+std::optional<nlohmann::json> load_session_json(
+    const std::filesystem::path& session_file) {
+    if (!std::filesystem::exists(session_file)) return std::nullopt;
+    std::ifstream in(session_file);
+    if (!in) return std::nullopt;
+    try {
+        nlohmann::json j;
+        in >> j;
+        return j;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+bool save_session_json(const std::filesystem::path& session_file,
+                        const nlohmann::json& j) {
+    std::ofstream out(session_file);
+    if (!out) return false;
+    out << j.dump(2);
+    return true;
+}
+
+}  // namespace
+
+std::filesystem::path SessionStore::counters_path_() const {
+    return dir_ / ".restart_failure_counts.json";
+}
+
+std::unordered_map<std::string, int>
+SessionStore::load_counters_locked_() const {
+    std::unordered_map<std::string, int> out;
+    auto p = counters_path_();
+    if (!std::filesystem::exists(p)) return out;
+    std::ifstream in(p);
+    if (!in) return out;
+    try {
+        nlohmann::json j;
+        in >> j;
+        if (j.is_object()) {
+            for (auto it = j.begin(); it != j.end(); ++it) {
+                if (it.value().is_number_integer()) {
+                    out[it.key()] = it.value().get<int>();
+                }
+            }
+        }
+    } catch (...) {
+        // Corrupt file -> treat as empty.
+    }
+    return out;
+}
+
+void SessionStore::save_counters_locked_(
+    const std::unordered_map<std::string, int>& counters) const {
+    nlohmann::json j = nlohmann::json::object();
+    for (auto& [k, v] : counters) j[k] = v;
+    std::ofstream out(counters_path_());
+    if (out) out << j.dump(2);
+}
+
+bool SessionStore::mark_resume_pending(const std::string& session_key,
+                                         const std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return false;
+    auto& j = *maybe_j;
+
+    // Never override ``suspended`` — that's a hard forced-wipe signal
+    // from /stop or stuck-loop escalation.
+    if (j.value("suspended", false)) return false;
+
+    j["resume_pending"] = true;
+    j["resume_reason"] = reason;
+    j["last_resume_marked_at"] =
+        time_to_iso(std::chrono::system_clock::now());
+    return save_session_json(session_file, j);
+}
+
+bool SessionStore::clear_resume_pending(const std::string& session_key) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return false;
+    auto& j = *maybe_j;
+    if (!j.value("resume_pending", false)) return false;
+    j["resume_pending"] = false;
+    j["resume_reason"] = nlohmann::json();
+    j["last_resume_marked_at"] = nlohmann::json();
+    save_session_json(session_file, j);
+    // A successful resumed turn also resets the stuck-loop counter.
+    auto counters = load_counters_locked_();
+    if (counters.erase(session_key)) save_counters_locked_(counters);
+    return true;
+}
+
+bool SessionStore::is_resume_pending(const std::string& session_key) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return false;
+    return maybe_j->value("resume_pending", false);
+}
+
+std::string SessionStore::resume_reason(
+    const std::string& session_key) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return {};
+    return maybe_j->value("resume_reason", std::string{});
+}
+
+bool SessionStore::is_suspended(const std::string& session_key) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return false;
+    return maybe_j->value("suspended", false);
+}
+
+int SessionStore::restart_failure_count(
+    const std::string& session_key) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto counters = load_counters_locked_();
+    auto it = counters.find(session_key);
+    return it == counters.end() ? 0 : it->second;
+}
+
+int SessionStore::bump_restart_failure_count(
+    const std::string& session_key) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto counters = load_counters_locked_();
+    int next = ++counters[session_key];
+    save_counters_locked_(counters);
+    return next;
+}
+
+void SessionStore::clear_restart_failure_count(
+    const std::string& session_key) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto counters = load_counters_locked_();
+    if (counters.erase(session_key)) save_counters_locked_(counters);
+}
+
+SessionStore::ResumeDecision SessionStore::consume_resume_pending(
+    const std::string& session_key) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    ResumeDecision d;
+    auto session_file = dir_ / session_key / "session.json";
+    auto maybe_j = load_session_json(session_file);
+    if (!maybe_j) return d;
+    auto& j = *maybe_j;
+    if (!j.value("resume_pending", false)) return d;
+
+    d.reason = j.value("resume_reason", std::string{});
+
+    // Check stuck-loop threshold (PR #7536, mirror cb4addac escalation).
+    auto counters = load_counters_locked_();
+    int count = counters.count(session_key) ? counters.at(session_key) : 0;
+    d.failure_count = count;
+
+    if (count >= kResumeFailureThreshold) {
+        // Escalate to suspended: wipe the transcript and clear the flag
+        // so the next inbound message gets a fresh session_id.
+        auto transcript = dir_ / session_key / "transcript.jsonl";
+        if (std::filesystem::exists(transcript)) {
+            std::filesystem::remove(transcript);
+        }
+        j["suspended"] = true;
+        j["resume_pending"] = false;
+        j["resume_reason"] = nlohmann::json();
+        save_session_json(session_file, j);
+        counters.erase(session_key);
+        save_counters_locked_(counters);
+        d.escalated_to_suspended = true;
+        d.should_resume = false;
+        return d;
+    }
+
+    d.should_resume = true;
+    // Bump the counter optimistically — the runner calls
+    // ``clear_resume_pending`` only on a successful turn, which also
+    // resets the counter.  If the resumed turn crashes / drain-timeouts
+    // again, the counter persists and escalation kicks in on the
+    // (kResumeFailureThreshold+1)th attempt.
+    counters[session_key] = count + 1;
+    save_counters_locked_(counters);
+    return d;
 }
 
 std::string SessionStore::hash_id(std::string_view id) {
