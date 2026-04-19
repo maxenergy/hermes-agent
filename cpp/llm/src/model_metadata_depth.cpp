@@ -223,6 +223,9 @@ const std::vector<ContextEntry>& default_context_table() {
     // pick the right one.  In practice we explicitly do longest-prefix
     // matching by length, so ordering is a readability aid only.
     static const std::vector<ContextEntry> kTable = {
+        // Claude 4.7 (1M, same as 4.6 per Anthropic migration guide)
+        {"claude-opus-4-7",   1000000},
+        {"claude-opus-4.7",   1000000},
         // Claude 4.6 (1M)
         {"claude-opus-4-6",   1000000},
         {"claude-sonnet-4-6", 1000000},
@@ -433,6 +436,11 @@ struct PricingEntry {
 const std::vector<PricingEntry>& pricing_entries() {
     static const std::vector<PricingEntry> kP = {
         // ── Anthropic (native) ────────────────────────────────────────
+        // Claude 4.7 Opus: same pricing/context/output as 4.6 per migration
+        // guide.  1M context, 128k output, adaptive thinking + new
+        // 5-level effort map (including xhigh).
+        {"claude-opus-4-7",       15.00, 75.00, 1.50, 18.75, 1000000, 128000,
+         ModelFamily::ClaudeOpus,   true, true, true, 30.00},
         // Claude 4.6 Opus: input $15, output $75, cache read $1.50,
         // cache write 5m $18.75, cache write 1h $30.  Vision & cache support.
         {"claude-opus-4-6",       15.00, 75.00, 1.50, 18.75, 1000000, 128000,

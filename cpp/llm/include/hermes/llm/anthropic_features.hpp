@@ -53,17 +53,30 @@ std::optional<nlohmann::json> map_tool_choice_to_anthropic(
 ///   "maximum"           → 32000
 int thinking_budget_for_effort(std::string_view effort);
 
-/// Map "minimal|low|medium|high|maximum" to the Anthropic
+/// Map "minimal|low|medium|high|xhigh|max" to the Anthropic
 /// ``output_config.effort`` enum used by adaptive thinking.
-///   "minimal" → "minimal"
+///
+/// Anthropic exposes 5 effort levels on 4.7+: low / medium / high / xhigh
+/// / max.  Pre-4.7 (4.6/4.5) only exposes 4 levels (no xhigh).  Callers
+/// should pass the model so we can downgrade xhigh → max on pre-4.7 per
+/// upstream Python commit 63d06dd9:
+///
+///   "minimal" → "low"
 ///   "low"     → "low"
 ///   "medium"  → "medium"
 ///   "high"    → "high"
-///   "maximum" → "high"   (Anthropic caps at high)
+///   "xhigh"   → "xhigh" on 4.7+, "max" on pre-4.7
+///   "max"     → "max"
 std::string_view map_adaptive_effort(std::string_view effort);
+std::string_view map_adaptive_effort(std::string_view effort,
+                                     std::string_view model);
 
-/// True when the model supports adaptive thinking (Claude 4.6 family).
+/// True when the model supports adaptive thinking (Claude 4.6 / 4.7 family).
 bool supports_adaptive_thinking(std::string_view model);
+
+/// True when the model 400s on any non-default temperature/top_p/top_k.
+/// Opus 4.7 contract per upstream Python commit 0517ac3e.
+bool forbids_sampling_params(std::string_view model);
 
 /// True when the model supports extended thinking at all (Haiku does not).
 bool supports_extended_thinking(std::string_view model);

@@ -79,28 +79,62 @@ int thinking_budget_for_effort(std::string_view effort) {
     if (e == "low")                         return 2048;
     if (e == "medium" || e == "med" || e.empty()) return 8000;
     if (e == "high")                        return 16000;
+    if (e == "xhigh")                       return 32000;
     if (e == "maximum" || e == "max")       return 32000;
     return 8000;
 }
 
+// Legacy (pre-4.7) mapping — retained as overload for callers that don't
+// know the target model.  Treats xhigh like max per the old behaviour.
 std::string_view map_adaptive_effort(std::string_view effort) {
     const std::string e = to_lower_copy(effort);
-    if (e == "minimal" || e == "min") return "minimal";
+    if (e == "minimal" || e == "min") return "low";
     if (e == "low")                   return "low";
     if (e == "high")                  return "high";
-    if (e == "maximum" || e == "max") return "high";  // Anthropic caps at high
+    if (e == "xhigh")                 return "max";
+    if (e == "maximum" || e == "max") return "max";
+    return "medium";
+}
+
+// 4.7-aware mapping.  On 4.7+ xhigh is a distinct level between high and
+// max; on pre-4.7 xhigh is collapsed back to max to avoid a 400 from the
+// API (see upstream Python commit 63d06dd9).
+std::string_view map_adaptive_effort(std::string_view effort,
+                                     std::string_view model) {
+    const std::string e = to_lower_copy(effort);
+    if (e == "minimal" || e == "min") return "low";
+    if (e == "low")                   return "low";
+    if (e == "high")                  return "high";
+    if (e == "maximum" || e == "max") return "max";
+    if (e == "xhigh") {
+        // xhigh is only a real level on 4.7+; pre-4.7 collapses it to max.
+        const std::string m = to_lower_copy(model);
+        if (contains_ci(m, "-4-7") || contains_ci(m, "-4.7")) return "xhigh";
+        return "max";
+    }
     return "medium";
 }
 
 bool supports_adaptive_thinking(std::string_view model) {
-    // Claude 4.6 family — Opus/Sonnet/Haiku 4.6.  Haiku 4.5 still qualifies
-    // for adaptive thinking type detection, but extended thinking is
-    // gated separately by supports_extended_thinking.
+    // Claude 4.6 / 4.7 family — Opus/Sonnet/Haiku 4.6 and 4.7.  Haiku 4.5
+    // still qualifies for adaptive thinking type detection, but extended
+    // thinking is gated separately by supports_extended_thinking.
     const std::string m = to_lower_copy(model);
     return contains_ci(m, "-4-6") ||
            contains_ci(m, "-4.6") ||
+           contains_ci(m, "-4-7") ||
+           contains_ci(m, "-4.7") ||
            contains_ci(m, "opus-4-6") ||
-           contains_ci(m, "sonnet-4-6");
+           contains_ci(m, "sonnet-4-6") ||
+           contains_ci(m, "opus-4-7") ||
+           contains_ci(m, "sonnet-4-7");
+}
+
+bool forbids_sampling_params(std::string_view model) {
+    // Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
+    // Future 4.x+ models are expected to follow the same contract.
+    const std::string m = to_lower_copy(model);
+    return contains_ci(m, "-4-7") || contains_ci(m, "-4.7");
 }
 
 bool supports_extended_thinking(std::string_view model) {
@@ -117,8 +151,13 @@ json build_thinking_config(std::string_view model,
     const int budget = thinking_budget_for_effort(effort);
 
     if (supports_adaptive_thinking(model)) {
-        out["thinking"] = {{"type", "adaptive"}};
-        out["output_config"] = {{"effort", std::string(map_adaptive_effort(effort))}};
+        // Opus 4.7 defaults thinking.display to "omitted", which silently
+        // drops reasoning blocks from the response.  Request "summarized"
+        // to preserve 4.6 UX (reasoning text stays populated).
+        // Per upstream Python commit 0517ac3e.
+        out["thinking"] = {{"type", "adaptive"}, {"display", "summarized"}};
+        out["output_config"] = {
+            {"effort", std::string(map_adaptive_effort(effort, model))}};
     } else {
         out["thinking"] = {{"type", "enabled"}, {"budget_tokens", budget}};
         out["temperature"] = 1;
@@ -135,6 +174,9 @@ std::string map_anthropic_stop_reason(std::string_view r) {
     if (s == "tool_use") return "tool_calls";
     if (s == "max_tokens") return "length";
     if (s == "refusal") return "content_filter";
+    // Claude 4.5+/4.7 added context-window-exceeded as a distinct reason
+    // (was previously collapsed into max_tokens/end_turn).
+    if (s == "model_context_window_exceeded") return "length";
     if (s.empty()) return "stop";
     return "stop";
 }

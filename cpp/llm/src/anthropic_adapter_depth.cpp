@@ -224,7 +224,8 @@ struct OutLimit {
     const char* key;
     int limit;
 };
-constexpr std::array<OutLimit, 13> kOutLimits = {{
+constexpr std::array<OutLimit, 14> kOutLimits = {{
+    {"claude-opus-4-7",   128000},
     {"claude-opus-4-6",   128000},
     {"claude-sonnet-4-6",  64000},
     {"claude-opus-4-5",    64000},
@@ -841,9 +842,14 @@ json build_anthropic_kwargs(const AnthropicBuildOptions& opts) {
             const std::string effort = to_lower(rc.value("effort", std::string{"medium"}));
             const int budget = thinking_budget_for_effort(effort);
             if (supports_adaptive_thinking(model)) {
-                kwargs["thinking"] = {{"type", "adaptive"}};
+                // Opus 4.7 defaults thinking.display to "omitted", which
+                // silently drops reasoning blocks from the response.
+                // Request "summarized" to preserve 4.6 UX.
+                // Per upstream Python commit 0517ac3e.
+                kwargs["thinking"] = {{"type", "adaptive"},
+                                      {"display", "summarized"}};
                 kwargs["output_config"] = {{"effort",
-                    std::string(map_adaptive_effort(effort))}};
+                    std::string(map_adaptive_effort(effort, model))}};
             } else {
                 kwargs["thinking"] = {{"type", "enabled"},
                                       {"budget_tokens", budget}};
@@ -851,6 +857,17 @@ json build_anthropic_kwargs(const AnthropicBuildOptions& opts) {
                 kwargs["max_tokens"] = std::max(effective_max, budget + 4096);
             }
         }
+    }
+
+    // Strip sampling params on Opus 4.7+ — the API 400s on any non-default
+    // temperature/top_p/top_k.  Safety-net at the request-build layer so
+    // callers that hardcode temperature (flush_memories, structured-JSON
+    // aux paths) don't trip when the aux model is flipped to 4.7.
+    // Per upstream Python commit 0517ac3e.
+    if (forbids_sampling_params(model)) {
+        kwargs.erase("temperature");
+        kwargs.erase("top_p");
+        kwargs.erase("top_k");
     }
 
     // Fast mode (native only).

@@ -20,13 +20,14 @@ struct ContextTier {
     int64_t context_length;
 };
 
-constexpr std::array<ContextTier, 7> kContextTiers = {{
+constexpr std::array<ContextTier, 8> kContextTiers = {{
     {"gpt-4o-mini",       128'000},
     {"gpt-4o",            128'000},
     {"claude-haiku",      200'000},
     {"claude-sonnet",     200'000},
     {"gpt-4.1",         1'047'576},
     {"claude-opus-4-6", 1'000'000},
+    {"claude-opus-4-7", 1'000'000},
     {"gemini-2.0-flash",1'000'000},
 }};
 
@@ -37,11 +38,13 @@ struct FallbackEntry {
     const char* to;
 };
 
-constexpr std::array<FallbackEntry, 8> kFallbacks = {{
+constexpr std::array<FallbackEntry, 10> kFallbacks = {{
+    {"claude-opus-4-7",   FailoverReason::RateLimit,        "claude-opus-4-6"},
     {"claude-opus-4-6",   FailoverReason::RateLimit,        "claude-sonnet"},
     {"claude-sonnet",     FailoverReason::RateLimit,        "claude-haiku"},
     {"gpt-4o",            FailoverReason::RateLimit,        "gpt-4o-mini"},
     {"gpt-5",             FailoverReason::RateLimit,        "gpt-4o"},
+    {"claude-opus-4-7",   FailoverReason::ModelUnavailable, "claude-opus-4-6"},
     {"claude-opus-4-6",   FailoverReason::ModelUnavailable, "claude-sonnet"},
     {"claude-sonnet",     FailoverReason::ModelUnavailable, "claude-haiku"},
     {"gpt-4o",            FailoverReason::ModelUnavailable, "gpt-4o-mini"},

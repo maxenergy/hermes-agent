@@ -29,7 +29,8 @@ struct KnownModel {
 
 // Broad family fallbacks.  Specific ids resolve first by prefix match;
 // callers may overlay models.dev data in Phase 4.
-constexpr std::array<KnownModel, 12> kKnownModels = {{
+constexpr std::array<KnownModel, 13> kKnownModels = {{
+    {"claude-opus-4-7",   "claude", 1'000'000, true,  true,  true},
     {"claude-opus-4-6",   "claude", 1'000'000, true,  true,  true},
     {"claude-sonnet-4-6", "claude", 1'000'000, true,  true,  true},
     {"claude-haiku-4-5",  "claude",   200'000, false, true,  true},

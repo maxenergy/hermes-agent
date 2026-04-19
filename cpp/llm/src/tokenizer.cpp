@@ -179,8 +179,10 @@ struct Entry {
     PricingTier pricing;
 };
 
-constexpr std::array<Entry, 32> kRegistry = {{
+constexpr std::array<Entry, 33> kRegistry = {{
     // ── Anthropic Claude ────────────────────────────────────────────────
+    {"claude-opus-4-7",   ModelFamily::Claude, 1'000'000, 128'000, true,  true,  true, true,
+     {15.00, 75.00, 1.50, 18.75}},
     {"claude-opus-4-6",   ModelFamily::Claude, 1'000'000, 128'000, true,  true,  true, true,
      {15.00, 75.00, 1.50, 18.75}},
     {"claude-sonnet-4-6", ModelFamily::Claude, 1'000'000,  64'000, true,  true,  true, true,

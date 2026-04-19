@@ -84,8 +84,9 @@ struct Entry {
     PricingTier tier;
 };
 
-constexpr std::array<Entry, 12> kPricing = {{
+constexpr std::array<Entry, 13> kPricing = {{
     // Anthropic Claude 4 family
+    {"claude-opus-4-7",   {15.00, 75.00, 1.50, 18.75}},
     {"claude-opus-4-6",   {15.00, 75.00, 1.50, 18.75}},
     {"claude-sonnet-4-6", {3.00, 15.00, 0.30, 3.75}},
     {"claude-haiku-4-5",  {0.80, 4.00, 0.08, 1.00}},

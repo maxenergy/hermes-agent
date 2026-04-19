@@ -318,6 +318,15 @@ CompletionResponse AnthropicClient::complete(const CompletionRequest& req) {
         }
     }
 
+    // Strip sampling params on Opus 4.7+ — the API 400s on any non-default
+    // temperature/top_p/top_k.  Must run AFTER all the code paths that
+    // set these fields above.  Per upstream Python commit 0517ac3e.
+    if (forbids_sampling_params(req.model)) {
+        body.erase("temperature");
+        body.erase("top_p");
+        body.erase("top_k");
+    }
+
     // tool_choice: "none" → drop tools entirely to prevent use.
     const bool drop_tools = extras.tool_choice.has_value() &&
                             extras.tool_choice.value() == "none";

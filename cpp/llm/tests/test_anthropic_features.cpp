@@ -48,18 +48,75 @@ TEST(AnthropicFeatures, ThinkingBudgetLevels) {
 }
 
 TEST(AnthropicFeatures, AdaptiveEffortMapping) {
-    EXPECT_EQ(std::string(map_adaptive_effort("minimal")), "minimal");
+    // Per upstream Python commit 0517ac3e:
+    //   minimal → low, low → low, medium → medium, high → high,
+    //   xhigh → xhigh (on 4.7+, collapses to max on pre-4.7), max → max.
+    EXPECT_EQ(std::string(map_adaptive_effort("minimal")), "low");
+    EXPECT_EQ(std::string(map_adaptive_effort("low")),     "low");
     EXPECT_EQ(std::string(map_adaptive_effort("medium")),  "medium");
     EXPECT_EQ(std::string(map_adaptive_effort("high")),    "high");
-    // Maximum is capped at high.
-    EXPECT_EQ(std::string(map_adaptive_effort("maximum")), "high");
+    // max is now a distinct ceiling (was "high" pre-4.7).
+    EXPECT_EQ(std::string(map_adaptive_effort("maximum")), "max");
+    EXPECT_EQ(std::string(map_adaptive_effort("max")),     "max");
+    // Legacy overload has no model — xhigh collapses to max.
+    EXPECT_EQ(std::string(map_adaptive_effort("xhigh")),   "max");
+}
+
+TEST(AnthropicFeatures, AdaptiveEffortMapping_XhighOnlyOn47Plus) {
+    // Upstream Python commit 63d06dd9: xhigh is a real level on 4.7+
+    // but must collapse to max on pre-4.7 (which only exposes 4 levels).
+    EXPECT_EQ(std::string(map_adaptive_effort("xhigh", "claude-opus-4-7")), "xhigh");
+    EXPECT_EQ(std::string(map_adaptive_effort("xhigh", "claude-opus-4-6")), "max");
+    EXPECT_EQ(std::string(map_adaptive_effort("xhigh", "claude-sonnet-4-6")), "max");
+    EXPECT_EQ(std::string(map_adaptive_effort("high",  "claude-opus-4-7")), "high");
+    EXPECT_EQ(std::string(map_adaptive_effort("max",   "claude-opus-4-6")), "max");
 }
 
 TEST(AnthropicFeatures, SupportsAdaptiveThinking) {
     EXPECT_TRUE(supports_adaptive_thinking("claude-opus-4-6"));
     EXPECT_TRUE(supports_adaptive_thinking("claude-sonnet-4-6-20251022"));
+    // 4.7 joins the adaptive-thinking family.
+    EXPECT_TRUE(supports_adaptive_thinking("claude-opus-4-7"));
+    EXPECT_TRUE(supports_adaptive_thinking("claude-opus-4.7"));
     EXPECT_FALSE(supports_adaptive_thinking("claude-opus-4"));
     EXPECT_FALSE(supports_adaptive_thinking("claude-3-5-sonnet"));
+}
+
+TEST(AnthropicFeatures, ForbidsSamplingParamsOn47Only) {
+    // 4.7+ rejects temperature / top_p / top_k.
+    EXPECT_TRUE(forbids_sampling_params("claude-opus-4-7"));
+    EXPECT_TRUE(forbids_sampling_params("claude-opus-4.7"));
+    EXPECT_FALSE(forbids_sampling_params("claude-opus-4-6"));
+    EXPECT_FALSE(forbids_sampling_params("claude-sonnet-4-6"));
+    EXPECT_FALSE(forbids_sampling_params("claude-3-5-sonnet"));
+}
+
+TEST(AnthropicFeatures, BuildThinking47RequestsSummarizedDisplay) {
+    // Opus 4.7 defaults thinking.display to "omitted"; we must request
+    // "summarized" to keep reasoning blocks populated.
+    auto cfg = build_thinking_config("claude-opus-4-7", "xhigh", 4096);
+    ASSERT_TRUE(cfg.contains("thinking"));
+    EXPECT_EQ(cfg["thinking"].value("type", ""), "adaptive");
+    EXPECT_EQ(cfg["thinking"].value("display", ""), "summarized");
+    ASSERT_TRUE(cfg.contains("output_config"));
+    // xhigh on 4.7+ is a distinct level (not collapsed to max).
+    EXPECT_EQ(cfg["output_config"].value("effort", ""), "xhigh");
+}
+
+TEST(AnthropicFeatures, BuildThinking46RequestsSummarizedDisplay) {
+    // 4.6 also uses adaptive thinking and should also request summarized,
+    // since that was the pre-4.7 default behaviour we preserve.
+    auto cfg = build_thinking_config("claude-opus-4-6", "xhigh", 4096);
+    ASSERT_TRUE(cfg.contains("thinking"));
+    EXPECT_EQ(cfg["thinking"].value("display", ""), "summarized");
+    // xhigh on pre-4.7 must collapse to max to avoid a 400.
+    EXPECT_EQ(cfg["output_config"].value("effort", ""), "max");
+}
+
+TEST(AnthropicFeatures, StopReasonContextWindowExceededIsLength) {
+    // Claude 4.5+/4.7 added model_context_window_exceeded — must map
+    // to OpenAI finish_reason "length" so downstream compression kicks in.
+    EXPECT_EQ(map_anthropic_stop_reason("model_context_window_exceeded"), "length");
 }
 
 TEST(AnthropicFeatures, HaikuRejectedByExtendedThinking) {
