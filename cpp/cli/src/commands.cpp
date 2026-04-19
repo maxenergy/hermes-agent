@@ -122,6 +122,7 @@ std::vector<CommandDef> build_registry() {
         {"browser",     "Connect browser tools to live Chrome",  "Tools & Skills", {},                  "[connect|disconnect|status]", true,  false, ""},
         {"plugins",     "List installed plugins",                "Tools & Skills", {},                  "",          true,  false, ""},
         {"reload-mcp",  "Reload MCP tool servers",               "Tools & Skills", {},                  "",          true,  false, ""},
+        {"memory",      "Reset or inspect agent memory files",   "Tools & Skills", {},                  "reset [--target all|memory|user]", true,  false, ""},
 
         // ── Info ─────────────────────────────────────────────────────
         {"help",       "Show help overview",                     "Info",          {"h", "?"},           "",          false, false, ""},

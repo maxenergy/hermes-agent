@@ -56,6 +56,7 @@ set(HERMES_CLI_TEST_SOURCES
     test_nous_subscription.cpp
     test_dump_cmd.cpp
     test_memory_setup.cpp
+    test_memory_reset.cpp
     test_webhook_cmd.cpp
     test_acp_cmd.cpp
     test_image_attachment.cpp

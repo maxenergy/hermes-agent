@@ -8,6 +8,7 @@
 #include "hermes/cli/cron_cmd.hpp"
 #include "hermes/cli/display.hpp"
 #include "hermes/cli/image_attachment.hpp"
+#include "hermes/cli/main_entry.hpp"
 #include "hermes/cli/skin_engine.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/platform/subprocess.hpp"
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <optional>
 #include <system_error>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sys/types.h>
@@ -548,6 +550,7 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "paste")    { handle_paste(); }
     else if (canonical == "image")    { handle_image(args); }
     else if (canonical == "steer")    { handle_steer(args); }
+    else if (canonical == "memory")   { handle_memory(args); }
     else if (canonical == "prompt") {
         // Dump the live system prompt snapshot so the user can verify
         // which guidance blocks (memory, enforcement, platform hints…)
@@ -1447,6 +1450,54 @@ void HermesCLI::handle_steer(const std::string& args) {
                      " attach to.  Send '" << payload
                   << "' as a regular message instead.\n";
     }
+}
+
+// /memory reset [--target all|memory|user] — mirrors the CLI
+// ``hermes memory reset`` subcommand.  Always interactive: asks for
+// y/N confirmation unless the user overrides with ``--yes``.  Ports
+// upstream Python commit 3c42064e.
+void HermesCLI::handle_memory(const std::string& args) {
+    // Tokenise on whitespace — no quoting needed for the tiny flag set.
+    std::vector<std::string> tokens;
+    {
+        std::string cur;
+        for (char c : args) {
+            if (c == ' ' || c == '\t') {
+                if (!cur.empty()) {
+                    tokens.push_back(std::move(cur));
+                    cur.clear();
+                }
+            } else {
+                cur.push_back(c);
+            }
+        }
+        if (!cur.empty()) tokens.push_back(std::move(cur));
+    }
+
+    if (tokens.empty() || tokens.front() != "reset") {
+        std::cout << "Usage: /memory reset [--target all|memory|user] [--yes]"
+                     "\n";
+        return;
+    }
+
+    bool skip_confirm = false;
+    std::string target = "all";
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        const auto& t = tokens[i];
+        if (t == "--yes" || t == "-y") {
+            skip_confirm = true;
+        } else if (t == "--target" && i + 1 < tokens.size()) {
+            target = tokens[++i];
+        } else if (t.rfind("--target=", 0) == 0) {
+            target = t.substr(9);
+        } else {
+            std::cout << "Unknown argument to /memory reset: " << t << "\n";
+            return;
+        }
+    }
+
+    (void)hermes::cli::memory_reset_impl(target, skip_confirm, std::cout,
+                                         std::cin);
 }
 
 }  // namespace hermes::cli

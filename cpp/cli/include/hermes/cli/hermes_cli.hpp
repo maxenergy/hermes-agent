@@ -82,6 +82,7 @@ private:
     void handle_paste();
     void handle_image(const std::string& args);
     void handle_steer(const std::string& args);
+    void handle_memory(const std::string& args);
 
     void ensure_session_db();
     void ensure_session_id();

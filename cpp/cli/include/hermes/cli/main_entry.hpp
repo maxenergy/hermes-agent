@@ -3,6 +3,7 @@
 // version, update, uninstall).
 #pragma once
 
+#include <iosfwd>
 #include <string>
 
 namespace hermes::llm { class HttpTransport; }
@@ -39,6 +40,17 @@ int cmd_webhook(int argc, char* argv[]);
 int cmd_runtime(int argc, char* argv[]);
 int cmd_auth(int argc, char* argv[]);
 int cmd_login(int argc, char* argv[]);
+
+// Shared implementation of ``hermes memory reset`` / ``/memory reset``.
+// Deletes ``<HERMES_HOME>/memories/{MEMORY.md,USER.md}`` depending on
+// @p target (``all`` | ``memory`` | ``user``).  When
+// @p skip_confirmation is false, prompts on @p in for ``yes`` before
+// deleting anything.  Messages are written to @p out.  Returns 0 on
+// success, non-zero on argument errors.
+int memory_reset_impl(const std::string& target,
+                      bool skip_confirmation,
+                      std::ostream& out,
+                      std::istream& in);
 
 // Test hook — override the HTTP transport used by `cmd_providers test`.
 // Pass nullptr to restore the default (curl) transport.

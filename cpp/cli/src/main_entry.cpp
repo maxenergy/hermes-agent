@@ -820,10 +820,138 @@ int cmd_providers(int argc, char* argv[]) {
     return 1;
 }
 
+// Shared implementation of ``hermes memory reset`` and the interactive
+// ``/memory reset`` slash command.  Ports the Python helper added in
+// upstream commit 3c42064e.  Lists the MEMORY.md / USER.md files that
+// currently live under ``<HERMES_HOME>/memories``, optionally prompts
+// for confirmation, and deletes them.
+//
+// Parameters:
+//   target  — ``all`` | ``memory`` | ``user`` — selects which files
+//             to consider.
+//   skip_confirmation — ``true`` skips the ``type 'yes' to confirm``
+//             prompt (``--yes`` in CLI mode; the slash-command builds
+//             its own y/N prompt separately).
+//   out / in — IO streams.  Injected so tests can drive the flow.
+//
+// Returns ``0`` when the reset succeeds (including the "nothing to
+// reset" case) and non-zero on user-facing errors.
+int memory_reset_impl(const std::string& target,
+                      bool skip_confirmation,
+                      std::ostream& out,
+                      std::istream& in) {
+    const auto mem_dir = hermes::core::path::get_hermes_home() / "memories";
+
+    struct Entry {
+        std::string filename;
+        std::string description;
+    };
+    std::vector<Entry> candidates;
+    if (target == "all" || target == "memory") {
+        candidates.push_back({"MEMORY.md", "agent notes"});
+    }
+    if (target == "all" || target == "user") {
+        candidates.push_back({"USER.md", "user profile"});
+    }
+    if (candidates.empty()) {
+        out << "  Unknown --target '" << target
+            << "' (expected all|memory|user)\n";
+        return 1;
+    }
+
+    std::vector<Entry> existing;
+    std::vector<std::uintmax_t> sizes;
+    for (const auto& e : candidates) {
+        const auto p = mem_dir / e.filename;
+        std::error_code ec;
+        if (fs::exists(p, ec) && !ec) {
+            existing.push_back(e);
+            sizes.push_back(fs::file_size(p, ec));
+            if (ec) sizes.back() = 0;
+        }
+    }
+
+    if (existing.empty()) {
+        out << "\n  Nothing to reset — no memory files found in "
+            << mem_dir.string() << "/\n\n";
+        return 0;
+    }
+
+    out << "\n  This will permanently erase the following memory files:\n";
+    for (std::size_t i = 0; i < existing.size(); ++i) {
+        out << "    - " << existing[i].filename << " ("
+            << existing[i].description << ") — " << sizes[i] << " bytes\n";
+    }
+
+    if (!skip_confirmation) {
+        out << "\n  Type 'yes' to confirm: " << std::flush;
+        std::string answer;
+        if (!std::getline(in, answer)) {
+            out << "\n  Cancelled.\n\n";
+            return 0;
+        }
+        // Trim whitespace + lowercase.
+        auto lstrip = answer.find_first_not_of(" \t\r\n");
+        auto rstrip = answer.find_last_not_of(" \t\r\n");
+        answer = (lstrip == std::string::npos)
+                     ? std::string{}
+                     : answer.substr(lstrip, rstrip - lstrip + 1);
+        std::string lower;
+        lower.reserve(answer.size());
+        for (char c : answer)
+            lower.push_back(static_cast<char>(std::tolower(
+                static_cast<unsigned char>(c))));
+        if (lower != "yes") {
+            out << "  Cancelled.\n\n";
+            return 0;
+        }
+    }
+
+    for (const auto& e : existing) {
+        std::error_code ec;
+        fs::remove(mem_dir / e.filename, ec);
+        if (ec) {
+            out << "  ! Failed to delete " << e.filename << ": "
+                << ec.message() << "\n";
+        } else {
+            out << "  - Deleted " << e.filename << " (" << e.description
+                << ")\n";
+        }
+    }
+
+    out << "\n  Memory reset complete. New sessions will start with a blank "
+           "slate.\n"
+        << "  Files were in: " << mem_dir.string() << "/\n\n";
+    return 0;
+}
+
 int cmd_memory(int argc, char* argv[]) {
     std::string action = argc > 2 ? argv[2] : "setup";
+
+    if (action == "reset") {
+        // Parse optional ``--yes``/``-y`` and ``--target <all|memory|user>``.
+        bool yes = false;
+        std::string target = "all";
+        for (int i = 3; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--yes" || a == "-y") {
+                yes = true;
+            } else if (a == "--target" && i + 1 < argc) {
+                target = argv[++i];
+            } else if (a.rfind("--target=", 0) == 0) {
+                target = a.substr(9);
+            } else {
+                std::cerr << "Unknown argument to 'hermes memory reset': " << a
+                          << "\n";
+                return 2;
+            }
+        }
+        return memory_reset_impl(target, yes, std::cout, std::cin);
+    }
+
     if (action != "setup") {
-        std::cerr << "Usage: hermes memory setup\n";
+        std::cerr << "Usage: hermes memory <setup|reset> [options]\n"
+                  << "  reset [--target all|memory|user] [--yes]\n";
         return 1;
     }
 
