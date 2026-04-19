@@ -1,8 +1,10 @@
 #include "hermes/core/atomic_io.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <string>
+#include <sys/stat.h>
 
 namespace aio = hermes::core::atomic_io;
 namespace fs = std::filesystem;
@@ -61,6 +63,83 @@ TEST(AtomicIo, WriteCreatesParentDirs) {
     const auto read_back = aio::atomic_read(nested);
     ASSERT_TRUE(read_back.has_value());
     EXPECT_EQ(read_back->size(), 3U);
+
+    fs::remove_all(dir);
+}
+
+// Upstream: utils.py _preserve_file_mode / _restore_file_mode (commit
+// df714add). ``::open`` creates the temp file at 0600-ish under
+// Hermes's umask; without restoring the original mode, a rewrite of
+// a user-owned config.yaml / .env destroys the broader bits that
+// Docker volume mounts or NAS shares require.
+TEST(AtomicIo, PreservesExistingFileMode) {
+    const auto dir = unique_tmp("preserve-mode");
+    const auto file = dir / "data.txt";
+    fs::remove(file);
+
+    // Seed the destination with 0600.
+    {
+        std::ofstream out(file);
+        out << "initial";
+    }
+    ASSERT_EQ(::chmod(file.c_str(), 0600), 0);
+
+    struct stat before{};
+    ASSERT_EQ(::stat(file.c_str(), &before), 0);
+    ASSERT_EQ(before.st_mode & 07777, static_cast<mode_t>(0600));
+
+    // Atomic rewrite.
+    EXPECT_TRUE(aio::atomic_write(file, "rewritten"));
+
+    struct stat after{};
+    ASSERT_EQ(::stat(file.c_str(), &after), 0);
+    EXPECT_EQ(after.st_mode & 07777, static_cast<mode_t>(0600))
+        << "atomic_write replaced 0600 with "
+        << std::oct << (after.st_mode & 07777);
+
+    const auto read_back = aio::atomic_read(file);
+    ASSERT_TRUE(read_back.has_value());
+    EXPECT_EQ(*read_back, "rewritten");
+
+    fs::remove_all(dir);
+}
+
+TEST(AtomicIo, PreservesBroaderFileMode) {
+    const auto dir = unique_tmp("preserve-mode-wide");
+    const auto file = dir / "shared.yaml";
+    fs::remove(file);
+
+    {
+        std::ofstream out(file);
+        out << "shared: true\n";
+    }
+    // 0664 — the style a Docker volume mount might end up with.
+    ASSERT_EQ(::chmod(file.c_str(), 0664), 0);
+
+    EXPECT_TRUE(aio::atomic_write(file, "shared: still_true\n"));
+
+    struct stat after{};
+    ASSERT_EQ(::stat(file.c_str(), &after), 0);
+    EXPECT_EQ(after.st_mode & 07777, static_cast<mode_t>(0664))
+        << "atomic_write tightened 0664 to "
+        << std::oct << (after.st_mode & 07777);
+
+    fs::remove_all(dir);
+}
+
+TEST(AtomicIo, NewFileGetsDefaultMode) {
+    // When the destination does not pre-exist there is no original mode
+    // to preserve — the temp file's creation bits (munged by umask)
+    // win.  Just assert we don't crash and the file ends up readable.
+    const auto dir = unique_tmp("new-file-mode");
+    const auto file = dir / "fresh.txt";
+    fs::remove(file);
+
+    EXPECT_TRUE(aio::atomic_write(file, "hello"));
+    struct stat after{};
+    ASSERT_EQ(::stat(file.c_str(), &after), 0);
+    EXPECT_TRUE((after.st_mode & S_IRUSR) != 0);
+    EXPECT_TRUE((after.st_mode & S_IWUSR) != 0);
 
     fs::remove_all(dir);
 }

@@ -15,6 +15,19 @@ namespace hermes::core::atomic_io {
 
 namespace {
 std::atomic<std::uint64_t> g_counter{0};
+
+// Capture the permission bits of ``path`` if it exists.  Returns -1
+// when the file is missing or ``stat`` fails — the caller treats that
+// as "no mode to restore" and leaves the default 0644-ish umask mask
+// applied to the freshly-created temp file.  Mirrors Python's
+// ``_preserve_file_mode`` (upstream commit df714add).
+int preserve_file_mode(const fs::path& path) noexcept {
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0) {
+        return -1;
+    }
+    return static_cast<int>(st.st_mode & 07777);
+}
 }  // namespace
 
 bool atomic_write(const fs::path& dst, std::string_view content) noexcept {
@@ -31,6 +44,12 @@ bool atomic_write(const fs::path& dst, std::string_view content) noexcept {
                 return false;
             }
         }
+
+        // Capture the existing file's permission bits *before* we write
+        // the temp file — ``::open`` creates the temp with tight 0600-ish
+        // bits that would otherwise replace the user's original mode
+        // (Docker/NAS bug, upstream commit df714add).
+        const int original_mode = preserve_file_mode(dst);
 
         const auto pid = static_cast<long>(::getpid());
         const auto counter = g_counter.fetch_add(1, std::memory_order_relaxed);
@@ -71,6 +90,18 @@ bool atomic_write(const fs::path& dst, std::string_view content) noexcept {
             fs::remove(tmp, rm_ec);
             return false;
         }
+
+        // Re-apply the original destination mode to the *temp* file
+        // before the rename.  Doing it on the temp path (rather than
+        // post-rename on ``dst``) keeps the atomic semantics intact —
+        // at no instant does a reader see the new content through
+        // overly-permissive bits, and at no instant does a reader see
+        // the new content through overly-tight bits either.  Failures
+        // are swallowed to match Python's best-effort behaviour.
+        if (original_mode >= 0) {
+            (void)::fchmod(fd, static_cast<mode_t>(original_mode));
+        }
+
         if (::close(fd) != 0) {
             std::error_code rm_ec;
             fs::remove(tmp, rm_ec);
