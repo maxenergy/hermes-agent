@@ -61,6 +61,7 @@ add_library(hermes_tools STATIC
     src/browser_tool.cpp
     src/browser_tool_depth.cpp
     src/browser_helpers.cpp
+    src/browser_cdp_tool.cpp
     src/terminal_helpers.cpp
     src/debug_helpers.cpp
     src/tool_backend_helpers.cpp

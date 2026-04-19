@@ -325,4 +325,242 @@ WsResponse ws_send_recv(const std::string& url, const std::string& message,
     return resp;
 }
 
+// ---- WsConnection ----------------------------------------------------------
+
+WsConnection::WsConnection() : fd_(-1) {}
+
+WsConnection::~WsConnection() { close(); }
+
+bool WsConnection::connect(const std::string& url,
+                           std::chrono::seconds timeout) {
+    close();
+    error_.clear();
+    int timeout_sec = static_cast<int>(timeout.count());
+    if (timeout_sec <= 0) timeout_sec = 1;
+
+    std::string host;
+    int port = 0;
+    std::string path;
+    if (!parse_ws_url(url, host, port, path)) {
+        error_ = "invalid ws:// URL: " + url;
+        return false;
+    }
+
+    struct addrinfo hints {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints,
+                      &res) != 0 ||
+        !res) {
+        error_ = "DNS resolution failed for " + host;
+        return false;
+    }
+
+    int sock = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sock < 0) {
+        ::freeaddrinfo(res);
+        error_ = "socket() failed";
+        return false;
+    }
+
+    struct timeval tv {};
+    tv.tv_sec = timeout_sec;
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (::connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+        ::freeaddrinfo(res);
+        ::close(sock);
+        error_ =
+            "connect() failed to " + host + ":" + std::to_string(port);
+        return false;
+    }
+    ::freeaddrinfo(res);
+
+    // WebSocket upgrade handshake
+    std::array<uint8_t, 16> nonce{};
+    {
+        std::mt19937 rng(std::random_device{}());
+        std::uniform_int_distribution<int> dist(0, 255);
+        for (auto& b : nonce) b = static_cast<uint8_t>(dist(rng));
+    }
+    std::string ws_key = base64_encode(nonce.data(), nonce.size());
+
+    std::ostringstream req;
+    req << "GET " << path << " HTTP/1.1\r\n"
+        << "Host: " << host << ":" << port << "\r\n"
+        << "Upgrade: websocket\r\n"
+        << "Connection: Upgrade\r\n"
+        << "Sec-WebSocket-Key: " << ws_key << "\r\n"
+        << "Sec-WebSocket-Version: 13\r\n"
+        << "\r\n";
+    std::string req_str = req.str();
+    if (::write(sock, req_str.data(), req_str.size()) !=
+        static_cast<ssize_t>(req_str.size())) {
+        ::close(sock);
+        error_ = "write() handshake failed";
+        return false;
+    }
+
+    std::string header;
+    if (!read_until_header_end(sock, header, timeout_sec)) {
+        ::close(sock);
+        error_ = "failed to read WebSocket upgrade response";
+        return false;
+    }
+    if (header.find("101") == std::string::npos) {
+        ::close(sock);
+        error_ = "WebSocket upgrade rejected: " + header.substr(0, 80);
+        return false;
+    }
+
+    fd_ = sock;
+    return true;
+}
+
+bool WsConnection::send_text(const std::string& payload) {
+    if (fd_ < 0) {
+        error_ = "WsConnection not open";
+        return false;
+    }
+    auto frame_mask = random_mask();
+    size_t payload_len = payload.size();
+    std::vector<uint8_t> frame;
+    frame.push_back(0x81);  // FIN + text opcode
+    if (payload_len < 126) {
+        frame.push_back(static_cast<uint8_t>(0x80 | payload_len));
+    } else if (payload_len < 65536) {
+        frame.push_back(0x80 | 126);
+        frame.push_back(static_cast<uint8_t>((payload_len >> 8) & 0xFF));
+        frame.push_back(static_cast<uint8_t>(payload_len & 0xFF));
+    } else {
+        frame.push_back(0x80 | 127);
+        for (int i = 7; i >= 0; --i) {
+            frame.push_back(static_cast<uint8_t>(
+                (static_cast<uint64_t>(payload_len) >> (i * 8)) & 0xFF));
+        }
+    }
+    frame.insert(frame.end(), frame_mask.begin(), frame_mask.end());
+    for (size_t i = 0; i < payload_len; ++i) {
+        frame.push_back(static_cast<uint8_t>(payload[i]) ^
+                        frame_mask[i % 4]);
+    }
+    if (::write(fd_, frame.data(), frame.size()) !=
+        static_cast<ssize_t>(frame.size())) {
+        error_ = "write() frame failed";
+        return false;
+    }
+    return true;
+}
+
+bool WsConnection::recv_text(std::string& out,
+                             std::chrono::seconds timeout) {
+    out.clear();
+    if (fd_ < 0) {
+        error_ = "WsConnection not open";
+        return false;
+    }
+    int timeout_sec = static_cast<int>(timeout.count());
+    if (timeout_sec <= 0) timeout_sec = 1;
+
+    std::string accumulated;
+    while (true) {
+        uint8_t hdr[2];
+        if (!read_exact(fd_, hdr, 2, timeout_sec)) {
+            error_ = "failed to read frame header";
+            return false;
+        }
+        bool fin = (hdr[0] & 0x80) != 0;
+        uint8_t opcode = hdr[0] & 0x0F;
+        bool masked = (hdr[1] & 0x80) != 0;
+        uint64_t payload_len = hdr[1] & 0x7F;
+        if (payload_len == 126) {
+            uint8_t ext[2];
+            if (!read_exact(fd_, ext, 2, timeout_sec)) {
+                error_ = "failed to read extended length";
+                return false;
+            }
+            payload_len = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
+        } else if (payload_len == 127) {
+            uint8_t ext[8];
+            if (!read_exact(fd_, ext, 8, timeout_sec)) {
+                error_ = "failed to read extended length";
+                return false;
+            }
+            payload_len = 0;
+            for (int i = 0; i < 8; ++i) {
+                payload_len = (payload_len << 8) | ext[i];
+            }
+        }
+        std::array<uint8_t, 4> resp_mask{};
+        if (masked) {
+            if (!read_exact(fd_, resp_mask.data(), 4, timeout_sec)) {
+                error_ = "failed to read mask";
+                return false;
+            }
+        }
+        if (payload_len > 16 * 1024 * 1024) {
+            error_ = "response frame too large";
+            return false;
+        }
+        std::vector<uint8_t> payload(static_cast<size_t>(payload_len));
+        if (payload_len > 0) {
+            if (!read_exact(fd_, payload.data(),
+                            static_cast<size_t>(payload_len), timeout_sec)) {
+                error_ = "failed to read payload";
+                return false;
+            }
+        }
+        if (masked) {
+            for (size_t i = 0; i < payload.size(); ++i) {
+                payload[i] ^= resp_mask[i % 4];
+            }
+        }
+
+        if (opcode == 0x8) {  // close
+            error_ = "peer sent close frame";
+            return false;
+        }
+        if (opcode == 0x9) {  // ping — reply with pong
+            auto pmask = random_mask();
+            std::vector<uint8_t> pong;
+            pong.push_back(0x8A);
+            if (payload.size() < 126) {
+                pong.push_back(static_cast<uint8_t>(0x80 | payload.size()));
+            } else {
+                pong.push_back(0x80 | 126);
+                pong.push_back(
+                    static_cast<uint8_t>((payload.size() >> 8) & 0xFF));
+                pong.push_back(static_cast<uint8_t>(payload.size() & 0xFF));
+            }
+            pong.insert(pong.end(), pmask.begin(), pmask.end());
+            for (size_t i = 0; i < payload.size(); ++i) {
+                pong.push_back(payload[i] ^ pmask[i % 4]);
+            }
+            ssize_t _w = ::write(fd_, pong.data(), pong.size());
+            (void)_w;
+            continue;  // keep reading for a data frame
+        }
+        if (opcode == 0xA) {  // pong — ignore
+            continue;
+        }
+        // 0x0 continuation, 0x1 text, 0x2 binary — accumulate.
+        accumulated.append(payload.begin(), payload.end());
+        if (fin) break;
+    }
+    out = std::move(accumulated);
+    return true;
+}
+
+void WsConnection::close() {
+    if (fd_ >= 0) {
+        uint8_t close_frame[] = {0x88, 0x80, 0x00, 0x00, 0x00, 0x00};
+        ssize_t _wr = ::write(fd_, close_frame, sizeof(close_frame));
+        (void)_wr;
+        ::close(fd_);
+        fd_ = -1;
+    }
+}
+
 }  // namespace hermes::tools

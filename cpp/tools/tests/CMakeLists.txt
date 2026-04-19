@@ -55,6 +55,7 @@ add_executable(hermes_tools_tests
     test_homeassistant_tool.cpp
     test_browser_tool.cpp
     test_browser_tool_depth.cpp
+    test_browser_cdp_tool.cpp
     test_cdp_backend.cpp
     test_transcription_tool.cpp
     test_voice_mode_tool.cpp
