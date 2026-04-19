@@ -73,6 +73,14 @@ struct AIAgent::Impl {
     hermes::state::MemoryStore* memory_store = nullptr;
     std::function<void(std::chrono::milliseconds)> sleep_fn;
 
+    // /steer mechanism — inject a user note into the next tool result
+    // without interrupting the agent.  See AIAgent::steer for the
+    // contract. Thread-safe; the lock protects the pending_steer string
+    // only, not anything else in Impl.  Ports upstream Python commit
+    // 2edebedc.
+    std::string pending_steer;
+    mutable std::mutex pending_steer_mu;
+
     // Agent-level todo state — opaque key/value list of items.
     nlohmann::json todos = nlohmann::json::array();
 
@@ -269,6 +277,71 @@ struct AIAgent::Impl {
         try {
             callbacks.on_usage(usage.input_tokens, usage.output_tokens, 0.0);
         } catch (...) {}
+    }
+
+    // ── /steer injection ──────────────────────────────────────────────
+    //
+    // Append any pending /steer text to the last role:"tool" message in
+    // the just-finished tool batch.  The marker makes it clear to the
+    // model that the text is from the user and NOT tool output.  Role
+    // alternation is preserved — no message inserted, only modified.
+    //
+    // If no tool message is found in the batch (e.g. every tool
+    // errored out and Impl wrote nothing, or interrupt fired mid-batch),
+    // the steer is pushed back to the pending slot so the caller's
+    // fallback path can deliver it as a normal next-turn user message.
+    //
+    // Ports upstream Python commit 2edebedc.
+    void apply_pending_steer_to_tool_results(std::vector<Message>& messages,
+                                             std::size_t num_tool_msgs) {
+        if (num_tool_msgs == 0 || messages.empty()) return;
+        std::string steer_text;
+        {
+            std::lock_guard<std::mutex> lk(pending_steer_mu);
+            steer_text = std::move(pending_steer);
+            pending_steer.clear();
+        }
+        if (steer_text.empty()) return;
+
+        // Scan the tail of the batch for the last role:"tool" message.
+        const std::size_t end_inclusive = messages.size();
+        const std::size_t begin_exclusive =
+            end_inclusive > num_tool_msgs ? (end_inclusive - num_tool_msgs) : 0;
+        std::size_t target = end_inclusive;  // not-found sentinel
+        for (std::size_t j = end_inclusive; j > begin_exclusive; --j) {
+            if (messages[j - 1].role == Role::Tool) {
+                target = j - 1;
+                break;
+            }
+        }
+        if (target == end_inclusive) {
+            // No tool result in this batch — re-stash so the caller
+            // delivers it as a next-turn message.
+            std::lock_guard<std::mutex> lk(pending_steer_mu);
+            if (pending_steer.empty()) {
+                pending_steer = std::move(steer_text);
+            } else {
+                pending_steer += "\n";
+                pending_steer += steer_text;
+            }
+            return;
+        }
+
+        std::string marker =
+            "\n\n[USER STEER (injected mid-run, not tool output): " +
+            steer_text + "]";
+        // Anthropic-style content blocks: append a text block rather
+        // than concatenating the string.
+        if (!messages[target].content_blocks.empty()) {
+            hermes::llm::ContentBlock cb;
+            cb.type = "text";
+            // trim leading whitespace on marker for the block version
+            std::size_t cbb = marker.find_first_not_of("\n ");
+            cb.text = cbb == std::string::npos ? marker : marker.substr(cbb);
+            messages[target].content_blocks.push_back(std::move(cb));
+        } else {
+            messages[target].content_text += marker;
+        }
     }
 
     // ── Agent-level tool intercept ────────────────────────────────────
@@ -688,11 +761,23 @@ struct AIAgent::Impl {
                         {"iterations", result.iterations_used},
                         {"input_tokens", total_usage.input_tokens},
                         {"output_tokens", total_usage.output_tokens}});
+                // Leftover /steer drain — done AFTER emit_status so
+                // status callbacks have a final chance to push a late
+                // steer (mirrors Python's ordering).  Must be the last
+                // mutation before save_trajectory + return.
+                {
+                    std::lock_guard<std::mutex> lk(pending_steer_mu);
+                    if (!pending_steer.empty()) {
+                        result.pending_steer = std::move(pending_steer);
+                        pending_steer.clear();
+                    }
+                }
                 save_trajectory(result);
                 return result;
             }
 
             // 7. Dispatch tool calls.
+            std::size_t tool_msgs_before = messages.size();
             for (const auto& tc : resp.assistant_message.tool_calls) {
                 if (stop_requested.load()) break;
                 emit_tool_call(tc.name, tc.arguments);
@@ -726,6 +811,16 @@ struct AIAgent::Impl {
                 emit_tool_progress(tc.name, tc.arguments, progress_phase);
                 persist_message(tr, static_cast<int>(messages.size()));
                 messages.push_back(std::move(tr));
+            }
+
+            // /steer drain — if the user called steer() while the tool
+            // batch was running, append the text to the LAST role:"tool"
+            // message's content so the model sees it on its next
+            // iteration.  Must run after the loop, before the next API
+            // call.  Ports upstream Python commit 2edebedc.
+            std::size_t num_tool_msgs = messages.size() - tool_msgs_before;
+            if (num_tool_msgs > 0) {
+                apply_pending_steer_to_tool_results(messages, num_tool_msgs);
             }
 
             ++api_calls;
@@ -882,6 +977,18 @@ struct AIAgent::Impl {
             }
         }
 
+        // Leftover /steer — if the agent exited with a steer still
+        // pending (no final tool batch to absorb it, or user called
+        // steer() after the last tool call), surface it so callers
+        // deliver it as the next user turn.  Ports upstream 2edebedc.
+        {
+            std::lock_guard<std::mutex> lk(pending_steer_mu);
+            if (!pending_steer.empty()) {
+                result.pending_steer = std::move(pending_steer);
+                pending_steer.clear();
+            }
+        }
+
         save_trajectory(result);
         return result;
     }
@@ -942,8 +1049,40 @@ ConversationResult AIAgent::run_conversation(
                       std::move(history), task_id);
 }
 
-void AIAgent::request_stop() { impl_->stop_requested.store(true); }
+void AIAgent::request_stop() {
+    impl_->stop_requested.store(true);
+    // A hard stop supersedes any pending /steer — the steer was meant
+    // for the agent's next tool-call iteration, which will no longer
+    // happen.  Drop it instead of surprising the user with a late
+    // injection on the post-interrupt turn.  Mirrors the clear-on-
+    // interrupt logic in run_agent.py.
+    std::lock_guard<std::mutex> lk(impl_->pending_steer_mu);
+    impl_->pending_steer.clear();
+}
 bool AIAgent::stop_requested() const { return impl_->stop_requested.load(); }
+
+bool AIAgent::steer(const std::string& text) {
+    // Trim leading/trailing whitespace; reject empty payloads.
+    std::size_t b = text.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    std::size_t e = text.find_last_not_of(" \t\r\n");
+    std::string cleaned = text.substr(b, e - b + 1);
+    std::lock_guard<std::mutex> lk(impl_->pending_steer_mu);
+    if (impl_->pending_steer.empty()) {
+        impl_->pending_steer = std::move(cleaned);
+    } else {
+        impl_->pending_steer += "\n";
+        impl_->pending_steer += cleaned;
+    }
+    return true;
+}
+
+std::string AIAgent::drain_pending_steer() {
+    std::lock_guard<std::mutex> lk(impl_->pending_steer_mu);
+    std::string out = std::move(impl_->pending_steer);
+    impl_->pending_steer.clear();
+    return out;
+}
 
 const AgentConfig& AIAgent::config() const { return impl_->config; }
 const std::vector<Message>& AIAgent::messages() const { return impl_->messages; }

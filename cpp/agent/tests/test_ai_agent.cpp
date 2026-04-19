@@ -703,3 +703,103 @@ TEST(AIAgent, SetCallbacksAfterConstructionTakesEffect) {
     EXPECT_GT(status_count, 0);
     EXPECT_GT(telemetry_count, 0);
 }
+
+// ── /steer mid-run injection — ports upstream Python commit 2edebedc. ──────
+
+TEST(AIAgentSteer, RejectsEmptyOrWhitespace) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    EXPECT_FALSE(agent->steer(""));
+    EXPECT_FALSE(agent->steer("   \t\n"));
+    EXPECT_TRUE(agent->steer("do the next thing"));
+}
+
+TEST(AIAgentSteer, DrainClearsTheSlot) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    EXPECT_EQ(agent->drain_pending_steer(), "");
+
+    EXPECT_TRUE(agent->steer("note one"));
+    EXPECT_EQ(agent->drain_pending_steer(), "note one");
+    EXPECT_EQ(agent->drain_pending_steer(), "");  // cleared
+}
+
+TEST(AIAgentSteer, MultipleStashesConcatenateWithNewline) {
+    AgentFixture f;
+    auto agent = f.make_agent();
+    agent->steer("first");
+    agent->steer("second");
+    agent->steer("third");
+    EXPECT_EQ(agent->drain_pending_steer(), "first\nsecond\nthird");
+}
+
+TEST(AIAgentSteer, StopClearsPendingSteer) {
+    // A hard stop supersedes any pending steer — the steer was meant for
+    // the next tool batch that is no longer going to happen.
+    AgentFixture f;
+    auto agent = f.make_agent();
+    agent->steer("please use ripgrep");
+    agent->request_stop();
+    EXPECT_EQ(agent->drain_pending_steer(), "");
+}
+
+TEST(AIAgentSteer, InjectedIntoLastToolResultOnNextIteration) {
+    AgentFixture f;
+    // Turn 1: model calls the tool.
+    f.fake.enqueue_response(
+        make_tool_call_response("read_file", json{{"path", "/tmp/a"}}));
+    // Turn 2: model returns the final text.
+    f.fake.enqueue_response(make_text_response("ack"));
+
+    // Call steer() before run — the drain hook runs after tool execution.
+    auto agent = f.make_agent(
+        [](const std::string&, const json&, const std::string&) {
+            return R"({"ok":true})";
+        });
+    ASSERT_TRUE(agent->steer("switch strategy: only list files"));
+
+    auto result = agent->run_conversation("start");
+    EXPECT_TRUE(result.completed);
+    EXPECT_EQ(result.final_response, "ack");
+
+    // The steer text should have been appended to the tool-result message.
+    bool saw_steer = false;
+    for (const auto& m : result.messages) {
+        if (m.role == hermes::llm::Role::Tool &&
+            m.content_text.find("USER STEER (injected mid-run, not tool output):") !=
+                std::string::npos &&
+            m.content_text.find("switch strategy: only list files") !=
+                std::string::npos) {
+            saw_steer = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(saw_steer);
+
+    // And the slot should be empty (drained).
+    EXPECT_EQ(agent->drain_pending_steer(), "");
+}
+
+TEST(AIAgentSteer, LeftoverExposedInResultWhenAgentExitsFirst) {
+    // The agent finishes without another tool batch; the late steer should
+    // come back to the caller as result.pending_steer so CLI/gateway can
+    // deliver it as the next user turn.
+    AgentFixture f;
+    f.fake.enqueue_response(make_text_response("all done"));
+    auto agent = f.make_agent();
+
+    // Register a status callback to call steer() AFTER the final response
+    // is produced, simulating a user typing /steer right before the agent
+    // returns but after the last tool batch.
+    std::atomic<bool> steered{false};
+    agent->set_status_callback(
+        [&](std::string_view phase, std::string_view) {
+            if (phase == "done" && !steered.exchange(true)) {
+                agent->steer("late note");
+            }
+        });
+
+    auto result = agent->run_conversation("hi");
+    EXPECT_EQ(result.pending_steer, "late note");
+    EXPECT_EQ(agent->drain_pending_steer(), "");  // consumed into result
+}

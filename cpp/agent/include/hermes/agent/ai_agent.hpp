@@ -141,6 +141,13 @@ struct ConversationResult {
     int iterations_used = 0;
     bool completed = true;
     std::optional<std::string> error;
+    // Any /steer text still pending when the agent exited (no further
+    // tool batch to drain into).  Callers that surface this — CLI /
+    // gateway — should deliver it as the next user turn instead of
+    // silently dropping it.  Empty when no leftover.  See
+    // AIAgent::steer for the full contract.  Ports upstream commit
+    // 2edebedc.
+    std::string pending_steer;
 };
 
 class AIAgent {
@@ -181,6 +188,31 @@ public:
 
     void request_stop();
     bool stop_requested() const;
+
+    // ── /steer: mid-run injection without interrupt ──────────────────
+    //
+    // Port of run_agent.py::AIAgent.steer (upstream commit 2edebedc).
+    // Unlike request_stop(), this does NOT stop the current tool call.
+    // The text is stashed; once the current tool batch finishes, the
+    // agent loop appends it to the LAST ``role:"tool"`` message's
+    // content.  The model sees the steer as part of that tool's
+    // output on its next iteration — no new user turn, no role
+    // alternation violation, no prompt-cache churn beyond the normal
+    // per-turn tool-result update.
+    //
+    // Thread-safe: callable from any thread (gateway, CLI, TUI).
+    // Multiple calls before the drain point concatenate with '\n'.
+    //
+    // Returns true on accept, false on empty payload.  Empty/whitespace
+    // inputs are rejected without modifying state.
+    bool steer(const std::string& text);
+
+    // Returns the currently-stashed /steer text (if any) and clears
+    // the slot atomically.  Visible for gateway integrations that
+    // want to deliver a leftover steer as the next user turn when the
+    // agent exits before draining it; prefer calling steer() for
+    // normal injection flows.
+    std::string drain_pending_steer();
 
     const AgentConfig& config() const;
     const std::vector<hermes::llm::Message>& messages() const;

@@ -547,6 +547,7 @@ bool HermesCLI::process_command(const std::string& input) {
     else if (canonical == "continue") { handle_continue(); }
     else if (canonical == "paste")    { handle_paste(); }
     else if (canonical == "image")    { handle_image(args); }
+    else if (canonical == "steer")    { handle_steer(args); }
     else if (canonical == "prompt") {
         // Dump the live system prompt snapshot so the user can verify
         // which guidance blocks (memory, enforcement, platform hints…)
@@ -1412,6 +1413,40 @@ void HermesCLI::handle_image(const std::string& args) {
               << "\n"
               << "  Type your prompt on the next line and it will be sent"
                  " with the image attached.\n";
+}
+
+// Ports upstream Python commit 2edebedc — /steer <prompt>.
+//
+// When an agent is actively running, inject into AIAgent::steer so the
+// text is appended to the next tool result's content (no interrupt, no
+// new user turn).  When no agent is running, /steer has no tool call
+// to attach to — fall back to announcing the missing-agent case so the
+// user knows to send the message normally.  The REPL's blocking input
+// read means we can't reach this handler mid-run from stdin anyway;
+// the command exists here primarily for the non-REPL scripted-input
+// path and for symmetry with gateway/TUI integrations.
+void HermesCLI::handle_steer(const std::string& args) {
+    std::string payload = args;
+    // trim
+    auto b = payload.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) {
+        std::cout << "Usage: /steer <prompt>\n";
+        return;
+    }
+    auto e = payload.find_last_not_of(" \t\r\n");
+    payload = payload.substr(b, e - b + 1);
+
+    if (agent_ && agent_->steer(payload)) {
+        std::string preview = payload.size() > 80
+                                  ? payload.substr(0, 80) + "..."
+                                  : payload;
+        std::cout << "  (>>) Steer queued — arrives after the next tool"
+                     " call: " << preview << "\n";
+    } else {
+        std::cout << "  No agent running; /steer has no tool call to"
+                     " attach to.  Send '" << payload
+                  << "' as a regular message instead.\n";
+    }
 }
 
 }  // namespace hermes::cli
