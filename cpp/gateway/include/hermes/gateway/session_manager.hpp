@@ -16,6 +16,7 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <hermes/gateway/message_pipeline.hpp>  // PendingQueue + MessageEvent
 #include <hermes/gateway/session_store.hpp>
 
 namespace hermes::agent {
@@ -143,12 +144,50 @@ public:
     void set_signature(const std::string& session_key,
                         AgentConfigSignature sig);
 
+    // --- Race-condition helpers (upstream 3a635145) ---------------------
+    //
+    // Two races in the Python ``_process_message_background`` turn chain
+    // are closed by keeping the ``_active_sessions`` entry live across
+    // the drain cycles and deferring its deletion until after we've
+    // checked for late-arrival pending messages.
+
+    // Python: ``_active.clear()`` without deleting the entry.  Resets
+    // the interrupt signal for the next turn in the chain but leaves
+    // the session marked as running so concurrent inbound messages take
+    // the busy-handler path (queue + interrupt) instead of spawning a
+    // second agent.  Returns false if the session is not known.
+    bool clear_interrupt_flag(const std::string& session_key);
+
+    // True if the session has been interrupted (request_stop / agent
+    // cancel).  Adapters check this between drain cycles.
+    bool is_interrupt_set(const std::string& session_key) const;
+
+    // Set the interrupt flag — called by /stop and by the busy-handler
+    // path when a new message arrives for a running session.
+    void set_interrupt_flag(const std::string& session_key);
+
+    // Upstream R6 finally-path fix: call at the end of the background
+    // turn to release the session.  If ``queue`` still has a message
+    // for the session_key (late arrival during typing_task.cancel()
+    // await), ``drain_starter`` is invoked with the popped event and
+    // the session entry is LEFT in place — the drain task's own
+    // lifecycle cleans it up.  Otherwise the entry is removed normally.
+    // Returns true when a late drain was dispatched.
+    using LateDrainStarter =
+        std::function<void(const std::string&, MessageEvent)>;
+    bool finalize_with_late_drain(const std::string& session_key,
+                                    PendingQueue* queue,
+                                    LateDrainStarter drain_starter);
+
 private:
     struct RunningEntry {
         std::shared_ptr<void> agent_or_sentinel;
         std::chrono::system_clock::time_point started_at;
         std::chrono::system_clock::time_point last_activity;
         bool is_pending = false;
+        // Mirrors asyncio.Event — set by /stop and the busy-handler
+        // race; cleared by clear_interrupt_flag.  See upstream 3a635145.
+        bool interrupt = false;
     };
 
     mutable std::mutex mu_;

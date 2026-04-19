@@ -238,4 +238,73 @@ void SessionManager::set_signature(const std::string& session_key,
     signatures_[session_key] = std::move(sig);
 }
 
+// --- Race-condition helpers (upstream 3a635145) -------------------------
+
+bool SessionManager::clear_interrupt_flag(const std::string& session_key) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = running_.find(session_key);
+    if (it == running_.end()) return false;
+    it->second.interrupt = false;
+    // Refresh activity so the stale-eviction sweep doesn't snap at us
+    // right after a turn-chain transition.
+    it->second.last_activity = std::chrono::system_clock::now();
+    return true;
+}
+
+bool SessionManager::is_interrupt_set(const std::string& session_key) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = running_.find(session_key);
+    if (it == running_.end()) return false;
+    return it->second.interrupt;
+}
+
+void SessionManager::set_interrupt_flag(const std::string& session_key) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = running_.find(session_key);
+    if (it == running_.end()) return;
+    it->second.interrupt = true;
+}
+
+bool SessionManager::finalize_with_late_drain(
+    const std::string& session_key, PendingQueue* queue,
+    LateDrainStarter drain_starter) {
+    // Step 1: see if a late-arrival message landed in the queue during
+    // the cleanup awaits (Python: typing_task cancel, stop_typing).
+    // The busy-handler for any concurrent inbound event still saw the
+    // _active_sessions entry live and enqueued.  We must drain that
+    // message instead of dropping it.
+    std::optional<MessageEvent> late;
+    if (queue) late = queue->dequeue(session_key);
+
+    if (late && drain_starter) {
+        // Late-arrival found: keep the session entry populated (the
+        // drain task's own lifecycle will mark_finished when it ends),
+        // and clear the interrupt flag so the drain agent starts clean.
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            auto it = running_.find(session_key);
+            if (it != running_.end()) {
+                it->second.interrupt = false;
+                it->second.last_activity =
+                    std::chrono::system_clock::now();
+            }
+        }
+        try {
+            drain_starter(session_key, std::move(*late));
+        } catch (...) {
+            // drain_starter must not throw, but tolerate it — we still
+            // need to release the session if the dispatch failed.
+            mark_finished(session_key);
+            return false;
+        }
+        return true;
+    }
+
+    // No late arrival — normal finalize.  If the caller re-enqueued
+    // during our late-check, the drain_starter path will have taken
+    // it; otherwise we release now.
+    mark_finished(session_key);
+    return false;
+}
+
 }  // namespace hermes::gateway
