@@ -754,7 +754,7 @@ void check_api_reachability(Report& r, const Options& opts) {
     auto* transport = opts.transport ? opts.transport
                                      : hermes::llm::get_default_transport();
 
-    const std::array<ProbeSpec, 4> probes = {{
+    const std::array<ProbeSpec, 5> probes = {{
         {"OpenRouter", "OPENROUTER_API_KEY",
          "https://openrouter.ai/api/v1/models", true},
         {"OpenAI",     "OPENAI_API_KEY",
@@ -763,6 +763,8 @@ void check_api_reachability(Report& r, const Options& opts) {
          "https://api.anthropic.com/v1/models", false},
         {"DeepSeek",   "DEEPSEEK_API_KEY",
          "https://api.deepseek.com/v1/models", true},
+        {"NVIDIA NIM", "NVIDIA_API_KEY",
+         "https://integrate.api.nvidia.com/v1/models", true},
     }};
 
     int configured = 0;

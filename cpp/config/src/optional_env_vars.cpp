@@ -48,6 +48,15 @@ std::map<std::string, EnvVarSpec> build_map() {
         "DeepSeek API key for direct DeepSeek access",
         "DeepSeek API Key", "https://platform.deepseek.com/api_keys",
         "provider", true);
+    add("NVIDIA_API_KEY",
+        "NVIDIA NIM API key for Nemotron / hosted open-weights inference",
+        "NVIDIA API key", "https://build.nvidia.com/",
+        "provider", true);
+    add("NVIDIA_BASE_URL",
+        "NVIDIA NIM base URL override "
+        "(default: https://integrate.api.nvidia.com/v1)",
+        "NVIDIA NIM base URL (leave empty for default)",
+        "", "provider", false);
 
     // ── Tool APIs ────────────────────────────────────────────────────
     add("FIRECRAWL_API_KEY",

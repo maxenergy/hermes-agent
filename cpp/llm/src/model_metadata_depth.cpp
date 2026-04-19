@@ -33,10 +33,6 @@ bool contains(std::string_view hay, std::string_view needle) {
     return hay.find(needle) != std::string_view::npos;
 }
 
-bool contains_ci(std::string_view hay, std::string_view needle) {
-    return contains(to_lower(hay), to_lower(needle));
-}
-
 }  // namespace
 
 // ── probe tiers ────────────────────────────────────────────────────────
@@ -63,6 +59,7 @@ const std::unordered_set<std::string>& known_prefixes() {
         "github-models", "kimi", "moonshot", "claude", "deep-seek",
         "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun",
         "qwen", "qwen-portal",
+        "nvidia",  // NVIDIA NIM
     };
     return kPrefixes;
 }
@@ -109,7 +106,7 @@ struct UrlProvider {
     const char* provider;
 };
 
-constexpr std::array<UrlProvider, 20> kUrlProviders = {{
+constexpr std::array<UrlProvider, 21> kUrlProviders = {{
     {"api.openai.com",                "openai"},
     {"chatgpt.com",                   "openai"},
     {"api.anthropic.com",             "anthropic"},
@@ -130,6 +127,7 @@ constexpr std::array<UrlProvider, 20> kUrlProviders = {{
     {"opencode.ai",                   "opencode-go"},
     {"api.x.ai",                      "xai"},
     {"api.mistral.ai",                "mistral"},
+    {"integrate.api.nvidia.com",      "nvidia"},
 }};
 
 std::string extract_host(std::string_view url) {
@@ -278,6 +276,10 @@ const std::vector<ContextEntry>& default_context_table() {
         {"llama-3.2",          131072},
         {"llama-3.1",          131072},
         {"llama",              131072},
+        // NVIDIA Nemotron — 128K context across all sizes (matches
+        // agent/model_metadata.py DEFAULT_CONTEXT_LENGTHS "nemotron"
+        // substring entry).
+        {"nemotron",           131072},
         // Mistral
         {"mistral-large",      131072},
         {"mistral-small",       32768},
@@ -551,6 +553,13 @@ const std::vector<PricingEntry>& pricing_entries() {
          ModelFamily::Llama,        false, false, false, 0.00},
         {"llama",                  0.60,  0.60, 0.00,  0.00,  131072,   8192,
          ModelFamily::Llama,        false, false, false, 0.00},
+
+        // ── NVIDIA Nemotron (NIM) ─────────────────────────────────────
+        // NIM hosts open-weights models; NVIDIA publishes them for free
+        // inference during public preview, so prompt/completion prices
+        // default to zero. All Nemotron sizes advertise 128K context.
+        {"nemotron",               0.00,  0.00, 0.00,  0.00,  131072,  32768,
+         ModelFamily::Unknown,      false, false, false, 0.00},
 
         // ── Mistral ───────────────────────────────────────────────────
         {"mistral-large",          2.00,  6.00, 0.00,  0.00,  131072,   8192,

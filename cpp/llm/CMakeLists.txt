@@ -62,6 +62,7 @@ add_library(hermes_llm STATIC
     src/tokenizer.cpp
     src/auxiliary_fallback.cpp
     src/anthropic_adapter_depth.cpp
+    src/model_metadata_depth.cpp
 )
 
 target_include_directories(hermes_llm

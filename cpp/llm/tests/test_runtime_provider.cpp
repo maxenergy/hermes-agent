@@ -1,6 +1,7 @@
 #include "hermes/llm/runtime_provider.hpp"
 
 #include "hermes/llm/credential_pool.hpp"
+#include "hermes/llm/model_metadata_depth.hpp"
 
 #include <gtest/gtest.h>
 
@@ -213,4 +214,55 @@ TEST(ResolveRuntimeProvider, NoCredentialsOkWhenAllowed) {
     auto r = resolve_runtime_provider("gpt-4o", cfg, &pool, true);
     EXPECT_EQ(r.provider_name, "openai");
     EXPECT_TRUE(r.api_key.empty());
+}
+
+// --- NVIDIA NIM ----------------------------------------------------------
+
+TEST(InferProvider, NvidiaNemotron) {
+    // Plain model names infer to nvidia.
+    EXPECT_EQ(infer_provider_from_model("nemotron-3-nano-30b-a3b"), "nvidia");
+    EXPECT_EQ(infer_provider_from_model("llama-3.3-nemotron-super-49b-v1.5"),
+              "nvidia");
+    // Aggregator-prefixed IDs keep their aggregator.
+    EXPECT_EQ(infer_provider_from_model("openrouter/nvidia/nemotron-3-nano-30b-a3b"),
+              "openrouter");
+}
+
+TEST(ResolveRuntimeProvider, NvidiaViaEnvVar) {
+    scrub_api_keys();
+    ::unsetenv("NVIDIA_API_KEY");
+    EnvGuard g("NVIDIA_API_KEY", "nvapi-fake");
+    CredentialPool pool;
+    nlohmann::json cfg = nlohmann::json::object();
+    auto r = resolve_runtime_provider("nemotron-3-nano-30b-a3b", cfg, &pool);
+    EXPECT_EQ(r.provider_name, "nvidia");
+    EXPECT_EQ(r.api_key, "nvapi-fake");
+    EXPECT_EQ(r.base_url, "https://integrate.api.nvidia.com/v1");
+    EXPECT_EQ(r.api_mode, "chat_completions");
+    EXPECT_EQ(r.source, "env");
+}
+
+TEST(ResolveRuntimeProvider, NvidiaExplicitProvider) {
+    scrub_api_keys();
+    ::unsetenv("NVIDIA_API_KEY");
+    EnvGuard g("NVIDIA_API_KEY", "nvapi-fake");
+    CredentialPool pool;
+    nlohmann::json cfg = {{"model", {{"provider", "nvidia"}}}};
+    auto r = resolve_runtime_provider("qwen3.5-397b-a17b", cfg, &pool);
+    EXPECT_EQ(r.provider_name, "nvidia");
+    EXPECT_EQ(r.base_url, "https://integrate.api.nvidia.com/v1");
+    EXPECT_EQ(r.api_mode, "chat_completions");
+}
+
+TEST(ModelMetadataDepth, NemotronContextIs128K) {
+    using hermes::llm::lookup_default_context_length;
+    EXPECT_EQ(lookup_default_context_length("nemotron-3-nano-30b-a3b"), 131072);
+    EXPECT_EQ(lookup_default_context_length("llama-3.3-nemotron-super-49b-v1.5"),
+              131072);
+}
+
+TEST(ModelMetadataDepth, NvidiaBaseUrlInfersProvider) {
+    using hermes::llm::infer_provider_from_base_url;
+    EXPECT_EQ(infer_provider_from_base_url("https://integrate.api.nvidia.com/v1"),
+              "nvidia");
 }

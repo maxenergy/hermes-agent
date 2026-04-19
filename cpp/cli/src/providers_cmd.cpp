@@ -30,6 +30,7 @@ const std::unordered_map<std::string, std::string>& label_overrides() {
         {"openai-codex", "OpenAI Codex"},
         {"copilot-acp",  "GitHub Copilot ACP"},
         {"local",        "Local endpoint"},
+        {"nvidia",       "NVIDIA NIM"},
     };
     return tbl;
 }
@@ -149,6 +150,12 @@ const std::unordered_map<std::string, HermesOverlay>& hermes_overlays() {
         o_xai.base_url_override = "https://api.x.ai/v1";
         o_xai.base_url_env_var = "XAI_BASE_URL";
         add("xai", o_xai);
+
+        HermesOverlay o_nvidia;
+        o_nvidia.transport = "openai_chat";
+        o_nvidia.base_url_override = "https://integrate.api.nvidia.com/v1";
+        o_nvidia.base_url_env_var = "NVIDIA_BASE_URL";
+        add("nvidia", o_nvidia);
 
         return m;
     }();
