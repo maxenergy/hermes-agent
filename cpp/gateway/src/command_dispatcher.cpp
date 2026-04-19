@@ -23,7 +23,8 @@ std::string lowercase(std::string_view s) {
 CommandDispatcher::CommandDispatcher() = default;
 
 void CommandDispatcher::register_command(std::string name, Handler handler,
-                                            std::vector<std::string> aliases) {
+                                            std::vector<std::string> aliases,
+                                            bool has_dedicated_running_handler) {
     auto lname = lowercase(name);
     std::lock_guard<std::mutex> lock(mu_);
     handlers_[lname] = std::move(handler);
@@ -32,6 +33,21 @@ void CommandDispatcher::register_command(std::string name, Handler handler,
         alias_of_[la] = lname;
         aliases_for_[lname].push_back(la);
     }
+    if (has_dedicated_running_handler) {
+        dedicated_handlers_[lname] = true;
+    } else {
+        // Preserve absence (register_command may be used to overwrite a
+        // non-dedicated command later).
+        dedicated_handlers_.erase(lname);
+    }
+}
+
+bool CommandDispatcher::has_dedicated_running_handler(
+    const std::string& name) const {
+    auto l = lowercase(name);
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = dedicated_handlers_.find(l);
+    return it != dedicated_handlers_.end() && it->second;
 }
 
 void CommandDispatcher::register_builtins() {
@@ -47,17 +63,22 @@ void CommandDispatcher::register_builtins() {
         };
     };
 
+    // Level-2 "dedicated running-agent handler" subset — mirrors
+    // upstream ACTIVE_SESSION_BYPASS_COMMANDS.  These commands can run
+    // while an agent turn is in-flight without interrupting it.
+    // Everything else, if recognized, is BypassGracefulReject'd.
     register_command("stop", handler(CommandAction::StopAgent,
                                        "Stopping the current turn..."),
-                     {"cancel", "abort"});
+                     {"cancel", "abort"}, /*dedicated=*/true);
     register_command("reset", handler(CommandAction::ResetSession,
                                         "Conversation reset."),
-                     {"new"});
+                     {"new"}, /*dedicated=*/true);
     register_command("drain", handler(CommandAction::DrainPending,
                                         "Pending queue cleared."),
-                     {"clear"});
+                     {"clear"}, /*dedicated=*/true);
     register_command("replay", handler(CommandAction::ReplayPending,
-                                         "Replaying queued messages..."));
+                                         "Replaying queued messages..."),
+                     {}, /*dedicated=*/true);
     register_command("model",
                      [](const CommandContext&,
                          const std::string& args) -> DispatchResult {
@@ -69,7 +90,7 @@ void CommandDispatcher::register_builtins() {
                                         ? std::string("No model supplied.")
                                         : ("Switching model to " + args);
                          return r;
-                     });
+                     });  // NOT dedicated — model switch must wait for turn
     register_command("restart", handler(CommandAction::RestartGateway,
                                           "Gateway restarting..."));
     register_command("shutdown", handler(CommandAction::ShutdownGateway,
@@ -77,10 +98,10 @@ void CommandDispatcher::register_builtins() {
                      {"quit", "exit"});
     register_command("approve", handler(CommandAction::ApproveToolCall,
                                           "Approval acknowledged."),
-                     {"yes", "ok"});
+                     {"yes", "ok"}, /*dedicated=*/true);
     register_command("deny", handler(CommandAction::DenyToolCall,
                                         "Tool call denied."),
-                     {"no", "reject"});
+                     {"no", "reject"}, /*dedicated=*/true);
     register_command("help",
                      [this](const CommandContext&,
                              const std::string&) -> DispatchResult {
@@ -92,7 +113,61 @@ void CommandDispatcher::register_builtins() {
                          }
                          r.reply = lines;
                          return r;
-                     });
+                     },
+                     {}, /*dedicated=*/true);
+    // /queue bypasses the active-session guard entirely (classified
+    // separately in classify_for_active_session).
+    register_command("queue",
+                     [](const CommandContext&,
+                         const std::string& args) -> DispatchResult {
+                         DispatchResult r;
+                         r.outcome = CommandOutcome::Handled;
+                         r.args = args;
+                         r.reply = args.empty()
+                                        ? std::string("Queue is empty.")
+                                        : ("Queued for next turn: " + args);
+                         return r;
+                     },
+                     {}, /*dedicated=*/true);
+}
+
+CommandDispatcher::ActiveSessionDecision
+CommandDispatcher::classify_for_active_session(
+    const std::string& text) const {
+    ActiveSessionDecision d;
+    auto word = extract_command_word(text);
+    if (!word) return d;  // NotACommand
+    auto lword = *word;
+    std::lock_guard<std::mutex> lock(mu_);
+    auto alias_it = alias_of_.find(lword);
+    if (alias_it != alias_of_.end()) lword = alias_it->second;
+    if (!handlers_.count(lword)) {
+        // Unknown slash token — caller should treat as regular text
+        // (the busy-session queue path wins).
+        return d;
+    }
+    d.canonical = lword;
+
+    // /queue bypasses everything without interrupting.
+    if (lword == "queue") {
+        d.routing = ActiveSessionRouting::QueueBypass;
+        return d;
+    }
+
+    auto ded_it = dedicated_handlers_.find(lword);
+    if (ded_it != dedicated_handlers_.end() && ded_it->second) {
+        d.routing = ActiveSessionRouting::BypassRunsDedicatedHandler;
+        return d;
+    }
+
+    // Recognized slash command without a dedicated running-agent
+    // handler — never interrupt, reject gracefully.  Mirrors upstream
+    // 632a807a's catch-all reply.
+    d.routing = ActiveSessionRouting::BypassGracefulReject;
+    d.reply = "\xE2\x8F\xB3 Agent is running \xE2\x80\x94 `/" + lword +
+              "` can't run mid-turn. Wait for the current response or "
+              "`/stop` first.";
+    return d;
 }
 
 DispatchResult CommandDispatcher::dispatch(const CommandContext& ctx,
