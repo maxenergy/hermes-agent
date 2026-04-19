@@ -216,6 +216,18 @@ public:
     void resume_typing_for_chat(const std::string& chat_id);
     bool is_typing_paused(const std::string& chat_id) const;
 
+    // --- Streaming edit capability (upstream 4459913f) -------------------
+    //
+    // Mirrors gateway/platforms/base.py's ``REQUIRES_EDIT_FINALIZE`` class
+    // attribute.  Default false: Telegram / Slack / Discord / Matrix all
+    // treat ``finalize=true`` on an edit as a no-op and skip the redundant
+    // final edit.  Adapters whose streaming UI has a distinct in-progress
+    // state (e.g. DingTalk AI Cards) set this to true so the stream
+    // consumer routes the final edit through even when content is
+    // unchanged, allowing the UI to transition out of the loading state.
+    bool requires_edit_finalize() const;
+    void set_requires_edit_finalize(bool value);
+
     // --- Health probe ---------------------------------------------------
     HealthSnapshot snapshot_health() const;
     void on_send_success();
@@ -241,6 +253,7 @@ private:
     FeatureFlags flags_;
 
     std::unordered_set<std::string> typing_paused_;
+    bool requires_edit_finalize_ = false;
 };
 
 }  // namespace hermes::gateway

@@ -17,7 +17,8 @@ struct EditRecord {
 TEST(StreamConsumerTest, FeedTokenAccumulates) {
     std::vector<EditRecord> edits;
     hg::StreamConsumer consumer(
-        [&](const std::string& c, const std::string& m, const std::string& s) {
+        [&](const std::string& c, const std::string& m,
+             const std::string& s, bool /*finalize*/) {
             edits.push_back({c, m, s});
         });
 
@@ -41,7 +42,8 @@ TEST(StreamConsumerTest, FlushFiresEditCallback) {
     int call_count = 0;
     std::string last_content;
     hg::StreamConsumer consumer(
-        [&](const std::string&, const std::string&, const std::string& s) {
+        [&](const std::string&, const std::string&, const std::string& s,
+             bool /*finalize*/) {
             ++call_count;
             last_content = s;
         });
@@ -57,7 +59,8 @@ TEST(StreamConsumerTest, FlushFiresEditCallback) {
 TEST(StreamConsumerTest, BatchingDelaysCallback) {
     int call_count = 0;
     hg::StreamConsumer consumer(
-        [&](const std::string&, const std::string&, const std::string&) {
+        [&](const std::string&, const std::string&, const std::string&,
+             bool) {
             ++call_count;
         });
 
@@ -78,7 +81,8 @@ TEST(StreamConsumerTest, BatchingDelaysCallback) {
 TEST(StreamConsumerTest, MultipleSessionsIsolated) {
     std::vector<EditRecord> edits;
     hg::StreamConsumer consumer(
-        [&](const std::string& c, const std::string& m, const std::string& s) {
+        [&](const std::string& c, const std::string& m,
+             const std::string& s, bool /*finalize*/) {
             edits.push_back({c, m, s});
         });
 
@@ -101,7 +105,8 @@ TEST(StreamConsumerTest, MultipleSessionsIsolated) {
 TEST(StreamConsumerTest, FlushAllClearsBuffers) {
     int calls = 0;
     hg::StreamConsumer consumer(
-        [&](const std::string&, const std::string&, const std::string&) {
+        [&](const std::string&, const std::string&, const std::string&,
+             bool) {
             ++calls;
         });
 

@@ -331,6 +331,16 @@ bool BaseAdapterMixin::is_typing_paused(const std::string& chat_id) const {
     return typing_paused_.count(chat_id) > 0;
 }
 
+bool BaseAdapterMixin::requires_edit_finalize() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return requires_edit_finalize_;
+}
+
+void BaseAdapterMixin::set_requires_edit_finalize(bool value) {
+    std::lock_guard<std::mutex> lock(mu_);
+    requires_edit_finalize_ = value;
+}
+
 HealthSnapshot BaseAdapterMixin::snapshot_health() const {
     HealthSnapshot s;
     s.connected = connected_.load(std::memory_order_acquire);

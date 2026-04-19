@@ -59,6 +59,7 @@ set(HERMES_GATEWAY_TEST_SOURCES
     test_base_adapter_races.cpp
     test_agent_cache_lru.cpp
     test_slash_active_session.cpp
+    test_stream_consumer_finalize.cpp
 )
 
 add_executable(hermes_gateway_tests ${HERMES_GATEWAY_TEST_SOURCES})
