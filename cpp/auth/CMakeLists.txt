@@ -10,6 +10,7 @@ add_library(hermes_auth STATIC
     src/qwen_oauth.cpp
     src/qwen_client.cpp
     src/mcp_oauth.cpp
+    src/gemini_oauth.cpp
 )
 
 target_include_directories(hermes_auth

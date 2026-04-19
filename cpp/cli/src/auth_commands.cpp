@@ -42,7 +42,7 @@ const char* const STRATEGY_RANDOM      = "random";
 
 const std::vector<std::string>& oauth_capable_providers() {
     static const std::vector<std::string> v = {
-        "anthropic", "nous", "openai-codex", "qwen-oauth",
+        "anthropic", "gemini", "nous", "openai-codex", "qwen-oauth",
     };
     return v;
 }

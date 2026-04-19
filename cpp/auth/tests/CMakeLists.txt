@@ -8,6 +8,7 @@ add_executable(hermes_auth_tests
     test_nous_subscription.cpp
     test_mcp_oauth.cpp
     test_codex_oauth.cpp
+    test_gemini_oauth.cpp
 )
 
 target_link_libraries(hermes_auth_tests
