@@ -48,6 +48,14 @@ std::map<std::string, EnvVarSpec> build_map() {
         "DeepSeek API key for direct DeepSeek access",
         "DeepSeek API Key", "https://platform.deepseek.com/api_keys",
         "provider", true);
+    add("XAI_API_KEY",
+        "xAI API key (Grok models via the Responses API)",
+        "xAI API key", "https://console.x.ai/",
+        "provider", true);
+    add("XAI_BASE_URL",
+        "xAI base URL override (default: https://api.x.ai/v1)",
+        "xAI base URL (leave empty for default)", "",
+        "provider", false);
     add("NVIDIA_API_KEY",
         "NVIDIA NIM API key for Nemotron / hosted open-weights inference",
         "NVIDIA API key", "https://build.nvidia.com/",

@@ -96,7 +96,7 @@ std::string infer_provider_from_model(const std::string& model) {
     if (lower.rfind("gemini", 0) == 0) return "google";
     if (lower.rfind("deepseek", 0) == 0) return "deepseek";
     if (lower.find("hermes") != std::string::npos) return "nous";
-    if (lower.rfind("grok", 0) == 0) return "x-ai";
+    if (lower.rfind("grok", 0) == 0) return "xai";
     // Nemotron family is NVIDIA's open-weights series; it is only offered
     // first-party by NVIDIA NIM (OpenRouter / HF may mirror it, but when
     // the user lists it without a provider prefix we assume NVIDIA NIM).
@@ -115,7 +115,7 @@ std::string default_base_url_for_provider(const std::string& provider) {
     if (provider == "nous") return "https://inference-api.nousresearch.com/v1";
     if (provider == "google") return "https://generativelanguage.googleapis.com/v1beta";
     if (provider == "deepseek") return "https://api.deepseek.com/v1";
-    if (provider == "x-ai") return "https://api.x.ai/v1";
+    if (provider == "xai") return "https://api.x.ai/v1";
     if (provider == "nvidia") return "https://integrate.api.nvidia.com/v1";
     if (provider == "ollama-cloud") return "https://ollama.com/v1";
     return "";
@@ -125,6 +125,10 @@ std::string default_api_mode_for_provider(const std::string& provider) {
     if (provider == "anthropic") return "anthropic_messages";
     if (provider == "openai-codex") return "codex_responses";
     if (provider == "bedrock") return "bedrock_converse";
+    // xAI moved from /v1/chat/completions to the Responses API (/v1/responses)
+    // in the upgrade that landed with Grok 4.20 reasoning; tool-calls with
+    // encrypted reasoning only work on the Responses path.
+    if (provider == "xai") return "codex_responses";
     return "chat_completions";
 }
 

@@ -148,7 +148,10 @@ const std::unordered_map<std::string, HermesOverlay>& hermes_overlays() {
         add("huggingface", o_hf);
 
         HermesOverlay o_xai;
-        o_xai.transport = "openai_chat";
+        // Responses API (/v1/responses) — xAI moved tool-call + reasoning
+        // support off the Chat Completions endpoint. Hermes speaks the
+        // Codex/Responses protocol via codex_responses.
+        o_xai.transport = "codex_responses";
         o_xai.base_url_override = "https://api.x.ai/v1";
         o_xai.base_url_env_var = "XAI_BASE_URL";
         add("xai", o_xai);
@@ -177,7 +180,7 @@ const std::unordered_map<std::string, std::string>& aliases() {
         // zai
         {"glm", "zai"}, {"z-ai", "zai"}, {"z.ai", "zai"}, {"zhipu", "zai"},
         // xai
-        {"x-ai", "xai"}, {"x.ai", "xai"},
+        {"x-ai", "xai"}, {"x.ai", "xai"}, {"grok", "xai"},
         // kimi-for-coding
         {"kimi", "kimi-for-coding"}, {"kimi-coding", "kimi-for-coding"},
         {"moonshot", "kimi-for-coding"},
@@ -295,6 +298,9 @@ std::string determine_api_mode(const std::string& provider,
             return "anthropic_messages";
         }
         if (url.find("api.openai.com") != std::string::npos) {
+            return "codex_responses";
+        }
+        if (url.find("api.x.ai") != std::string::npos) {
             return "codex_responses";
         }
         if (url.find("bedrock-runtime") != std::string::npos &&

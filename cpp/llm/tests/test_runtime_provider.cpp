@@ -74,7 +74,7 @@ TEST(InferProvider, QwenCopilotNousOthers) {
     EXPECT_EQ(infer_provider_from_model("nous/hermes-4-405b"), "nous");
     EXPECT_EQ(infer_provider_from_model("gemini-2.5-pro"), "google");
     EXPECT_EQ(infer_provider_from_model("deepseek-chat"), "deepseek");
-    EXPECT_EQ(infer_provider_from_model("grok-2"), "x-ai");
+    EXPECT_EQ(infer_provider_from_model("grok-2"), "xai");
     EXPECT_EQ(infer_provider_from_model("openrouter/anthropic/claude-opus"),
               "openrouter");
     // Unknown slug → aggregator fallback.
@@ -337,4 +337,31 @@ TEST(ModelMetadataDepth, NovaContextLengths) {
     using hermes::llm::lookup_default_context_length;
     EXPECT_EQ(lookup_default_context_length("us.amazon.nova-pro-v1:0"), 300000);
     EXPECT_EQ(lookup_default_context_length("us.amazon.nova-micro-v1:0"), 128000);
+}
+
+// --- xAI Responses API upgrade ------------------------------------------
+
+TEST(ResolveRuntimeProvider, XaiUsesCodexResponsesApiMode) {
+    scrub_api_keys();
+    ::unsetenv("XAI_API_KEY");
+    EnvGuard g("XAI_API_KEY", "xai-fake");
+    CredentialPool pool;
+    nlohmann::json cfg = nlohmann::json::object();
+    auto r = resolve_runtime_provider("grok-4.20-reasoning", cfg, &pool);
+    EXPECT_EQ(r.provider_name, "xai");
+    EXPECT_EQ(r.base_url, "https://api.x.ai/v1");
+    EXPECT_EQ(r.api_mode, "codex_responses");
+    EXPECT_EQ(r.api_key, "xai-fake");
+}
+
+TEST(ResolveRuntimeProvider, XaiExplicitProviderGetsResponsesMode) {
+    scrub_api_keys();
+    ::unsetenv("XAI_API_KEY");
+    EnvGuard g("XAI_API_KEY", "xai-fake");
+    CredentialPool pool;
+    // Non-Grok model, but provider is xai → still Responses API.
+    nlohmann::json cfg = {{"model", {{"provider", "xai"}}}};
+    auto r = resolve_runtime_provider("custom-xai-model", cfg, &pool);
+    EXPECT_EQ(r.provider_name, "xai");
+    EXPECT_EQ(r.api_mode, "codex_responses");
 }
