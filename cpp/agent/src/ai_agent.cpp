@@ -2,6 +2,7 @@
 
 #include "hermes/agent/background_tasks.hpp"
 #include "hermes/agent/rate_limit_tracker.hpp"
+#include "hermes/agent/think_stripper.hpp"
 #include "hermes/core/path.hpp"
 #include "hermes/llm/error_classifier.hpp"
 #include "hermes/llm/model_metadata.hpp"
@@ -627,6 +628,28 @@ struct AIAgent::Impl {
             }
 
             // 5. Record assistant turn.
+            //
+            // Strip inline reasoning tags (<think>…</think> etc.) from the
+            // stored assistant content before persisting. ``reasoning`` is
+            // already captured on ``resp.assistant_message.reasoning`` by
+            // the LLM client, so the raw tags in content are redundant.
+            // Leaving them in place would leak to messaging platforms,
+            // inflate context on subsequent turns, and pollute generated
+            // session titles. One strip at the storage boundary cleans
+            // every downstream consumer (API replay, transcript, gateway
+            // delivery, CLI display, compression, title generation).
+            //
+            // Upstream: run_agent.py ec48ec55 (stored assistant content)
+            //           + 9489d157 (unterminated-block handling).
+            if (!resp.assistant_message.content_text.empty()) {
+                resp.assistant_message.content_text =
+                    strip_think_blocks(resp.assistant_message.content_text);
+            }
+            for (auto& b : resp.assistant_message.content_blocks) {
+                if (b.type == "text" && !b.text.empty()) {
+                    b.text = strip_think_blocks(b.text);
+                }
+            }
             messages.push_back(resp.assistant_message);
             persist_message(resp.assistant_message,
                             static_cast<int>(messages.size()) - 1);
@@ -792,6 +815,20 @@ struct AIAgent::Impl {
                                nlohmann::json{{"iterations", api_calls}});
 
                 CompletionResponse summary_resp = llm->complete(summary_req);
+
+                // Strip reasoning tags from the summary response content
+                // before it's shown to the user or persisted (parity with
+                // the main-loop storage-boundary strip above).
+                if (!summary_resp.assistant_message.content_text.empty()) {
+                    summary_resp.assistant_message.content_text =
+                        strip_think_blocks(
+                            summary_resp.assistant_message.content_text);
+                }
+                for (auto& b : summary_resp.assistant_message.content_blocks) {
+                    if (b.type == "text" && !b.text.empty()) {
+                        b.text = strip_think_blocks(b.text);
+                    }
+                }
 
                 std::string summary_text =
                     summary_resp.assistant_message.content_text;

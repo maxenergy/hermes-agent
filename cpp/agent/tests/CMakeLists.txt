@@ -57,6 +57,7 @@ add_executable(hermes_agent_tests
     test_models_dev.cpp
     test_display.cpp
     test_copilot_acp_client.cpp
+    test_think_stripper.cpp
 )
 
 target_link_libraries(hermes_agent_tests
