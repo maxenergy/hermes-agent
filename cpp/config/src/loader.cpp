@@ -791,6 +791,43 @@ nlohmann::json migrate_config(nlohmann::json config) {
         current = 14;
     }
 
+    // v14 -> v15: seed the four new v15 keys if absent.  Field-level merge
+    // so any pre-existing user overrides survive.  Corresponds to upstream
+    // Python commits 762f7e97 (approvals.cron_mode), 285bb2b9
+    // (code_execution.mode), 64b35471 (browser.cdp_url) and 1ca9b197
+    // (network.force_ipv4).
+    if (current < 15) {
+        if (!config.contains("approvals") || !config["approvals"].is_object()) {
+            config["approvals"] = nlohmann::json::object();
+        }
+        auto& appr = config["approvals"];
+        if (!appr.contains("mode")) appr["mode"] = "manual";
+        if (!appr.contains("timeout")) appr["timeout"] = 60;
+        if (!appr.contains("cron_mode")) appr["cron_mode"] = "deny";
+
+        if (!config.contains("code_execution") ||
+            !config["code_execution"].is_object()) {
+            config["code_execution"] = nlohmann::json::object();
+        }
+        auto& ce = config["code_execution"];
+        if (!ce.contains("mode")) ce["mode"] = "project";
+
+        if (!config.contains("browser") || !config["browser"].is_object()) {
+            config["browser"] = nlohmann::json::object();
+        }
+        auto& br = config["browser"];
+        if (!br.contains("cdp_url")) br["cdp_url"] = "";
+
+        if (!config.contains("network") || !config["network"].is_object()) {
+            config["network"] = nlohmann::json::object();
+        }
+        auto& net = config["network"];
+        if (!net.contains("force_ipv4")) net["force_ipv4"] = false;
+
+        config["_config_version"] = 15;
+        current = 15;
+    }
+
     return config;
 }
 

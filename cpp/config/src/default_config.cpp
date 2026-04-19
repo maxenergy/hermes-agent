@@ -60,6 +60,13 @@ nlohmann::json make_default_config() {
     // --- Web / browser tooling (scaffold) ---
     cfg["web"] = json::object();
 
+    // --- Browser (v15): optional persistent CDP endpoint so tools can
+    // attach to an existing Chromium/Chrome instance.  Empty string =
+    // let the launcher spawn its own browser.  Upstream 64b35471.
+    cfg["browser"] = {
+        {"cdp_url", ""},
+    };
+
     // --- TTS (scaffold) ---
     cfg["tts"] = {
         {"provider", "edge"},
@@ -94,6 +101,32 @@ nlohmann::json make_default_config() {
         {"level", "INFO"},
         {"max_size_mb", 5},
         {"backup_count", 3},
+    };
+
+    // --- Approvals (v15): cron_mode controls how cron jobs handle
+    // dangerous commands.  "deny" = block, let the agent find an
+    // alternative.  "approve" = auto-approve (historical behaviour,
+    // opt-in).  Upstream 762f7e97.
+    cfg["approvals"] = {
+        {"mode", "manual"},
+        {"timeout", 60},
+        {"cron_mode", "deny"},
+    };
+
+    // --- execute_code (v15): controls CWD + Python interpreter for
+    // the execute_code tool.  "project" (default) tracks the session's
+    // TERMINAL_CWD and the active virtualenv so project deps (pandas,
+    // torch, …) resolve; "strict" runs in a staging tmpdir with
+    // ``sys.executable`` for maximum isolation.  Upstream 285bb2b9.
+    cfg["code_execution"] = {
+        {"mode", "project"},
+    };
+
+    // --- Network (v15): force_ipv4 works around hosts where Python's
+    // AAAA-first resolution hangs for the full TCP timeout before
+    // falling back to IPv4.  Upstream 1ca9b197.
+    cfg["network"] = {
+        {"force_ipv4", false},
     };
 
     cfg["_config_version"] = kCurrentConfigVersion;

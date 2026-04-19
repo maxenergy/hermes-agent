@@ -217,8 +217,8 @@ TEST(MigrationYaml, FutureVersionIsNotDowngraded) {
 }
 
 // ---------------------------------------------------------------------------
-// v6 -> v14: version-only bumps for v6/v7/v8/v9/v10/v11 + the v11→v12 and
-// v13→v14 schema changes applied end-to-end.
+// v6 -> v15: version-only bumps for v6/v7/v8/v9/v10/v11 + the v11→v12,
+// v13→v14 and v14→v15 schema changes applied end-to-end.
 // ---------------------------------------------------------------------------
 TEST(MigrationYaml, V6YamlWalksToCurrentWithLegacyCustomProviders) {
     TempHermesHome home;
@@ -235,7 +235,7 @@ TEST(MigrationYaml, V6YamlWalksToCurrentWithLegacyCustomProviders) {
 
     auto cfg = hc::migrate_config(hc::load_cli_config());
     EXPECT_EQ(cfg["_config_version"].get<int>(), hc::kCurrentConfigVersion);
-    EXPECT_EQ(hc::kCurrentConfigVersion, 14);
+    EXPECT_EQ(hc::kCurrentConfigVersion, 15);
 
     // v11 -> v12: custom_providers migrated into providers dict.
     EXPECT_FALSE(cfg.contains("custom_providers"));

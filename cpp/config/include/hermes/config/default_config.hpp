@@ -17,6 +17,12 @@ const nlohmann::json& default_config();
 
 // Current config schema version.  Bumping this forces a migration
 // pass next time a user's config is loaded.
-constexpr int kCurrentConfigVersion = 14;
+//
+// v15 (upstream commits 762f7e97 / 285bb2b9 / 64b35471 / 1ca9b197):
+//   * approvals.cron_mode = "deny"
+//   * code_execution.mode = "project"
+//   * browser.cdp_url = ""
+//   * network.force_ipv4 = false
+constexpr int kCurrentConfigVersion = 15;
 
 }  // namespace hermes::config

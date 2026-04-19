@@ -161,7 +161,7 @@ TEST(MigrateConfig, V6WalksStraightToCurrent) {
     // adding any schema sections that didn't already exist.
     nlohmann::json cfg = {{"_config_version", 6}};
     auto migrated = hc::migrate_config(cfg);
-    EXPECT_EQ(migrated["_config_version"].get<int>(), 14);
+    EXPECT_EQ(migrated["_config_version"].get<int>(), 15);
     EXPECT_EQ(migrated["_config_version"].get<int>(), hc::kCurrentConfigVersion);
     // No legacy list → no providers dict added by migration.
     EXPECT_FALSE(migrated.contains("providers"));
@@ -295,7 +295,7 @@ TEST(MigrateConfig, V6ToV14FullWalkWithAllLegacyFields) {
         }},
     };
     auto out = hc::migrate_config(cfg);
-    EXPECT_EQ(out["_config_version"].get<int>(), 14);
+    EXPECT_EQ(out["_config_version"].get<int>(), 15);
     EXPECT_FALSE(out.contains("custom_providers"));
     ASSERT_TRUE(out["providers"].contains("old-host"));
     EXPECT_EQ(out["providers"]["old-host"]["api"].get<std::string>(),
@@ -357,6 +357,58 @@ TEST(MigrateConfig, V12ToV13WipesLlmAndOpenAiModelFromDotEnv) {
     EXPECT_NE(env.find("OPENAI_API_KEY=keep-me"), std::string::npos);
     EXPECT_NE(env.find("ANOTHER=ok"), std::string::npos);
     EXPECT_NE(env.find("# comment"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// v14 -> v15: seeds the four new keys (approvals.cron_mode,
+// code_execution.mode, browser.cdp_url, network.force_ipv4) without
+// clobbering existing user overrides.  Upstream commits 762f7e97 /
+// 285bb2b9 / 64b35471 / 1ca9b197.
+// ---------------------------------------------------------------------------
+
+TEST(MigrateConfig, V14ToV15SeedsNewKeys) {
+    nlohmann::json cfg = {{"_config_version", 14}};
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+    EXPECT_EQ(out["_config_version"].get<int>(), 15);
+
+    // approvals.cron_mode seeded.
+    ASSERT_TRUE(out.contains("approvals"));
+    EXPECT_EQ(out["approvals"]["cron_mode"].get<std::string>(), "deny");
+    EXPECT_EQ(out["approvals"]["mode"].get<std::string>(), "manual");
+    EXPECT_EQ(out["approvals"]["timeout"].get<int>(), 60);
+
+    // code_execution.mode seeded.
+    ASSERT_TRUE(out.contains("code_execution"));
+    EXPECT_EQ(out["code_execution"]["mode"].get<std::string>(), "project");
+
+    // browser.cdp_url seeded.
+    ASSERT_TRUE(out.contains("browser"));
+    EXPECT_EQ(out["browser"]["cdp_url"].get<std::string>(), "");
+
+    // network.force_ipv4 seeded.
+    ASSERT_TRUE(out.contains("network"));
+    EXPECT_FALSE(out["network"]["force_ipv4"].get<bool>());
+}
+
+TEST(MigrateConfig, V14ToV15PreservesExistingOverrides) {
+    nlohmann::json cfg = {
+        {"_config_version", 14},
+        {"approvals", {{"mode", "smart"}, {"cron_mode", "approve"}}},
+        {"code_execution", {{"mode", "strict"}}},
+        {"browser", {{"cdp_url", "http://localhost:9222"}}},
+        {"network", {{"force_ipv4", true}}},
+    };
+    auto out = hc::migrate_config(cfg);
+    EXPECT_EQ(out["_config_version"].get<int>(), hc::kCurrentConfigVersion);
+    EXPECT_EQ(out["approvals"]["mode"].get<std::string>(), "smart");
+    EXPECT_EQ(out["approvals"]["cron_mode"].get<std::string>(), "approve");
+    // Timeout wasn't set on the input, so the default should be injected.
+    EXPECT_EQ(out["approvals"]["timeout"].get<int>(), 60);
+    EXPECT_EQ(out["code_execution"]["mode"].get<std::string>(), "strict");
+    EXPECT_EQ(out["browser"]["cdp_url"].get<std::string>(),
+              "http://localhost:9222");
+    EXPECT_TRUE(out["network"]["force_ipv4"].get<bool>());
 }
 
 TEST(MigrateConfig, V8ToV9WithoutEnvFileDoesNotCreateOne) {
