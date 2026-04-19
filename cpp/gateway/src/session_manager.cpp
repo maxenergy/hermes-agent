@@ -156,17 +156,118 @@ void SessionManager::set_agent_factory(AgentFactory factory) {
     factory_ = std::move(factory);
 }
 
+void SessionManager::set_agent_release(AgentReleaseFn fn) {
+    std::lock_guard<std::mutex> lock(mu_);
+    release_fn_ = std::move(fn);
+}
+
+void SessionManager::set_agent_cache_max_size(std::size_t max_size) {
+    std::lock_guard<std::mutex> lock(mu_);
+    cache_max_size_ = max_size;
+}
+
+std::size_t SessionManager::agent_cache_max_size() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return cache_max_size_;
+}
+
+void SessionManager::set_agent_cache_idle_ttl(std::chrono::seconds ttl) {
+    std::lock_guard<std::mutex> lock(mu_);
+    cache_idle_ttl_ = ttl;
+}
+
+std::chrono::seconds SessionManager::agent_cache_idle_ttl() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return cache_idle_ttl_;
+}
+
+std::size_t SessionManager::agent_cache_size() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return cache_.size();
+}
+
+std::vector<std::shared_ptr<hermes::agent::AIAgent>>
+SessionManager::enforce_cache_cap_locked_() {
+    std::vector<std::shared_ptr<hermes::agent::AIAgent>> evicted;
+    if (cache_.size() <= cache_max_size_) return evicted;
+
+    // Build identity set of mid-turn agents so we don't tear down their
+    // clients while an active turn is using them.  Matches upstream
+    // _enforce_agent_cache_cap() "running_ids" snapshot.
+    std::unordered_map<hermes::agent::AIAgent*, bool> mid_turn;
+    for (auto& [_, entry] : running_) {
+        if (entry.is_pending) continue;
+        auto* raw = static_cast<hermes::agent::AIAgent*>(
+            entry.agent_or_sentinel.get());
+        if (raw) mid_turn[raw] = true;
+    }
+
+    // Walk LRU -> MRU, evicting excess entries that aren't mid-turn.  If
+    // a mid-turn agent is in the excess window we SKIP without
+    // compensating — freshly-inserted sessions must not be punished to
+    // protect a long-lived busy one.  (Matches the commit comment.)
+    std::size_t excess = cache_.size() - cache_max_size_;
+    auto it = cache_order_.begin();
+    while (excess > 0 && it != cache_order_.end()) {
+        auto entry_it = cache_.find(*it);
+        if (entry_it == cache_.end()) {
+            it = cache_order_.erase(it);
+            continue;
+        }
+        auto* raw = entry_it->second.agent.get();
+        if (raw && mid_turn.count(raw)) {
+            ++it;
+            --excess;  // count against the excess window; don't substitute
+            continue;
+        }
+        evicted.push_back(entry_it->second.agent);
+        cache_.erase(entry_it);
+        it = cache_order_.erase(it);
+        --excess;
+    }
+    return evicted;
+}
+
 std::shared_ptr<hermes::agent::AIAgent> SessionManager::get_or_create_agent(
     const std::string& session_key) {
     std::unique_lock<std::mutex> lock(mu_);
+    auto now = std::chrono::steady_clock::now();
     auto it = cache_.find(session_key);
-    if (it != cache_.end()) return it->second;
+    if (it != cache_.end()) {
+        // LRU refresh: move to MRU tail.
+        cache_order_.splice(cache_order_.end(), cache_order_,
+                             it->second.order_it);
+        it->second.last_activity = now;
+        return it->second.agent;
+    }
     if (!factory_) return nullptr;
     auto factory = factory_;
     lock.unlock();
     auto agent = factory(session_key);
     lock.lock();
-    cache_[session_key] = agent;
+    // Re-check in case another thread raced us.
+    auto re_it = cache_.find(session_key);
+    if (re_it != cache_.end()) {
+        cache_order_.splice(cache_order_.end(), cache_order_,
+                             re_it->second.order_it);
+        re_it->second.last_activity = now;
+        return re_it->second.agent;
+    }
+    cache_order_.push_back(session_key);
+    auto order_it = std::prev(cache_order_.end());
+    cache_[session_key] = {agent, order_it, now};
+
+    // Enforce the cap after the insert.  Pop out the evicted list so we
+    // can invoke release_fn_ without holding mu_.
+    auto evicted = enforce_cache_cap_locked_();
+    auto release_fn = release_fn_;
+    lock.unlock();
+
+    if (release_fn) {
+        for (auto& a : evicted) {
+            try { release_fn(a); } catch (...) {}
+        }
+    }
     return agent;
 }
 
@@ -175,9 +276,54 @@ std::shared_ptr<hermes::agent::AIAgent> SessionManager::evict_cached_agent(
     std::lock_guard<std::mutex> lock(mu_);
     auto it = cache_.find(session_key);
     if (it == cache_.end()) return nullptr;
-    auto old = it->second;
+    auto old = it->second.agent;
+    cache_order_.erase(it->second.order_it);
     cache_.erase(it);
     return old;
+}
+
+std::size_t SessionManager::sweep_idle_cached_agents() {
+    std::vector<std::shared_ptr<hermes::agent::AIAgent>> evicted;
+    AgentReleaseFn release_fn;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto now = std::chrono::steady_clock::now();
+        release_fn = release_fn_;
+
+        std::unordered_map<hermes::agent::AIAgent*, bool> mid_turn;
+        for (auto& [_, entry] : running_) {
+            if (entry.is_pending) continue;
+            auto* raw = static_cast<hermes::agent::AIAgent*>(
+                entry.agent_or_sentinel.get());
+            if (raw) mid_turn[raw] = true;
+        }
+
+        auto ttl_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                cache_idle_ttl_);
+        for (auto it = cache_.begin(); it != cache_.end();) {
+            auto* raw = it->second.agent.get();
+            if (raw && mid_turn.count(raw)) {
+                ++it;
+                continue;
+            }
+            auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - it->second.last_activity);
+            if (idle > ttl_ms) {
+                evicted.push_back(it->second.agent);
+                cache_order_.erase(it->second.order_it);
+                it = cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (release_fn) {
+        for (auto& a : evicted) {
+            try { release_fn(a); } catch (...) {}
+        }
+    }
+    return evicted.size();
 }
 
 // --- Model override ------------------------------------------------------

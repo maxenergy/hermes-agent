@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -65,8 +66,37 @@ public:
     using AgentFactory =
         std::function<std::shared_ptr<hermes::agent::AIAgent>(const std::string&)>;
 
+    // Agent-cache tuning.  Defaults mirror gateway/run.py:
+    //   _AGENT_CACHE_MAX_SIZE       = 128
+    //   _AGENT_CACHE_IDLE_TTL_SECS  = 3600
+    // (upstream 8d7b7feb).  Exposed so tests can override without
+    // churning class state.
+    static constexpr std::size_t kDefaultAgentCacheMax = 128;
+    static constexpr std::chrono::seconds kDefaultAgentIdleTtl{3600};
+
     SessionManager();
     ~SessionManager();
+
+    // --- LRU + idle-TTL knobs -------------------------------------------
+    void set_agent_cache_max_size(std::size_t max_size);
+    std::size_t agent_cache_max_size() const;
+    void set_agent_cache_idle_ttl(std::chrono::seconds ttl);
+    std::chrono::seconds agent_cache_idle_ttl() const;
+    std::size_t agent_cache_size() const;
+
+    // Called from the session-expiry watcher (or tests).  Evicts cached
+    // agents whose last_activity is older than ``idle_ttl``.  Agents in
+    // ``running_`` are skipped — tearing down an active turn's clients
+    // mid-flight would crash the request.  Returns the number evicted.
+    std::size_t sweep_idle_cached_agents();
+
+    // Release callback invoked on eviction so the caller can run the
+    // Python ``_release_evicted_agent_soft`` equivalent (close the LLM
+    // client only; leave process_registry / terminal sandbox intact
+    // for a resuming agent to inherit).
+    using AgentReleaseFn =
+        std::function<void(std::shared_ptr<hermes::agent::AIAgent>)>;
+    void set_agent_release(AgentReleaseFn fn);
 
     // --- Session key derivation ------------------------------------------
 
@@ -192,12 +222,35 @@ private:
 
     mutable std::mutex mu_;
     std::unordered_map<std::string, RunningEntry> running_;
-    std::unordered_map<std::string,
-                        std::shared_ptr<hermes::agent::AIAgent>>
-        cache_;
+
+    // LRU agent cache (upstream 8d7b7feb).  ``cache_order_`` is the
+    // LRU list (front = LRU, back = MRU); ``cache_`` maps key to the
+    // cached agent + its iterator into ``cache_order_`` for O(1)
+    // refresh / eviction.  ``cache_last_activity_`` tracks the per-
+    // agent last activity for idle-TTL eviction.
+    struct CacheEntry {
+        std::shared_ptr<hermes::agent::AIAgent> agent;
+        std::list<std::string>::iterator order_it;
+        std::chrono::steady_clock::time_point last_activity;
+    };
+    std::list<std::string> cache_order_;
+    std::unordered_map<std::string, CacheEntry> cache_;
+    std::size_t cache_max_size_ = kDefaultAgentCacheMax;
+    std::chrono::seconds cache_idle_ttl_ = kDefaultAgentIdleTtl;
+    AgentReleaseFn release_fn_;
+
     std::unordered_map<std::string, std::string> model_overrides_;
     std::unordered_map<std::string, AgentConfigSignature> signatures_;
     AgentFactory factory_;
+
+    // Caller must hold mu_.  Enforces cache_max_size_ by evicting the
+    // LRU-most entries that are NOT currently mid-turn.  Mid-turn
+    // agents are skipped without compensating (matches upstream
+    // 8d7b7feb "never evict mid-turn agents" behaviour).  Returns the
+    // evicted agents so the caller can invoke release_fn_ outside the
+    // lock.
+    std::vector<std::shared_ptr<hermes::agent::AIAgent>>
+    enforce_cache_cap_locked_();
 };
 
 }  // namespace hermes::gateway
