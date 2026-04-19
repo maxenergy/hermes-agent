@@ -2,7 +2,9 @@
 #include "hermes/llm/llm_client.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -11,6 +13,12 @@
 #include <curl/curl.h>
 #elif defined(HERMES_LLM_HAS_CPR)
 #include <cpr/cpr.h>
+#endif
+
+#if !defined(_WIN32)
+#  include <netinet/in.h>
+#  include <netinet/tcp.h>
+#  include <sys/socket.h>
 #endif
 
 namespace hermes::llm {
@@ -55,6 +63,104 @@ void FakeHttpTransport::post_json_stream(
     while (std::getline(ss, line)) {
         on_chunk(line + "\n");
     }
+}
+
+// ── TCP keepalive observability (test hook) ────────────────────────────
+//
+// Shared between every CurlTransport instance.  Writes are coarse — one
+// update per connect — so a plain mutex is fine.
+
+namespace {
+
+LastCurlSocketOptions& keepalive_slot() {
+    static LastCurlSocketOptions slot;
+    return slot;
+}
+
+std::mutex& keepalive_mu() {
+    static std::mutex m;
+    return m;
+}
+
+#if defined(HERMES_LLM_HAS_CURL) && !defined(_WIN32)
+// Apply socket-level keepalive to the fd and observe the kernel's view
+// via ``getsockopt`` so tests can assert the options really landed.
+void apply_keepalive(int fd) {
+    TcpKeepaliveSettings cfg{};
+    const int on = 1;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+
+#  if defined(TCP_KEEPIDLE)
+    (void)::setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &cfg.idle_seconds,
+                       sizeof(cfg.idle_seconds));
+#  elif defined(TCP_KEEPALIVE)
+    (void)::setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &cfg.idle_seconds,
+                       sizeof(cfg.idle_seconds));
+#  endif
+#  if defined(TCP_KEEPINTVL)
+    (void)::setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
+                       &cfg.interval_seconds,
+                       sizeof(cfg.interval_seconds));
+#  endif
+#  if defined(TCP_KEEPCNT)
+    (void)::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cfg.probe_count,
+                       sizeof(cfg.probe_count));
+#  endif
+
+    LastCurlSocketOptions obs{};
+    obs.populated = true;
+    int val = 0;
+    socklen_t len = sizeof(val);
+    if (::getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, &len) == 0) {
+        obs.so_keepalive = val;
+    }
+#  if defined(TCP_KEEPIDLE)
+    len = sizeof(val);
+    if (::getsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, &len) == 0) {
+        obs.tcp_keepidle = val;
+    }
+#  elif defined(TCP_KEEPALIVE)
+    len = sizeof(val);
+    if (::getsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, &len) == 0) {
+        obs.tcp_keepidle = val;
+    }
+#  endif
+#  if defined(TCP_KEEPINTVL)
+    len = sizeof(val);
+    if (::getsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, &len) == 0) {
+        obs.tcp_keepintvl = val;
+    }
+#  endif
+#  if defined(TCP_KEEPCNT)
+    len = sizeof(val);
+    if (::getsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, &len) == 0) {
+        obs.tcp_keepcnt = val;
+    }
+#  endif
+
+    std::lock_guard<std::mutex> lk(keepalive_mu());
+    keepalive_slot() = obs;
+}
+
+int keepalive_sockopt_callback(void* /*userdata*/, curl_socket_t curlfd,
+                               curlsocktype purpose) {
+    if (purpose == CURLSOCKTYPE_IPCXN) {
+        apply_keepalive(static_cast<int>(curlfd));
+    }
+    return CURL_SOCKOPT_OK;
+}
+#endif  // HERMES_LLM_HAS_CURL && !_WIN32
+
+}  // namespace
+
+LastCurlSocketOptions last_curl_socket_options() {
+    std::lock_guard<std::mutex> lk(keepalive_mu());
+    return keepalive_slot();
+}
+
+void reset_last_curl_socket_options() {
+    std::lock_guard<std::mutex> lk(keepalive_mu());
+    keepalive_slot() = LastCurlSocketOptions{};
 }
 
 // ── Real HTTP transport ────────────────────────────────────────────────
@@ -155,6 +261,13 @@ public:
                          (long)CURL_HTTP_VERSION_1_1);
         // No buffering of the response — flush each chunk to the callback.
         curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 1024L);
+#if !defined(_WIN32)
+        // Enable TCP keepalives so the kernel detects dead provider
+        // connections within ~60s instead of letting the socket sit in
+        // CLOSE-WAIT until the 300s stream timeout (#10324).
+        curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION,
+                         keepalive_sockopt_callback);
+#endif
 
         // Proxy support.
         const char* proxy = std::getenv("HTTPS_PROXY");
@@ -233,6 +346,13 @@ private:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#if !defined(_WIN32)
+        // Enable TCP keepalives so the kernel detects dead provider
+        // connections within ~60s instead of letting the socket sit in
+        // CLOSE-WAIT until the 120s read timeout (#10324).
+        curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION,
+                         keepalive_sockopt_callback);
+#endif
 
         // Proxy support via environment.
         const char* proxy = std::getenv("HTTPS_PROXY");

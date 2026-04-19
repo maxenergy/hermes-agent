@@ -106,6 +106,43 @@ std::unique_ptr<HttpTransport> make_curl_transport();
 // backend was compiled in.
 HttpTransport* get_default_transport();
 
+// ── TCP keepalive configuration ───────────────────────────────────────
+//
+// Provider HTTP connections enable socket-level keepalives so dead peers
+// are detected within ~60s instead of the process hanging until the 120s
+// read timeout — see #10324 (Python port 8c478983) for the underlying
+// failure mode (CLOSE-WAIT sockets never surfacing to epoll).
+//
+// The defaults match the Python port: probe after 30s idle, retry every
+// 10s, give up after 3 attempts.  Linux uses TCP_KEEPIDLE, macOS falls
+// back to TCP_KEEPALIVE (same semantics, different symbol).  Windows
+// support is a no-op — the relevant SIO_KEEPALIVE_VALS IOCTL isn't
+// reachable from the curl socket hook.
+struct TcpKeepaliveSettings {
+    int idle_seconds = 30;     // TCP_KEEPIDLE / TCP_KEEPALIVE
+    int interval_seconds = 10; // TCP_KEEPINTVL
+    int probe_count = 3;       // TCP_KEEPCNT
+};
+
+// Observability hook populated by CurlTransport's sockopt callback right
+// before every connect.  Tests use this to assert the options really
+// landed on the underlying fd (cannot ``getsockopt`` curl's private
+// socket after the fact because it's destroyed by the time control
+// returns).
+struct LastCurlSocketOptions {
+    bool populated = false;
+    int so_keepalive = -1;
+    int tcp_keepidle = -1;
+    int tcp_keepintvl = -1;
+    int tcp_keepcnt = -1;
+};
+
+// Returns a thread-safe snapshot of the most recent sockopt observation.
+LastCurlSocketOptions last_curl_socket_options();
+
+// Clears the observation; tests call this between requests.
+void reset_last_curl_socket_options();
+
 // Deterministic fake transport for unit tests.
 class FakeHttpTransport : public HttpTransport {
 public:
