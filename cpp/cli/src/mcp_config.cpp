@@ -1,6 +1,7 @@
 // C++17 port of hermes_cli/mcp_config.py.  See header for scope notes.
 #include "hermes/cli/mcp_config.hpp"
 
+#include "hermes/auth/mcp_oauth.hpp"
 #include "hermes/cli/colors.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/core/path.hpp"
@@ -637,6 +638,67 @@ int cmd_enable(const std::vector<std::string>& argv, bool enable) {
     return 0;
 }
 
+int cmd_login(const std::vector<std::string>& argv) {
+    if (argv.empty()) {
+        error_("Usage: hermes mcp login <name>");
+        return 1;
+    }
+    const auto& name = argv[0];
+    auto srv_opt = get_server(name);
+    if (!srv_opt) {
+        error_("Server '" + name + "' not found in config.");
+        info_("Add it first:  hermes mcp add " + name +
+              " --url <endpoint> --auth oauth");
+        return 1;
+    }
+    const auto& srv = *srv_opt;
+    if (!srv.is_http()) {
+        error_("'" + name + "' is a stdio server; OAuth login is only "
+               "supported for HTTP MCP servers.");
+        return 1;
+    }
+    if (srv.auth_type != "oauth") {
+        warning_("'" + name + "' is not configured for OAuth (auth=" +
+                 (srv.auth_type.empty() ? "none" : srv.auth_type) + ").");
+        if (!confirm_("Proceed with OAuth login anyway?", false)) {
+            info_("Cancelled.");
+            return 0;
+        }
+    }
+
+    // Build the OAuth config from the server entry.  Users with a custom
+    // OAuth client can preconfigure via MCP_<NAME>_CLIENT_ID /
+    // MCP_<NAME>_CLIENT_SECRET / MCP_<NAME>_REDIRECT_URI env vars;
+    // otherwise we fall back to the server's registered OAuth metadata
+    // (typically discovered via ``.well-known/oauth-authorization-server``
+    // — not yet wired into the C++ port).
+    std::string upper_name = to_upper(name);
+    std::replace(upper_name.begin(), upper_name.end(), '-', '_');
+    std::replace(upper_name.begin(), upper_name.end(), '.', '_');
+
+    hermes::auth::McpOAuthConfig cfg;
+    cfg.server_url = srv.url;
+    auto env_or = [](const std::string& key, const std::string& fallback) {
+        const char* v = std::getenv(key.c_str());
+        return (v && *v) ? std::string(v) : fallback;
+    };
+    cfg.client_id = env_or("MCP_" + upper_name + "_CLIENT_ID",
+                           "hermes-cli");
+    cfg.client_secret = env_or("MCP_" + upper_name + "_CLIENT_SECRET", "");
+    cfg.redirect_uri = env_or("MCP_" + upper_name + "_REDIRECT_URI",
+                              "http://127.0.0.1:8765/callback");
+
+    info_("Starting fresh OAuth login for '" + name + "'...");
+    hermes::auth::MCPOAuthManager manager;
+    auto tok = manager.relogin(name, cfg);
+    if (!tok) {
+        error_("Login did not complete. Existing tokens have been cleared.");
+        return 1;
+    }
+    success_("Logged in and saved tokens for '" + name + "'.");
+    return 0;
+}
+
 int cmd_configure(const std::vector<std::string>& argv) {
     // Non-interactive fallback of the curses-checklist in Python: we
     // accept `--include a,b,c` / `--exclude x,y` / `--clear` and update
@@ -712,7 +774,8 @@ void print_help() {
               << "  hermes mcp test <name>\n"
               << "  hermes mcp enable <name>\n"
               << "  hermes mcp disable <name>\n"
-              << "  hermes mcp configure <name> [--include a,b] [--exclude x] [--clear]\n";
+              << "  hermes mcp configure <name> [--include a,b] [--exclude x] [--clear]\n"
+              << "  hermes mcp login <name>\n";
 }
 
 }  // namespace
@@ -732,6 +795,7 @@ int run(int argc, char* argv[]) {
     if (sub == "enable") return cmd_enable(rest, true);
     if (sub == "disable") return cmd_enable(rest, false);
     if (sub == "configure" || sub == "config") return cmd_configure(rest);
+    if (sub == "login") return cmd_login(rest);
     if (sub == "--help" || sub == "-h" || sub == "help") {
         print_help();
         return 0;

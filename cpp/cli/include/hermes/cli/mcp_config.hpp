@@ -111,4 +111,11 @@ int cmd_test(const std::vector<std::string>& argv);
 int cmd_enable(const std::vector<std::string>& argv, bool enable);
 int cmd_configure(const std::vector<std::string>& argv);
 
+// ``hermes mcp login <name>`` — explicit OAuth reflow for a given MCP server.
+// Wipes the on-disk token file + in-memory cache and runs the interactive
+// browser flow, bypassing the auto-detect path used by regular tool calls.
+// Intended target of the ``needs_reauth`` structured error surfaced to the
+// model by MCP tool handlers when the manager can't auto-recover.
+int cmd_login(const std::vector<std::string>& argv);
+
 }  // namespace hermes::cli::mcp_config

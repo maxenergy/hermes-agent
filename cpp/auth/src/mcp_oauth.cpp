@@ -424,4 +424,276 @@ std::optional<McpOAuthToken> McpOAuth::load_token(const std::string& server_name
     return tok;
 }
 
+// ----------------------------------------------------------------------------
+// MCPOAuthManager
+// ----------------------------------------------------------------------------
+
+namespace {
+
+// Zero time_point sentinel for "no mtime recorded yet".
+using FsTime = fs::file_time_type;
+constexpr FsTime kNoMtime{};
+
+FsTime token_mtime(const std::string& server_name) {
+    auto p = token_path(server_name);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return kNoMtime;
+    auto t = fs::last_write_time(p, ec);
+    return ec ? kNoMtime : t;
+}
+
+}  // namespace
+
+struct MCPOAuthManager::ServerState {
+    std::string name;
+    std::optional<McpOAuthToken> token;
+    FsTime last_mtime = kNoMtime;
+    // Multiple subscribers, keyed by an opaque monotonic handle so
+    // unsubscribers don't need to shuffle indexes.
+    std::unordered_map<std::size_t, ReconnectCallback> subscribers;
+    std::size_t next_handle = 1;
+};
+
+MCPOAuthManager::MCPOAuthManager(hermes::llm::HttpTransport* transport)
+    : transport_(transport ? transport : hermes::llm::get_default_transport()) {}
+
+MCPOAuthManager::~MCPOAuthManager() = default;
+
+MCPOAuthManager::ServerState& MCPOAuthManager::ensure_state_(
+    const std::string& server) {
+    auto it = servers_.find(server);
+    if (it == servers_.end()) {
+        auto st = std::make_unique<ServerState>();
+        st->name = server;
+        it = servers_.emplace(server, std::move(st)).first;
+    }
+    return *it->second;
+}
+
+std::size_t MCPOAuthManager::subscribe_reconnect(const std::string& server,
+                                                 ReconnectCallback cb) {
+    std::lock_guard<std::mutex> g(mu_);
+    auto& st = ensure_state_(server);
+    auto h = st.next_handle++;
+    st.subscribers.emplace(h, std::move(cb));
+    return h;
+}
+
+void MCPOAuthManager::unsubscribe_reconnect(const std::string& server,
+                                            std::size_t handle) {
+    std::lock_guard<std::mutex> g(mu_);
+    auto it = servers_.find(server);
+    if (it == servers_.end()) return;
+    it->second->subscribers.erase(handle);
+}
+
+std::size_t MCPOAuthManager::subscriber_count(const std::string& server) const {
+    std::lock_guard<std::mutex> g(mu_);
+    auto it = servers_.find(server);
+    if (it == servers_.end()) return 0;
+    return it->second->subscribers.size();
+}
+
+bool MCPOAuthManager::reload_if_changed_(ServerState& st) {
+    auto mtime = token_mtime(st.name);
+    if (mtime == kNoMtime) {
+        // File gone — clear cache.
+        if (st.token.has_value()) {
+            st.token.reset();
+            st.last_mtime = kNoMtime;
+            return true;
+        }
+        return false;
+    }
+    if (st.last_mtime == kNoMtime) {
+        // First read — load and remember.
+        auto fresh = McpOAuth::load_token(st.name);
+        if (fresh) {
+            st.token = fresh;
+            st.last_mtime = mtime;
+        }
+        // Subscribers weren't set up yet when this first load happened
+        // (it's the initial read), so don't fire reconnect.  Manager
+        // clients call ``get_token`` lazily so this is the expected path.
+        return false;
+    }
+    if (mtime != st.last_mtime) {
+        auto fresh = McpOAuth::load_token(st.name);
+        st.token = fresh;
+        st.last_mtime = mtime;
+        return true;  // externally refreshed — fire reconnect.
+    }
+    return false;
+}
+
+void MCPOAuthManager::fire_reconnect_unlocked_(const std::string& server) {
+    // Copy the callback list so we don't hold mu_ across user code that
+    // may call back into the manager (subscribe / unsubscribe / relogin).
+    std::vector<ReconnectCallback> cbs;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        auto it = servers_.find(server);
+        if (it == servers_.end()) return;
+        cbs.reserve(it->second->subscribers.size());
+        for (const auto& [_, cb] : it->second->subscribers) {
+            cbs.push_back(cb);
+        }
+    }
+    for (auto& cb : cbs) {
+        try {
+            cb(server);
+        } catch (...) {
+            // Swallow subscriber errors — we don't want one misbehaving
+            // transport to break the others.
+        }
+    }
+}
+
+std::optional<McpOAuthToken> MCPOAuthManager::peek_cached(
+    const std::string& server) const {
+    std::lock_guard<std::mutex> g(mu_);
+    auto it = servers_.find(server);
+    if (it == servers_.end()) return std::nullopt;
+    return it->second->token;
+}
+
+std::optional<McpOAuthToken> MCPOAuthManager::get_token(
+    const std::string& server) {
+    bool fire = false;
+    std::optional<McpOAuthToken> out;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        auto& st = ensure_state_(server);
+        fire = reload_if_changed_(st);
+        out = st.token;
+    }
+    if (fire) fire_reconnect_unlocked_(server);
+    return out;
+}
+
+McpOAuthRecovery MCPOAuthManager::handle_401(const std::string& server,
+                                              const McpOAuthConfig& cfg) {
+    // Phase 1: acquire the in-flight slot.  Only one thread per server
+    // actually performs the recovery — others wait on the CV and re-check
+    // the cache on wakeup.  Before blocking, snapshot the current cached
+    // access_token so we can detect "someone else already refreshed" on
+    // wakeup via cache comparison (covering the case where mtime has
+    // already been consumed by the waker's reload).
+    std::unique_lock<std::mutex> lk(mu_);
+    std::string snapshot_access;
+    {
+        auto& st_init = ensure_state_(server);
+        if (st_init.token) snapshot_access = st_init.token->access_token;
+    }
+    while (inflight_.count(server)) {
+        inflight_cv_.wait(lk);
+    }
+    inflight_.insert(server);
+
+    struct Finally {
+        std::unordered_set<std::string>& set;
+        std::condition_variable& cv;
+        std::string key;
+        ~Finally() { set.erase(key); cv.notify_all(); }
+    } fin{inflight_, inflight_cv_, server};
+
+    auto& st = ensure_state_(server);
+
+    // Phase 2a: detect a handoff from a peer thread that just completed a
+    // refresh.  If the cached access_token moved between our snapshot and
+    // now, another thread already did the work — pick up its result.
+    if (st.token && st.token->access_token != snapshot_access &&
+        !st.token->access_token.empty()) {
+        // Refresh completed by a peer.  No callback fire here: the peer
+        // already fired its own reconnect callbacks.
+        return McpOAuthRecovery::kRefreshedOnDisk;
+    }
+
+    // Phase 2b: check for an external refresh since the last mtime we
+    // recorded.  If the mtime moved while we were blocked, another process
+    // (or ``hermes mcp login``) already recovered — just reload.
+    if (reload_if_changed_(st) && st.token.has_value()) {
+        lk.unlock();
+        fire_reconnect_unlocked_(server);
+        return McpOAuthRecovery::kRefreshedOnDisk;
+    }
+
+    if (!st.token.has_value()) {
+        auto disk = McpOAuth::load_token(server);
+        if (disk) {
+            st.token = disk;
+            st.last_mtime = token_mtime(server);
+        }
+    }
+    if (!st.token.has_value()) {
+        return McpOAuthRecovery::kNoCredentials;
+    }
+
+    // Phase 3: in-place refresh.  Release the lock while we talk to the
+    // network — other threads that 401 concurrently will block on the
+    // in-flight CV until we land back here.
+    auto current = *st.token;
+    lk.unlock();
+
+    McpOAuth oauth(transport_);
+    auto refreshed = oauth.refresh(cfg, current);
+
+    lk.lock();
+    if (!refreshed) {
+        // Could be transient or relogin.  The ``refresh`` API returns
+        // nullopt for both; we heuristic: if current.refresh_token was
+        // non-empty and the previous response was 4xx-shaped, assume
+        // relogin.  Without access to the raw status here, we simply
+        // treat as kNeedsRelogin — the upstream Python does the same
+        // when ``invalid_grant`` is detected inline.
+        //
+        // If a caller wants transient behaviour, they probe with
+        // ``get_token`` again after a backoff; the cache is untouched
+        // here so the next call will just re-read disk.
+        return McpOAuthRecovery::kNeedsRelogin;
+    }
+
+    // Persist + update cache.
+    McpOAuth::save_token(server, *refreshed);
+    st.token = refreshed;
+    st.last_mtime = token_mtime(server);
+
+    lk.unlock();
+    fire_reconnect_unlocked_(server);
+    return McpOAuthRecovery::kRefreshedInPlace;
+}
+
+std::optional<McpOAuthToken> MCPOAuthManager::relogin(
+    const std::string& server, const McpOAuthConfig& cfg) {
+    // Wipe disk + in-memory entry first so a failed interactive login
+    // doesn't leave a stale token sitting around.
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        auto& st = ensure_state_(server);
+        st.token.reset();
+        st.last_mtime = kNoMtime;
+    }
+    std::error_code ec;
+    fs::remove(token_path(server), ec);
+
+    McpOAuth oauth(transport_);
+    auto fresh = oauth.interactive_login(cfg);
+    if (!fresh) return std::nullopt;
+
+    McpOAuth::save_token(server, *fresh);
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        auto& st = ensure_state_(server);
+        st.token = fresh;
+        st.last_mtime = token_mtime(server);
+    }
+    fire_reconnect_unlocked_(server);
+    return fresh;
+}
+
+void MCPOAuthManager::invalidate(const std::string& server) {
+    std::lock_guard<std::mutex> g(mu_);
+    servers_.erase(server);
+}
+
 }  // namespace hermes::auth
