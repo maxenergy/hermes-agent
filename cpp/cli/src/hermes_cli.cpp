@@ -2,7 +2,6 @@
 
 #include "hermes/agent/ai_agent.hpp"
 #include "hermes/agent/prompt_builder.hpp"
-#include "hermes/auth/codex_oauth.hpp"
 #include "hermes/auth/qwen_client.hpp"
 #include "hermes/cli/clipboard.hpp"
 #include "hermes/cli/commands.hpp"
@@ -286,16 +285,14 @@ std::unique_ptr<hermes::llm::LlmClient> make_client(const nlohmann::json& cfg) {
         }
         std::string token;
         if (auto* k = std::getenv("CLIPROXY_API_KEY")) token = k;
-        if (token.empty()) {
-            // Best-effort fallback to the Codex OAuth access_token —
-            // Cloudflare will reject it on chatgpt.com but at least the
-            // user sees a real HTTP error instead of "no credentials".
-            auto creds = hermes::auth::load_codex_credentials();
-            if (creds) {
-                if (!creds->access_token.empty()) token = creds->access_token;
-                else if (!creds->api_key.empty()) token = creds->api_key;
-            }
-        }
+        // Hermes owns its own Codex auth state — we do NOT silently
+        // read ``~/.codex/auth.json`` at runtime.  Upstream commit
+        // b02833f3 removed this re-sync because OAuth refresh tokens
+        // are single-use and rotate on every refresh: sharing on-disk
+        // state with the Codex CLI caused races where whichever tool
+        // refreshed last invalidated the other.  The one-time import
+        // path (``hermes auth openai-codex``) seeds the Hermes store
+        // explicitly under user gate.
         if (token.empty()) return nullptr;
         auto client = std::make_unique<hermes::llm::OpenAIClient>(
             transport, token, base_url);

@@ -26,7 +26,6 @@
 #include "hermes/acp/acp_adapter.hpp"
 #include "hermes/agent/ai_agent.hpp"
 #include "hermes/agent/prompt_builder.hpp"
-#include "hermes/auth/codex_oauth.hpp"
 #include "hermes/auth/qwen_client.hpp"
 #include "hermes/config/loader.hpp"
 #include "hermes/llm/llm_client.hpp"
@@ -122,13 +121,10 @@ std::unique_ptr<hermes::llm::LlmClient> make_llm_client(
         }
         std::string token;
         if (auto* k = std::getenv("CLIPROXY_API_KEY")) token = k;
-        if (token.empty()) {
-            auto creds = hermes::auth::load_codex_credentials();
-            if (creds) {
-                if (!creds->access_token.empty()) token = creds->access_token;
-                else if (!creds->api_key.empty()) token = creds->api_key;
-            }
-        }
+        // Hermes owns its own Codex auth — no silent fallback to
+        // ``~/.codex/auth.json`` at runtime (upstream b02833f3).  If
+        // CLIPROXY_API_KEY is unset, fall through to "no credentials"
+        // and let the auth subsystem surface a useful error.
         if (token.empty()) return nullptr;
         auto client = std::make_unique<hermes::llm::OpenAIClient>(
             transport, token, codex_base);

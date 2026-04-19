@@ -9,12 +9,16 @@ nlohmann::json make_default_config() {
     json cfg = json::object();
 
     // --- LLM / provider core ---
-    // Default: ChatGPT Codex OAuth — piggy-backs on the access_token
-    // maintained by the Codex CLI at ``~/.codex/auth.json``.  Override
-    // via `hermes login <provider>` or by setting ``provider`` / ``model``
-    // explicitly in ``~/.hermes/config.yaml``.  reasoning_effort follows
-    // Codex's string convention ("none"|"low"|"medium"|"high"); the
-    // agent layer translates it to the integer form the LLM API wants.
+    // Default: ChatGPT Codex OAuth.  Hermes owns its own Codex auth
+    // state in ``~/.hermes/auth.json`` / ``~/.hermes/.env`` — run
+    // ``hermes auth openai-codex`` to log in (the setup flow will
+    // offer a one-time import from ``~/.codex/auth.json`` if the
+    // Codex CLI has already been used).  Override via
+    // ``hermes login <provider>`` or by setting ``provider`` /
+    // ``model`` explicitly in ``~/.hermes/config.yaml``.
+    // reasoning_effort follows Codex's string convention
+    // ("none"|"low"|"medium"|"high"); the agent layer translates it
+    // to the integer form the LLM API wants.
     cfg["model"] = "gpt-5.4";
     cfg["provider"] = "openai-codex";
     cfg["base_url"] = "";
