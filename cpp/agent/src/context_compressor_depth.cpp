@@ -3,6 +3,8 @@
 
 #include "hermes/agent/context_compressor_depth.hpp"
 
+#include "hermes/agent/context_compressor.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -301,6 +303,29 @@ std::vector<Message> prune_old_tool_results(std::vector<Message> messages,
             ++pruned;
         }
     }
+
+    // Pass 3 — Truncate large tool_call arguments in assistant messages
+    // outside the protected tail. `write_file` with a 50KB content blob,
+    // for example, survives pruning entirely without this. The shrinking
+    // is done inside the parsed JSON structure so the result remains
+    // valid JSON — otherwise strict providers (MiniMax) 400 on every
+    // subsequent turn until the broken call falls out of the window.
+    // Upstream: agent/context_compressor.py commit 3128d9fc.
+    for (std::size_t i = 0; i < prune_boundary; ++i) {
+        auto& m = messages[i];
+        if (m.role != "assistant") continue;
+        if (m.tool_calls.empty()) continue;
+        for (auto& tc : m.tool_calls) {
+            if (tc.arguments.size() > 500) {
+                std::string new_args =
+                    hermes::agent::truncate_tool_call_args_json(tc.arguments);
+                if (new_args != tc.arguments) {
+                    tc.arguments = std::move(new_args);
+                }
+            }
+        }
+    }
+
     if (report) report->pruned = pruned;
     return messages;
 }

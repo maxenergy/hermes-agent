@@ -4,12 +4,77 @@
 #include "hermes/llm/model_metadata.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace hermes::agent {
+
+// ──────────────────────────────────────────────────────────────────────
+// _truncate_tool_call_args_json port (upstream 3128d9fc)
+// ──────────────────────────────────────────────────────────────────────
+//
+// Shrink long string values inside a tool-call arguments JSON blob while
+// preserving JSON validity. The `function.arguments` field is a
+// JSON-encoded string passed through to the LLM provider; strict
+// providers (observed on MiniMax) return a non-retryable 400 when it is
+// not well-formed. The prior implementation sliced the raw JSON at a
+// fixed byte offset and appended `...[truncated]`, which routinely
+// produced unterminated strings with missing closing braces and locked
+// the session into a re-send loop until the broken call fell out of the
+// window.
+//
+// Fix: parse the arguments, shrink long string leaves inside the parsed
+// structure, then re-serialise. Non-string values (paths, ints, booleans,
+// lists of non-strings) pass through intact. Arguments that are not
+// valid JSON to begin with — some backends emit non-JSON tool args —
+// are returned unchanged rather than replaced with something neither we
+// nor the backend can parse.
+std::string truncate_tool_call_args_json(const std::string& args,
+                                         std::size_t head_chars) {
+    nlohmann::json parsed;
+    try {
+        parsed = nlohmann::json::parse(args);
+    } catch (const nlohmann::json::parse_error&) {
+        // Non-JSON arguments pass through unchanged — same fallthrough
+        // contract as the Python implementation (ValueError/TypeError).
+        return args;
+    } catch (const nlohmann::json::exception&) {
+        return args;
+    }
+
+    std::function<void(nlohmann::json&)> shrink =
+        [&](nlohmann::json& obj) {
+            if (obj.is_string()) {
+                const auto& s = obj.get_ref<const std::string&>();
+                if (s.size() > head_chars) {
+                    obj = s.substr(0, head_chars) + "...[truncated]";
+                }
+                return;
+            }
+            if (obj.is_object()) {
+                for (auto& kv : obj.items()) {
+                    shrink(kv.value());
+                }
+                return;
+            }
+            if (obj.is_array()) {
+                for (auto& v : obj) shrink(v);
+                return;
+            }
+            // Scalars (number / bool / null) are preserved.
+        };
+    shrink(parsed);
+
+    // dump(indent=-1, indent_char=' ', ensure_ascii=false) so CJK/emoji
+    // round-trip as raw UTF-8 rather than bloating to \uXXXX escapes
+    // (parity with Python json.dumps(..., ensure_ascii=False)).
+    return parsed.dump(/*indent=*/-1, /*indent_char=*/' ',
+                       /*ensure_ascii=*/false);
+}
 
 namespace {
 
@@ -53,7 +118,13 @@ depth::Message to_depth(const Message& m) {
         depth::ToolCall dtc;
         dtc.id = tc.id;
         dtc.name = tc.name;
-        dtc.arguments = tc.arguments.is_null() ? "" : tc.arguments.dump();
+        // Match the ensure_ascii=False dump used by
+        // truncate_tool_call_args_json so the size/comparison logic in
+        // the depth layer sees stable bytes for non-ASCII content.
+        dtc.arguments = tc.arguments.is_null()
+            ? std::string()
+            : tc.arguments.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                /*ensure_ascii=*/false);
         d.tool_calls.push_back(std::move(dtc));
     }
     return d;
@@ -96,10 +167,40 @@ std::vector<Message> ContextCompressor::prune_old_tool_results(
         static_cast<std::size_t>(std::max(0, opts_.protected_tail_turns)),
         opts_.protected_tail_tokens,
         &rep);
-    // Only tool-role content is rewritten; keep other fields intact.
+    // Tool-role content is rewritten (pass 1/2) and assistant tool_call
+    // arguments may have been shrunk (pass 3 — upstream 3128d9fc).
+    // Re-apply both mutations to the original llm::Message objects so
+    // downstream code sees the compacted view.
     for (std::size_t i = 0; i < messages.size() && i < pruned.size(); ++i) {
         if (messages[i].role == Role::Tool) {
             apply_content_back(messages[i], pruned[i]);
+            continue;
+        }
+        if (messages[i].role == Role::Assistant
+            && !messages[i].tool_calls.empty()
+            && messages[i].tool_calls.size() == pruned[i].tool_calls.size()) {
+            for (std::size_t k = 0; k < messages[i].tool_calls.size(); ++k) {
+                const auto& src = pruned[i].tool_calls[k];
+                auto& dst = messages[i].tool_calls[k];
+                // Detect a pass-3 shrink by comparing the serialised
+                // depth arguments with what to_depth() originally
+                // produced from dst. If they differ, re-parse the new
+                // (guaranteed-valid) JSON back onto dst.arguments. If
+                // parsing fails (e.g. the original was non-JSON and
+                // pass 3 passed it through unchanged — but a concurrent
+                // sibling changed size), fall back to storing the raw
+                // string.
+                std::string before = dst.arguments.is_null()
+                    ? std::string()
+                    : dst.arguments.dump(/*indent=*/-1, /*indent_char=*/' ',
+                                         /*ensure_ascii=*/false);
+                if (src.arguments == before) continue;
+                try {
+                    dst.arguments = nlohmann::json::parse(src.arguments);
+                } catch (const nlohmann::json::exception&) {
+                    dst.arguments = src.arguments;
+                }
+            }
         }
     }
     return messages;

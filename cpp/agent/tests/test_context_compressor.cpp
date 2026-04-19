@@ -176,3 +176,89 @@ TEST(ContextCompressor, UpdateModelStoresContextLength) {
         c.compress(build_long_history(3), /*current=*/10, /*max=*/100000);
     EXPECT_FALSE(out.empty());
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// truncate_tool_call_args_json — port of upstream 3128d9fc.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(TruncateToolCallArgsJson, ParseableJsonShrinksLongStringLeaf) {
+    std::string big(800, 'M');
+    json original = {{"path", "/foo.md"}, {"content", big}};
+    std::string args = original.dump();
+    std::string shrunk = hermes::agent::truncate_tool_call_args_json(args);
+
+    // Must still be valid JSON.
+    json re;
+    ASSERT_NO_THROW(re = json::parse(shrunk));
+    EXPECT_EQ(re["path"], "/foo.md");
+    ASSERT_TRUE(re["content"].is_string());
+    std::string content_out = re["content"].get<std::string>();
+    // Head preserved + truncation marker appended.
+    EXPECT_EQ(content_out.size(), 200u + std::string("...[truncated]").size());
+    EXPECT_EQ(content_out.substr(0, 10), std::string(10, 'M'));
+    EXPECT_NE(content_out.find("...[truncated]"), std::string::npos);
+}
+
+TEST(TruncateToolCallArgsJson, NonJsonArgsPassthrough) {
+    // Some backends (rare) emit non-JSON tool arguments — the helper
+    // must return them verbatim rather than mangling them further.
+    std::string raw = "not json at all { oops";
+    EXPECT_EQ(hermes::agent::truncate_tool_call_args_json(raw), raw);
+}
+
+TEST(TruncateToolCallArgsJson, NonStringLeavesPreserved) {
+    json original = {{"count", 42}, {"enabled", true}, {"ratio", 3.14}};
+    std::string args = original.dump();
+    std::string shrunk = hermes::agent::truncate_tool_call_args_json(args);
+    json re = json::parse(shrunk);
+    EXPECT_EQ(re["count"], 42);
+    EXPECT_EQ(re["enabled"], true);
+    EXPECT_DOUBLE_EQ(re["ratio"].get<double>(), 3.14);
+}
+
+TEST(TruncateToolCallArgsJson, NestedStructuresShrunk) {
+    std::string big(400, 'x');
+    json original = {
+        {"outer", {
+            {"inner_list", json::array({big, "short"})},
+            {"nested_dict", {{"deep", big}}}
+        }}
+    };
+    std::string shrunk = hermes::agent::truncate_tool_call_args_json(
+        original.dump());
+    json re = json::parse(shrunk);
+    EXPECT_EQ(re["outer"]["inner_list"][0].get<std::string>().size(),
+              200u + std::string("...[truncated]").size());
+    EXPECT_EQ(re["outer"]["inner_list"][1].get<std::string>(), "short");
+    EXPECT_EQ(re["outer"]["nested_dict"]["deep"].get<std::string>().size(),
+              200u + std::string("...[truncated]").size());
+}
+
+TEST(TruncateToolCallArgsJson, CjkAndEmojiRoundTrip) {
+    // CJK characters must NOT be byte-sliced in the middle — the helper
+    // parses, so even if shrinking applied it would cut on codepoint
+    // boundaries. Below the threshold it passes through unchanged.
+    json original = {{"msg", "你好,世界 🎉"}};
+    std::string shrunk = hermes::agent::truncate_tool_call_args_json(
+        original.dump());
+    json re = json::parse(shrunk);
+    EXPECT_EQ(re["msg"].get<std::string>(), "你好,世界 🎉");
+    // And the serialised output must not be ASCII-escaped — parity with
+    // json.dumps(ensure_ascii=False).
+    EXPECT_NE(shrunk.find("你"), std::string::npos);
+    EXPECT_EQ(shrunk.find("\\u"), std::string::npos);
+}
+
+TEST(TruncateToolCallArgsJson, ScalarJsonPassthrough) {
+    // Scalar JSON (number / bool / null) has no string leaves to
+    // shrink — the helper must return a valid JSON scalar.
+    EXPECT_EQ(hermes::agent::truncate_tool_call_args_json("42"), "42");
+    EXPECT_EQ(hermes::agent::truncate_tool_call_args_json("true"), "true");
+    EXPECT_EQ(hermes::agent::truncate_tool_call_args_json("null"), "null");
+}
+
+TEST(TruncateToolCallArgsJson, EmptyStringInputPassthrough) {
+    // Empty input is not valid JSON — must pass through unchanged
+    // rather than crash or produce "null".
+    EXPECT_EQ(hermes::agent::truncate_tool_call_args_json(""), "");
+}

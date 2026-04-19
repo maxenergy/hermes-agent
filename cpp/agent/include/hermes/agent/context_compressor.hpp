@@ -18,12 +18,22 @@
 #include "hermes/llm/llm_client.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace hermes::agent {
+
+// Shrink long string leaves inside a JSON-encoded tool-call arguments
+// blob without breaking JSON validity. Returns the original string
+// unchanged when it is not valid JSON (some backends use non-JSON tool
+// arguments). Port of `_truncate_tool_call_args_json` from upstream
+// agent/context_compressor.py (commit 3128d9fc). See the .cpp for the
+// full rationale.
+std::string truncate_tool_call_args_json(const std::string& args,
+                                         std::size_t head_chars = 200);
 
 struct CompressionOptions {
     // Fire compression when current_tokens / max_tokens > trigger.
