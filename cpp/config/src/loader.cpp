@@ -12,9 +12,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace hermes::config {
@@ -151,6 +154,156 @@ fs::path config_path() {
     return hermes::core::path::get_hermes_home() / "config.yaml";
 }
 
+// Process-wide cache of the last `expand_strings(...)` output returned
+// from `load_cli_config()` / `load_config()`, keyed by absolute config
+// path.  `save_config()` consults it to decide whether a caller has
+// modified a field that originally came from an env-var template — if
+// the value still matches the expanded snapshot, keep the raw
+// ``${VAR}`` reference on disk.
+std::mutex& expanded_cache_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::unordered_map<std::string, nlohmann::json>& expanded_cache() {
+    static std::unordered_map<std::string, nlohmann::json> cache;
+    return cache;
+}
+
+void remember_expanded(const fs::path& path, const nlohmann::json& value) {
+    std::lock_guard<std::mutex> lock(expanded_cache_mutex());
+    expanded_cache()[path.string()] = value;
+}
+
+nlohmann::json recall_expanded(const fs::path& path) {
+    std::lock_guard<std::mutex> lock(expanded_cache_mutex());
+    auto it = expanded_cache().find(path.string());
+    if (it == expanded_cache().end()) {
+        return nullptr;
+    }
+    return it->second;
+}
+
+bool contains_env_ref(const std::string& s) {
+    // Matches `${NAME}` with at least one character inside.
+    static const std::regex pat(R"(\$\{[^}]+\})");
+    return std::regex_search(s, pat);
+}
+
+// Build a name-indexed view of a list when every entry is an object
+// with a unique string "name".  Returns std::nullopt-equivalent (null
+// json) otherwise.  Mirrors ``_items_by_unique_name`` in Python.
+nlohmann::json items_by_unique_name(const nlohmann::json& items) {
+    if (!items.is_array()) return nullptr;
+    nlohmann::json indexed = nlohmann::json::object();
+    for (const auto& item : items) {
+        if (!item.is_object() || !item.contains("name") ||
+            !item["name"].is_string()) {
+            return nullptr;
+        }
+        const std::string name = item["name"].get<std::string>();
+        if (indexed.contains(name)) return nullptr;
+        indexed[name] = item;
+    }
+    return indexed;
+}
+
+// Restore raw ``${VAR}`` templates on `current` when the value matches
+// either the cached expanded snapshot for this config path (``loaded``)
+// or the live expansion of the on-disk raw value.  Mirrors
+// ``_preserve_env_ref_templates`` in ``hermes_cli/config.py``.
+nlohmann::json preserve_env_ref_templates(const nlohmann::json& current,
+                                          const nlohmann::json& raw,
+                                          const nlohmann::json& loaded);
+
+nlohmann::json preserve_env_ref_templates(const nlohmann::json& current,
+                                          const nlohmann::json& raw,
+                                          const nlohmann::json& loaded) {
+    if (current.is_string() && raw.is_string() &&
+        contains_env_ref(raw.get<std::string>())) {
+        const std::string& cur_s = current.get_ref<const std::string&>();
+        const std::string& raw_s = raw.get_ref<const std::string&>();
+        if (cur_s == raw_s) return raw;
+        if (loaded.is_string() && cur_s == loaded.get_ref<const std::string&>()) {
+            return raw;
+        }
+        if (expand_env_vars(raw_s) == cur_s) return raw;
+        return current;
+    }
+
+    if (current.is_object() && raw.is_object()) {
+        nlohmann::json merged = nlohmann::json::object();
+        for (auto it = current.begin(); it != current.end(); ++it) {
+            const auto& key = it.key();
+            nlohmann::json raw_child = raw.contains(key) ? raw.at(key)
+                                                         : nlohmann::json();
+            nlohmann::json loaded_child;
+            if (loaded.is_object() && loaded.contains(key)) {
+                loaded_child = loaded.at(key);
+            }
+            merged[key] =
+                preserve_env_ref_templates(it.value(), raw_child, loaded_child);
+        }
+        return merged;
+    }
+
+    if (current.is_array() && raw.is_array()) {
+        nlohmann::json cur_by_name = items_by_unique_name(current);
+        nlohmann::json raw_by_name = items_by_unique_name(raw);
+        nlohmann::json loaded_by_name;
+        if (loaded.is_array()) loaded_by_name = items_by_unique_name(loaded);
+        if (cur_by_name.is_object() && raw_by_name.is_object()) {
+            nlohmann::json out = nlohmann::json::array();
+            for (const auto& item : current) {
+                const std::string name =
+                    item["name"].get<std::string>();  // guaranteed by the check
+                nlohmann::json raw_item =
+                    raw_by_name.contains(name) ? raw_by_name.at(name)
+                                               : nlohmann::json();
+                nlohmann::json loaded_item;
+                if (loaded_by_name.is_object() && loaded_by_name.contains(name)) {
+                    loaded_item = loaded_by_name.at(name);
+                }
+                out.push_back(
+                    preserve_env_ref_templates(item, raw_item, loaded_item));
+            }
+            return out;
+        }
+        nlohmann::json out = nlohmann::json::array();
+        for (std::size_t i = 0; i < current.size(); ++i) {
+            nlohmann::json raw_item =
+                i < raw.size() ? raw.at(i) : nlohmann::json();
+            nlohmann::json loaded_item;
+            if (loaded.is_array() && i < loaded.size()) {
+                loaded_item = loaded.at(i);
+            }
+            out.push_back(
+                preserve_env_ref_templates(current.at(i), raw_item, loaded_item));
+        }
+        return out;
+    }
+
+    return current;
+}
+
+// Read the on-disk config without env-expansion.  Returns an empty
+// object when the file is missing or unparseable.  Mirrors
+// ``read_raw_config()`` in the Python reference.
+nlohmann::json read_raw_config_from(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) return nlohmann::json::object();
+    try {
+        const YAML::Node root = YAML::LoadFile(path.string());
+        if (root && !root.IsNull()) {
+            auto overlay = yaml_to_json(root);
+            if (overlay.is_object()) return overlay;
+        }
+    } catch (const YAML::Exception&) {
+        // swallow — treat corrupt YAML as "no raw overlay"
+    }
+    return nlohmann::json::object();
+}
+
 }  // namespace
 
 // -----------------------------------------------------------------------
@@ -210,7 +363,9 @@ nlohmann::json load_cli_config() {
 
     std::error_code ec;
     if (!fs::exists(path, ec) || ec) {
-        return expand_strings(std::move(merged));
+        auto expanded = expand_strings(std::move(merged));
+        remember_expanded(path, expanded);
+        return expanded;
     }
 
     try {
@@ -228,7 +383,9 @@ nlohmann::json load_cli_config() {
             ex.what());
     }
 
-    return expand_strings(std::move(merged));
+    auto expanded = expand_strings(std::move(merged));
+    remember_expanded(path, expanded);
+    return expanded;
 }
 
 nlohmann::json load_config() {
@@ -243,9 +400,21 @@ nlohmann::json load_config() {
 void save_config(const nlohmann::json& config) {
     const auto path = config_path();
 
+    // Preserve any ``${VAR}`` templates that live on disk unless the
+    // caller has explicitly edited their expanded value — otherwise the
+    // rewrite would replace the original env reference with the
+    // plaintext secret that ``load_*`` returned.  See upstream
+    // ``_preserve_env_ref_templates`` (commit 04a0c3cb).
+    nlohmann::json to_write = config;
+    nlohmann::json raw_existing = read_raw_config_from(path);
+    if (!raw_existing.empty()) {
+        nlohmann::json loaded = recall_expanded(path);
+        to_write = preserve_env_ref_templates(to_write, raw_existing, loaded);
+    }
+
     std::stringstream buf;
     YAML::Emitter emitter;
-    emitter << json_to_yaml(config);
+    emitter << json_to_yaml(to_write);
     if (!emitter.good()) {
         throw std::runtime_error(
             std::string("hermes::config::save_config: YAML emit failed: ") +
@@ -258,6 +427,11 @@ void save_config(const nlohmann::json& config) {
             "hermes::config::save_config: atomic_write failed for " +
             path.string());
     }
+
+    // Refresh the cache with the caller-supplied (unchanged) snapshot so
+    // subsequent round-trips can detect "unmodified from what we last
+    // returned".
+    remember_expanded(path, config);
 }
 
 // -----------------------------------------------------------------------

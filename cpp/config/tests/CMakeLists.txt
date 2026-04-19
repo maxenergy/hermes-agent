@@ -7,6 +7,7 @@ set(HERMES_CONFIG_TEST_SOURCES
     test_managed_system.cpp
     test_migrate.cpp
     test_migration.cpp
+    test_save_config_env_refs.cpp
 )
 
 add_executable(hermes_config_tests ${HERMES_CONFIG_TEST_SOURCES})
