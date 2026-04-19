@@ -64,4 +64,28 @@ std::optional<CodexCredentials> load_codex_credentials();
 std::optional<CodexCredentials> load_codex_credentials_from(
     const std::filesystem::path& auth_json_path);
 
+// ----- Refresh-response classifier ------------------------------------------
+//
+// Hermes currently reaches Codex through CLIProxyAPI, which owns the OAuth
+// refresh loop on our behalf.  When we wire up a native direct refresh
+// path against ``https://auth.openai.com/oauth/token``, call sites must
+// classify the HTTP response through ``classify_codex_refresh_response``
+// and propagate ``relogin_required`` into AuthError — otherwise users see
+// bare HTTP failures with no guidance to re-authenticate.
+//
+// Ports upstream Python commit ``2a2e5c0f`` (``hermes_cli/auth.py``):
+// any 401/403 from the token endpoint is treated as invalid creds and
+// forces a relogin even when the JSON body lacks a recognised error
+// code.  500+ stays transient.
+struct CodexRefreshClassification {
+    bool relogin_required = false;   // user must rerun `hermes auth openai-codex`
+    bool transient = false;          // 5xx / network; safe to retry
+    std::string error_code;          // e.g. "invalid_grant", "access_denied"; empty on unknown
+    std::string message;             // human-readable guidance
+};
+
+CodexRefreshClassification classify_codex_refresh_response(
+    int status_code,
+    const std::string& response_body);
+
 }  // namespace hermes::auth

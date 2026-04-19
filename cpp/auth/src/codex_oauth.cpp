@@ -2,10 +2,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace hermes::auth {
 
@@ -107,6 +109,60 @@ std::optional<CodexCredentials> load_codex_credentials_from(
 
 std::optional<CodexCredentials> load_codex_credentials() {
     return load_codex_credentials_from(codex_home() / "auth.json");
+}
+
+// Ports upstream Python commit 2a2e5c0f: refresh-endpoint 401/403 always
+// invalidates the refresh_token, regardless of whether the JSON body
+// happens to carry one of the known error codes.
+CodexRefreshClassification classify_codex_refresh_response(
+    int status_code,
+    const std::string& response_body) {
+    CodexRefreshClassification out;
+    auto parsed = json::parse(response_body, nullptr, /*allow_exceptions=*/false);
+    if (!parsed.is_discarded() && parsed.is_object()) {
+        if (parsed.contains("error") && parsed["error"].is_string()) {
+            out.error_code = parsed["error"].get<std::string>();
+        }
+        if (parsed.contains("error_description") &&
+            parsed["error_description"].is_string()) {
+            out.message = parsed["error_description"].get<std::string>();
+        }
+    }
+
+    static const std::vector<std::string> kReloginCodes = {
+        "invalid_grant", "invalid_token", "access_denied",
+        "unauthorized_client", "expired_token"};
+    bool body_forces_relogin =
+        !out.error_code.empty() &&
+        std::find(kReloginCodes.begin(), kReloginCodes.end(), out.error_code) !=
+            kReloginCodes.end();
+
+    if (body_forces_relogin) {
+        out.relogin_required = true;
+    }
+    // 401/403 from a token endpoint always mean the refresh token is
+    // invalid — force relogin even if the body code wasn't recognised.
+    if (status_code == 401 || status_code == 403) {
+        out.relogin_required = true;
+    }
+    if (status_code >= 500) {
+        out.transient = true;
+        out.relogin_required = false;
+    }
+
+    if (out.message.empty()) {
+        if (out.relogin_required) {
+            out.message = "Codex refresh token is no longer valid. "
+                          "Run `hermes auth openai-codex` to re-authenticate.";
+        } else if (out.transient) {
+            out.message = "Codex token endpoint returned HTTP " +
+                          std::to_string(status_code) + " (transient).";
+        } else if (status_code < 200 || status_code >= 300) {
+            out.message = "Codex token endpoint returned HTTP " +
+                          std::to_string(status_code) + ".";
+        }
+    }
+    return out;
 }
 
 }  // namespace hermes::auth
