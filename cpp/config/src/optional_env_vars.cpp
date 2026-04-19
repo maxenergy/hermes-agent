@@ -57,6 +57,14 @@ std::map<std::string, EnvVarSpec> build_map() {
         "(default: https://integrate.api.nvidia.com/v1)",
         "NVIDIA NIM base URL (leave empty for default)",
         "", "provider", false);
+    add("OLLAMA_API_KEY",
+        "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "Ollama Cloud API key", "https://ollama.com/settings",
+        "provider", true);
+    add("OLLAMA_BASE_URL",
+        "Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "Ollama base URL (leave empty for default)", "",
+        "provider", false);
 
     // ── Tool APIs ────────────────────────────────────────────────────
     add("FIRECRAWL_API_KEY",

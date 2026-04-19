@@ -117,6 +117,7 @@ std::string default_base_url_for_provider(const std::string& provider) {
     if (provider == "deepseek") return "https://api.deepseek.com/v1";
     if (provider == "x-ai") return "https://api.x.ai/v1";
     if (provider == "nvidia") return "https://integrate.api.nvidia.com/v1";
+    if (provider == "ollama-cloud") return "https://ollama.com/v1";
     return "";
 }
 
@@ -188,6 +189,11 @@ ResolvedProvider resolve_runtime_provider(
         }
         if (cand.empty() && provider == "openrouter") {
             cand = get_env("OPENROUTER_API_KEY");
+        }
+        // ollama-cloud → OLLAMA_API_KEY (not OLLAMA_CLOUD_API_KEY — the
+        // env var is named after the vendor, not the canonical slug).
+        if (cand.empty() && provider == "ollama-cloud") {
+            cand = get_env("OLLAMA_API_KEY");
         }
         if (!cand.empty()) {
             api_key = cand;

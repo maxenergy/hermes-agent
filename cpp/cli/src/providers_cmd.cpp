@@ -31,6 +31,7 @@ const std::unordered_map<std::string, std::string>& label_overrides() {
         {"copilot-acp",  "GitHub Copilot ACP"},
         {"local",        "Local endpoint"},
         {"nvidia",       "NVIDIA NIM"},
+        {"ollama-cloud", "Ollama Cloud"},
     };
     return tbl;
 }
@@ -157,6 +158,12 @@ const std::unordered_map<std::string, HermesOverlay>& hermes_overlays() {
         o_nvidia.base_url_env_var = "NVIDIA_BASE_URL";
         add("nvidia", o_nvidia);
 
+        HermesOverlay o_ollama_cloud;
+        o_ollama_cloud.transport = "openai_chat";
+        o_ollama_cloud.base_url_override = "https://ollama.com/v1";
+        o_ollama_cloud.base_url_env_var = "OLLAMA_BASE_URL";
+        add("ollama-cloud", o_ollama_cloud);
+
         return m;
     }();
     return tbl;
@@ -199,7 +206,10 @@ const std::unordered_map<std::string, std::string>& aliases() {
         {"huggingface-hub", "huggingface"},
         // local endpoint aliases
         {"lmstudio", "lmstudio"}, {"lm-studio", "lmstudio"}, {"lm_studio", "lmstudio"},
-        {"ollama", "ollama-cloud"},
+        // Bare "ollama" = local endpoint; "ollama-cloud" / "ollama_cloud"
+        // is the cloud-hosted OpenAI-compatible service at ollama.com.
+        {"ollama", "custom"},
+        {"ollama_cloud", "ollama-cloud"}, {"ollama-hosted", "ollama-cloud"},
         {"vllm", "local"}, {"llamacpp", "local"},
         {"llama.cpp", "local"}, {"llama-cpp", "local"},
     };

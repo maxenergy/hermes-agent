@@ -106,7 +106,7 @@ struct UrlProvider {
     const char* provider;
 };
 
-constexpr std::array<UrlProvider, 21> kUrlProviders = {{
+constexpr std::array<UrlProvider, 22> kUrlProviders = {{
     {"api.openai.com",                "openai"},
     {"chatgpt.com",                   "openai"},
     {"api.anthropic.com",             "anthropic"},
@@ -128,6 +128,7 @@ constexpr std::array<UrlProvider, 21> kUrlProviders = {{
     {"api.x.ai",                      "xai"},
     {"api.mistral.ai",                "mistral"},
     {"integrate.api.nvidia.com",      "nvidia"},
+    {"ollama.com",                    "ollama-cloud"},
 }};
 
 std::string extract_host(std::string_view url) {

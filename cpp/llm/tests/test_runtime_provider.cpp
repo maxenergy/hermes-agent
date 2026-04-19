@@ -266,3 +266,25 @@ TEST(ModelMetadataDepth, NvidiaBaseUrlInfersProvider) {
     EXPECT_EQ(infer_provider_from_base_url("https://integrate.api.nvidia.com/v1"),
               "nvidia");
 }
+
+// --- Ollama Cloud --------------------------------------------------------
+
+TEST(ResolveRuntimeProvider, OllamaCloudExplicitProvider) {
+    scrub_api_keys();
+    ::unsetenv("OLLAMA_API_KEY");
+    EnvGuard g("OLLAMA_API_KEY", "ollama-fake");
+    CredentialPool pool;
+    nlohmann::json cfg = {{"model", {{"provider", "ollama-cloud"}}}};
+    auto r = resolve_runtime_provider("nemotron-3-nano:30b", cfg, &pool);
+    EXPECT_EQ(r.provider_name, "ollama-cloud");
+    EXPECT_EQ(r.api_key, "ollama-fake");
+    EXPECT_EQ(r.base_url, "https://ollama.com/v1");
+    EXPECT_EQ(r.api_mode, "chat_completions");
+    EXPECT_EQ(r.source, "env");
+}
+
+TEST(ModelMetadataDepth, OllamaCloudBaseUrlInfersProvider) {
+    using hermes::llm::infer_provider_from_base_url;
+    EXPECT_EQ(infer_provider_from_base_url("https://ollama.com/v1"),
+              "ollama-cloud");
+}
