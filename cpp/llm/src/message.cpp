@@ -18,12 +18,61 @@
 //   - cache_control is a per-block attribute.
 #include "hermes/llm/message.hpp"
 
+#include "hermes/core/strings.hpp"
+
 #include <stdexcept>
 #include <utility>
 
 namespace hermes::llm {
 
 using nlohmann::json;
+
+namespace {
+
+// Strip any invalid UTF-8-encoded lone surrogate in-place.  In-place-free
+// helper — cheap when the string has no surrogates (common case).
+void scrub_surrogates(std::string& s) {
+    if (hermes::core::strings::contains_surrogate(s)) {
+        s = hermes::core::strings::sanitize_surrogates(s);
+    }
+}
+
+void scrub_message_strings(Message& m) {
+    // Ports upstream Python commit 8798b069 — some models (Kimi, GLM,
+    // Qwen via Ollama) emit lone surrogates in content / reasoning
+    // that crash json::dump() in the OpenAI SDK on the next turn.
+    scrub_surrogates(m.content_text);
+    if (m.reasoning.has_value()) {
+        std::string r = *m.reasoning;
+        scrub_surrogates(r);
+        m.reasoning = std::move(r);
+    }
+    for (auto& block : m.content_blocks) {
+        scrub_surrogates(block.text);
+    }
+}
+
+// Non-mutating sanitizer for wire-output JSON: walks a parsed message
+// object and replaces surrogate sequences in every string field.  Used
+// by to_openai() / to_anthropic() as a defence-in-depth layer for
+// messages that bypassed from_* (e.g., gateway uploads, stored sessions
+// written before the sanitizer existed).
+void scrub_json_strings_inplace(json& node) {
+    if (node.is_string()) {
+        const auto s = node.get<std::string>();
+        if (hermes::core::strings::contains_surrogate(s)) {
+            node = hermes::core::strings::sanitize_surrogates(s);
+        }
+    } else if (node.is_array()) {
+        for (auto& child : node) scrub_json_strings_inplace(child);
+    } else if (node.is_object()) {
+        for (auto it = node.begin(); it != node.end(); ++it) {
+            scrub_json_strings_inplace(it.value());
+        }
+    }
+}
+
+}  // namespace
 
 std::string role_to_string(Role r) {
     switch (r) {
@@ -158,6 +207,10 @@ json Message::to_openai() const {
     if (reasoning) {
         out["reasoning"] = *reasoning;
     }
+    // Proactive surrogate scrub before the wire — defence in depth
+    // against legacy messages that bypassed from_openai (gateway
+    // uploads, stored sessions, etc.).  Upstream Python commit 8798b069.
+    scrub_json_strings_inplace(out);
     return out;
 }
 
@@ -212,6 +265,8 @@ json Message::to_anthropic() const {
     if (cache_control) {
         out["cache_control"] = *cache_control;
     }
+    // Proactive surrogate scrub — see to_openai() for rationale.
+    scrub_json_strings_inplace(out);
     return out;
 }
 
@@ -258,6 +313,7 @@ Message Message::from_openai(const json& obj) {
         // DashScope / Qwen thinking-model alias.
         m.reasoning = obj["reasoning_content"].get<std::string>();
     }
+    scrub_message_strings(m);
     return m;
 }
 
@@ -292,6 +348,7 @@ Message Message::from_anthropic(const json& obj) {
     if (obj.contains("cache_control")) {
         m.cache_control = obj["cache_control"];
     }
+    scrub_message_strings(m);
     return m;
 }
 

@@ -88,4 +88,54 @@ bool contains(std::string_view haystack, std::string_view needle) noexcept {
     return haystack.find(needle) != std::string_view::npos;
 }
 
+namespace {
+
+// A UTF-8-encoded lone surrogate looks like:
+//   byte0 = 0xED  (11101101)
+//   byte1 = 0xA0..0xBF  (1010xxxx..1011xxxx  -> the high 4 bits of D8..DF)
+//   byte2 = 0x80..0xBF  (10xxxxxx)
+// Regular BMP codepoints whose 3-byte UTF-8 starts with 0xED have
+// byte1 in 0x80..0x9F — those are valid and must NOT be replaced.
+bool is_surrogate_at(std::string_view s, std::size_t i) noexcept {
+    if (i + 2 >= s.size()) return false;
+    const auto b0 = static_cast<unsigned char>(s[i]);
+    const auto b1 = static_cast<unsigned char>(s[i + 1]);
+    const auto b2 = static_cast<unsigned char>(s[i + 2]);
+    return b0 == 0xED && b1 >= 0xA0 && b1 <= 0xBF &&
+                         b2 >= 0x80 && b2 <= 0xBF;
+}
+
+}  // namespace
+
+bool contains_surrogate(std::string_view input) noexcept {
+    for (std::size_t i = 0; i + 2 < input.size(); ++i) {
+        if (static_cast<unsigned char>(input[i]) != 0xED) continue;
+        if (is_surrogate_at(input, i)) return true;
+    }
+    return false;
+}
+
+std::string sanitize_surrogates(std::string_view input) {
+    // Fast-path: scan for 0xED first; if none, no surrogates possible.
+    if (!contains_surrogate(input)) {
+        return std::string(input);
+    }
+    std::string out;
+    out.reserve(input.size());
+    for (std::size_t i = 0; i < input.size();) {
+        if (static_cast<unsigned char>(input[i]) == 0xED &&
+            is_surrogate_at(input, i)) {
+            // U+FFFD in UTF-8 = EF BF BD.
+            out.push_back(static_cast<char>(0xEF));
+            out.push_back(static_cast<char>(0xBF));
+            out.push_back(static_cast<char>(0xBD));
+            i += 3;
+        } else {
+            out.push_back(input[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
 }  // namespace hermes::core::strings
