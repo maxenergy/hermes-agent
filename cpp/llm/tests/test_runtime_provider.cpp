@@ -288,3 +288,53 @@ TEST(ModelMetadataDepth, OllamaCloudBaseUrlInfersProvider) {
     EXPECT_EQ(infer_provider_from_base_url("https://ollama.com/v1"),
               "ollama-cloud");
 }
+
+// --- AWS Bedrock ---------------------------------------------------------
+
+TEST(ResolveRuntimeProvider, BedrockExplicitProviderSynthesisesRegionalUrl) {
+    scrub_api_keys();
+    ::unsetenv("AWS_BEARER_TOKEN_BEDROCK");
+    ::unsetenv("AWS_ACCESS_KEY_ID");
+    ::unsetenv("AWS_PROFILE");
+    EnvGuard r("AWS_REGION", "eu-central-1");
+    EnvGuard p("AWS_PROFILE", "bedrock-dev");
+    CredentialPool pool;
+    nlohmann::json cfg = {{"model", {{"provider", "bedrock"}}}};
+    auto rp = resolve_runtime_provider(
+        "us.anthropic.claude-sonnet-4-6", cfg, &pool);
+    EXPECT_EQ(rp.provider_name, "bedrock");
+    EXPECT_EQ(rp.api_mode, "bedrock_converse");
+    EXPECT_EQ(rp.base_url, "https://bedrock-runtime.eu-central-1.amazonaws.com");
+    EXPECT_EQ(rp.api_key, "aws-sdk");
+    EXPECT_EQ(rp.source, "aws-profile");
+}
+
+TEST(ResolveRuntimeProvider, BedrockDefaultsToUsEast1) {
+    scrub_api_keys();
+    ::unsetenv("AWS_BEARER_TOKEN_BEDROCK");
+    ::unsetenv("AWS_ACCESS_KEY_ID");
+    ::unsetenv("AWS_PROFILE");
+    ::unsetenv("AWS_REGION");
+    ::unsetenv("AWS_DEFAULT_REGION");
+    EnvGuard k("AWS_ACCESS_KEY_ID", "AKIA-fake");
+    CredentialPool pool;
+    nlohmann::json cfg = {{"model", {{"provider", "bedrock"}}}};
+    auto rp = resolve_runtime_provider(
+        "us.amazon.nova-pro-v1:0", cfg, &pool);
+    EXPECT_EQ(rp.base_url, "https://bedrock-runtime.us-east-1.amazonaws.com");
+    EXPECT_EQ(rp.source, "aws-access-key");
+}
+
+TEST(ModelMetadataDepth, BedrockRuntimeUrlInfersProvider) {
+    using hermes::llm::infer_provider_from_base_url;
+    EXPECT_EQ(
+        infer_provider_from_base_url(
+            "https://bedrock-runtime.us-east-1.amazonaws.com"),
+        "bedrock");
+}
+
+TEST(ModelMetadataDepth, NovaContextLengths) {
+    using hermes::llm::lookup_default_context_length;
+    EXPECT_EQ(lookup_default_context_length("us.amazon.nova-pro-v1:0"), 300000);
+    EXPECT_EQ(lookup_default_context_length("us.amazon.nova-micro-v1:0"), 128000);
+}

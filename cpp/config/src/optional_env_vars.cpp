@@ -65,6 +65,20 @@ std::map<std::string, EnvVarSpec> build_map() {
         "Ollama Cloud base URL override (default: https://ollama.com/v1)",
         "Ollama base URL (leave empty for default)", "",
         "provider", false);
+    // AWS Bedrock — auth via boto3 / SigV4 chain; env vars below are the
+    // ones setup wizard + subprocess blocklist need to know about.
+    add("AWS_REGION",
+        "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
+        "AWS Region",
+        "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        "provider", false);
+    add("AWS_PROFILE",
+        "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
+        "AWS Profile", "", "provider", false);
+    add("AWS_BEARER_TOKEN_BEDROCK",
+        "AWS Bedrock API key (short-lived bearer token for Bedrock only)",
+        "AWS Bedrock bearer token", "https://aws.amazon.com/bedrock/",
+        "provider", true);
 
     // ── Tool APIs ────────────────────────────────────────────────────
     add("FIRECRAWL_API_KEY",

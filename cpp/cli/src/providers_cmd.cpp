@@ -32,6 +32,7 @@ const std::unordered_map<std::string, std::string>& label_overrides() {
         {"local",        "Local endpoint"},
         {"nvidia",       "NVIDIA NIM"},
         {"ollama-cloud", "Ollama Cloud"},
+        {"bedrock",      "AWS Bedrock"},
     };
     return tbl;
 }
@@ -204,6 +205,9 @@ const std::unordered_map<std::string, std::string>& aliases() {
         // huggingface
         {"hf", "huggingface"}, {"hugging-face", "huggingface"},
         {"huggingface-hub", "huggingface"},
+        // AWS Bedrock (native Converse API)
+        {"aws", "bedrock"}, {"aws-bedrock", "bedrock"},
+        {"amazon-bedrock", "bedrock"}, {"amazon", "bedrock"},
         // local endpoint aliases
         {"lmstudio", "lmstudio"}, {"lm-studio", "lmstudio"}, {"lm_studio", "lmstudio"},
         // Bare "ollama" = local endpoint; "ollama-cloud" / "ollama_cloud"
@@ -221,6 +225,7 @@ const std::unordered_map<std::string, std::string>& transport_to_api_mode() {
         {"openai_chat",        "chat_completions"},
         {"anthropic_messages", "anthropic_messages"},
         {"codex_responses",    "codex_responses"},
+        {"bedrock_converse",   "bedrock_converse"},
     };
     return tbl;
 }
@@ -273,6 +278,10 @@ std::string determine_api_mode(const std::string& provider,
         auto it = transport_to_api_mode().find(pdef->transport);
         if (it != transport_to_api_mode().end()) return it->second;
     }
+    // AWS Bedrock isn't in HERMES_OVERLAYS (auth via SigV4, distinct from
+    // the OpenAI-compat transports); recognise it here.
+    std::string canonical = normalize_provider(provider);
+    if (canonical == "bedrock") return "bedrock_converse";
     if (!base_url.empty()) {
         std::string url = base_url;
         while (!url.empty() && url.back() == '/') url.pop_back();
@@ -287,6 +296,10 @@ std::string determine_api_mode(const std::string& provider,
         }
         if (url.find("api.openai.com") != std::string::npos) {
             return "codex_responses";
+        }
+        if (url.find("bedrock-runtime") != std::string::npos &&
+            url.find("amazonaws.com") != std::string::npos) {
+            return "bedrock_converse";
         }
     }
     return "chat_completions";

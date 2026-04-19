@@ -789,6 +789,31 @@ void check_api_reachability(Report& r, const Options& opts) {
             add_row(r, cat, Severity::Warn, spec.label, detail);
         }
     }
+    // AWS Bedrock — auth lives in the boto3 / SigV4 credential chain, not
+    // in a plain bearer key.  We report configuration presence only; the
+    // real reachability check requires IAM-signed HTTP and isn't wired in
+    // the C++ port yet.
+    {
+        const std::string aws_region = read_env_or_file("AWS_REGION", home);
+        const std::string aws_key_id = read_env_or_file("AWS_ACCESS_KEY_ID", home);
+        const std::string aws_profile = read_env_or_file("AWS_PROFILE", home);
+        const std::string aws_bearer =
+            read_env_or_file("AWS_BEARER_TOKEN_BEDROCK", home);
+        if (!aws_bearer.empty() || !aws_key_id.empty() || !aws_profile.empty()) {
+            ++configured;
+            std::string detail = "(configured";
+            if (!aws_bearer.empty())         detail += " — bearer token";
+            else if (!aws_key_id.empty())    detail += " — access key";
+            else                             detail += " — profile " + aws_profile;
+            if (!aws_region.empty())         detail += "; region " + aws_region;
+            detail += ")";
+            add_row(r, cat, Severity::Info, "AWS Bedrock", detail,
+                    "Converse wire path not implemented in C++ port");
+        } else {
+            add_row(r, cat, Severity::Info, "AWS Bedrock", "(not configured)");
+        }
+    }
+
     if (configured == 0) {
         add_row(r, cat, Severity::Warn,
                 "No provider credentials configured",

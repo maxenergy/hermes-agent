@@ -124,6 +124,7 @@ std::string default_base_url_for_provider(const std::string& provider) {
 std::string default_api_mode_for_provider(const std::string& provider) {
     if (provider == "anthropic") return "anthropic_messages";
     if (provider == "openai-codex") return "codex_responses";
+    if (provider == "bedrock") return "bedrock_converse";
     return "chat_completions";
 }
 
@@ -207,10 +208,35 @@ ResolvedProvider resolve_runtime_provider(
         if (source.empty()) source = "default";
     }
 
+    // AWS Bedrock: no bearer-style api_key; boto3 / SigV4 handles auth.
+    // We synthesise a regional bedrock-runtime URL (honouring AWS_REGION)
+    // and use the "aws-sdk" placeholder so downstream callers recognise
+    // the credential surface.  The wire adapter for `bedrock_converse`
+    // lives in cpp/llm/ but is not yet implemented; see commit message.
+    if (provider == "bedrock") {
+        std::string region = get_env("AWS_REGION");
+        if (region.empty()) region = get_env("AWS_DEFAULT_REGION");
+        if (region.empty()) region = "us-east-1";
+        if (base_url.empty()) {
+            base_url = "https://bedrock-runtime." + region + ".amazonaws.com";
+        }
+        if (api_key.empty()) {
+            api_key = "aws-sdk";
+            if (source.empty() || source == "default") {
+                const char* auth_hint =
+                    std::getenv("AWS_BEARER_TOKEN_BEDROCK") ? "aws-bearer-token"
+                    : std::getenv("AWS_ACCESS_KEY_ID")      ? "aws-access-key"
+                    : std::getenv("AWS_PROFILE")            ? "aws-profile"
+                                                            : "aws-sdk-default-chain";
+                source = auth_hint;
+            }
+        }
+    }
+
     // 6. API mode — honour explicit config value, else default per provider.
     std::string api_mode = to_lower(json_str(model_cfg, "api_mode"));
     if (api_mode != "chat_completions" && api_mode != "anthropic_messages" &&
-        api_mode != "codex_responses") {
+        api_mode != "codex_responses" && api_mode != "bedrock_converse") {
         api_mode = default_api_mode_for_provider(provider);
     }
 

@@ -59,7 +59,8 @@ const std::unordered_set<std::string>& known_prefixes() {
         "github-models", "kimi", "moonshot", "claude", "deep-seek",
         "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun",
         "qwen", "qwen-portal",
-        "nvidia",  // NVIDIA NIM
+        "nvidia",    // NVIDIA NIM
+        "bedrock",   // AWS Bedrock (native Converse API)
     };
     return kPrefixes;
 }
@@ -106,7 +107,7 @@ struct UrlProvider {
     const char* provider;
 };
 
-constexpr std::array<UrlProvider, 22> kUrlProviders = {{
+constexpr std::array<UrlProvider, 23> kUrlProviders = {{
     {"api.openai.com",                "openai"},
     {"chatgpt.com",                   "openai"},
     {"api.anthropic.com",             "anthropic"},
@@ -129,6 +130,7 @@ constexpr std::array<UrlProvider, 22> kUrlProviders = {{
     {"api.mistral.ai",                "mistral"},
     {"integrate.api.nvidia.com",      "nvidia"},
     {"ollama.com",                    "ollama-cloud"},
+    {"bedrock-runtime",               "bedrock"},
 }};
 
 std::string extract_host(std::string_view url) {
@@ -276,11 +278,19 @@ const std::vector<ContextEntry>& default_context_table() {
         {"llama-3.3",          131072},
         {"llama-3.2",          131072},
         {"llama-3.1",          131072},
+        {"llama4",            1000000},  // Llama 4 Maverick/Scout 1M context
         {"llama",              131072},
         // NVIDIA Nemotron — 128K context across all sizes (matches
         // agent/model_metadata.py DEFAULT_CONTEXT_LENGTHS "nemotron"
         // substring entry).
         {"nemotron",           131072},
+        // AWS Bedrock — Amazon Nova (pro/lite at 300K, micro at 128K)
+        {"amazon.nova-pro",    300000},
+        {"amazon.nova-lite",   300000},
+        {"amazon.nova-micro",  128000},
+        {"nova-pro",           300000},
+        {"nova-lite",          300000},
+        {"nova-micro",         128000},
         // Mistral
         {"mistral-large",      131072},
         {"mistral-small",       32768},
